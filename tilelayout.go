@@ -155,7 +155,11 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *TileCon
 		decoded2, _, _ := Decode(na)
 		decoded = decoded2
 	}
-	scaled := scaleImage(decoded, int(layout.tileWidth))
+	tileWidth := int(layout.tileWidth)
+	if decoded.Bounds().Max.X > decoded.Bounds().Max.Y {
+		tileWidth = int(layout.tileWidth * 2)
+	}
+	scaled := scaleImage(decoded, tileWidth)
 	decoded = nil
 	img := canvas.NewImageFromImage(scaled)
 	img.ScaleMode = canvas.ImageScaleFastest
