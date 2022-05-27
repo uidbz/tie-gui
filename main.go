@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -18,7 +19,9 @@ type ImageViewer struct {
 	app            fyne.App
 	currentImage   int
 	cache          map[string]*ImageView
-	scroll         fyne.CanvasObject
+	scroll         *container.Scroll
+	defaultWidth   float32
+	defaultHeight  float32
 }
 
 func (viewer *ImageViewer) LoadImageToCache(path string) *ImageView {
@@ -62,17 +65,27 @@ func SetImage(viewer *ImageViewer, path string, imageNumber int) {
 			path, number := viewer.NextImage()
 			SetImage(viewer, path, number)
 		}},
+		Hotkey{fyne.KeyJ, func() {
+			path, number := viewer.NextImage()
+			SetImage(viewer, path, number)
+		}},
+		Hotkey{fyne.KeySpace, func() {
+			path, number := viewer.NextImage()
+			SetImage(viewer, path, number)
+		}},
 		Hotkey{fyne.KeyLeft, func() {
-			nextImg := viewer.currentImage - 1
-			if nextImg < 0 {
-				nextImg = 0
-			}
-			SetImage(viewer, viewer.imageFiles[nextImg], nextImg)
+			path, number := viewer.PrevImage()
+			SetImage(viewer, path, number)
+		}},
+		Hotkey{fyne.KeyK, func() {
+			path, number := viewer.PrevImage()
+			SetImage(viewer, path, number)
 		}},
 		Hotkey{fyne.KeyEscape, func() {
 			if viewer.scroll == nil {
 				viewer.scroll = container.NewScroll(viewer.gallery)
 			}
+			viewer.window.SetTitle("imgview")
 			viewer.window.SetContent(viewer.scroll)
 		}},
 		Hotkey{fyne.KeyQ, func() {
@@ -85,8 +98,11 @@ func SetImage(viewer *ImageViewer, path string, imageNumber int) {
 		Hotkey{fyne.KeyF, func() {
 			img.fillWindow = false
 			viewer.window.SetFullScreen(!viewer.window.FullScreen())
+			img.fillWindow = true
+			viewer.imageContainer.Refresh()
 		}},
 	}
+	viewer.window.SetTitle("imgview - " + filepath.Base(path))
 	viewer.window.SetContent(viewer.imageContainer)
 	viewer.window.Canvas().Focus(img)
 	viewer.imageContainer.Refresh()
@@ -134,6 +150,20 @@ func main() {
 		imageFiles:     imageFiles,
 		imageContainer: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
 		cache:          make(map[string]*ImageView),
+		defaultWidth:   1024,
+		defaultHeight:  1024,
+	}
+
+	if len(os.Args) > 2 {
+		if f, err := strconv.ParseFloat(os.Args[2], 32); err == nil {
+			viewer.defaultWidth = float32(f)
+			viewer.defaultHeight = float32(f)
+		}
+		if len(os.Args) > 3 {
+			if f, err := strconv.ParseFloat(os.Args[3], 32); err == nil {
+				viewer.defaultHeight = float32(f)
+			}
+		}
 	}
 
 	tileOnclick := func(t *Tile) {
@@ -150,17 +180,27 @@ func main() {
 		if key.Name == fyne.KeyQ || key.Name == fyne.KeyEscape {
 			myApp.Quit()
 		}
+		if key.Name == fyne.KeyDown || key.Name == fyne.KeyJ {
+			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y + 300
+			viewer.scroll.Refresh()
+		}
+		if key.Name == fyne.KeyUp || key.Name == fyne.KeyK {
+			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y - 300
+			viewer.scroll.Refresh()
+		}
 	})
 	if loadingImage {
 		for i, x := range imageFiles {
 			if y, err := filepath.Abs(path); err == nil && x == y {
 				SetImage(viewer, path, i)
+				break
 			}
 		}
 	} else {
 		viewer.scroll = container.NewScroll(viewer.gallery)
 		myWindow.SetContent(viewer.scroll)
 	}
+	myWindow.Resize(fyne.NewSize(viewer.defaultWidth, viewer.defaultHeight))
 
 	myWindow.ShowAndRun()
 }

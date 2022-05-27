@@ -11,11 +11,13 @@ Hotkeys/controls:
 In gallery mode:  
 Q: Quit  
 Esc: Quit  
+Down/J: Scroll down  
+Up/K: Scroll up  
 
 In single picture mode:   
 Esc: Go back to gallery  
-Right: Next picture  
-Left: Previous picture  
+Right/J/Space: Next picture  
+Left/K: Previous picture  
 Scroll down: Zoom in  
 Scroll up: Zoom out  
 Drag image to reposition  

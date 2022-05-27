@@ -145,7 +145,6 @@ func (iv *ImageView) DragEnd() {
 }
 
 func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
-	fmt.Println("KeyEvent", key)
 	for _, x := range iv.hotkeys {
 		if key.Name == x.Name {
 			x.Functon()
@@ -215,14 +214,12 @@ func IsImageFromPath(path string) bool {
 }
 
 func (iv *ImageView) FocusGained() {
-	fmt.Println("Focus gained")
 }
+
 func (iv *ImageView) FocusLost() {
-	fmt.Println("Focus lost")
 }
 
 func (iv *ImageView) TypedRune(r rune) {
-	fmt.Println("rune", r)
 }
 
 /*****************************

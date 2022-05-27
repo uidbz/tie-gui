@@ -1,3 +1,4 @@
 *.kate-swp
 *.swp
+fyne-cross/*
 imgview

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	_ "embed"
 
@@ -131,6 +132,9 @@ func (d *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size
 
 func (layout *TileLayout) imageLoader() {
 	i := 0
+	refreshTimer := time.NewTimer(500 * time.Millisecond)
+
+	first := true
 	for tc := range layout.imagesToLoad {
 		imgReader, err := os.Open(tc.path)
 		if err != nil {
@@ -140,9 +144,17 @@ func (layout *TileLayout) imageLoader() {
 		tile := layout.NewImageTile(imgReader, tc, layout.tabFn)
 		tc.layout.tiles[tc.order] = tile
 		tc.grid.Objects[tc.order] = tile
+		if first {
+			go func() {
+				<-refreshTimer.C
+				tc.grid.Refresh()
+			}()
+		}
 		if i == 10 {
 			tc.grid.Refresh()
 			i = 0
+		} else {
+			refreshTimer.Reset(500 * time.Millisecond)
 		}
 	}
 }
@@ -159,9 +171,15 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *TileCon
 	if decoded.Bounds().Max.X > decoded.Bounds().Max.Y {
 		tileWidth = int(layout.tileWidth * 2)
 	}
-	scaled := scaleImage(decoded, tileWidth)
-	decoded = nil
-	img := canvas.NewImageFromImage(scaled)
+	var img *canvas.Image
+	if tileWidth > decoded.Bounds().Max.X {
+		img = canvas.NewImageFromImage(decoded) // do not resize if picture is smaller than tile
+		decoded = nil
+	} else {
+		scaled := scaleImage(decoded, tileWidth)
+		decoded = nil
+		img = canvas.NewImageFromImage(scaled)
+	}
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
 	t.context = context
