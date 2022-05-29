@@ -18,8 +18,11 @@ In single picture mode:
 Esc: Go back to gallery  
 Right/J/Space: Next picture  
 Left/K: Previous picture  
+Up: Rotate left  
+Down: Rotate right  
 Scroll down: Zoom in  
 Scroll up: Zoom out  
 Drag image to reposition  
 X: Fit to window  
+S: Zoom to original size  
 F: Fullscreen (fails on wayland)  

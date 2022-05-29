@@ -15,6 +15,7 @@ type ImageViewer struct {
 	gallery        *fyne.Container
 	imageFiles     []string
 	imageContainer *fyne.Container
+	layout         *TileLayout
 	window         fyne.Window
 	app            fyne.App
 	currentImage   int
@@ -27,6 +28,11 @@ type ImageViewer struct {
 func (viewer *ImageViewer) LoadImageToCache(path string) *ImageView {
 	if x, ok := viewer.cache[path]; ok == false {
 		img := NewImageView(path, viewer.window.Canvas().Size(), true, true, true, viewer.window, viewer.window.Canvas().Focus)
+		img.changeFn = func() {
+			go func() {
+				viewer.window.SetTitle("imgview - " + img.GetImageInfo())
+			}()
+		}
 		viewer.cache[path] = img
 		return img
 	} else {
@@ -81,8 +87,18 @@ func SetImage(viewer *ImageViewer, path string, imageNumber int) {
 			path, number := viewer.PrevImage()
 			SetImage(viewer, path, number)
 		}},
+		Hotkey{fyne.KeyUp, func() {
+			img.RotateLeft()
+		}},
+		Hotkey{fyne.KeyDown, func() {
+			img.RotateRight()
+		}},
+		Hotkey{fyne.KeyS, func() {
+			img.OriginalSize()
+		}},
 		Hotkey{fyne.KeyEscape, func() {
 			if viewer.scroll == nil {
+				go viewer.layout.AddTilesFromPath(viewer.imageFiles, viewer.gallery, viewer.window)
 				viewer.scroll = container.NewScroll(viewer.gallery)
 			}
 			viewer.window.SetTitle("imgview")
@@ -102,10 +118,10 @@ func SetImage(viewer *ImageViewer, path string, imageNumber int) {
 			viewer.imageContainer.Refresh()
 		}},
 	}
-	viewer.window.SetTitle("imgview - " + filepath.Base(path))
 	viewer.window.SetContent(viewer.imageContainer)
 	viewer.window.Canvas().Focus(img)
 	viewer.imageContainer.Refresh()
+	img.changeFn()
 }
 
 func main() {
@@ -170,11 +186,9 @@ func main() {
 		SetImage(viewer, t.context.path, t.context.order)
 	}
 
-	layout := NewTileLayout(300, 5, 8, tileOnclick)
+	viewer.layout = NewTileLayout(300, 5, 8, tileOnclick)
 	empty := make([]fyne.CanvasObject, 0)
-	viewer.gallery = container.New(layout, empty...)
-
-	go layout.AddTilesFromPath(imageFiles, viewer.gallery, myWindow)
+	viewer.gallery = container.New(viewer.layout, empty...)
 
 	myWindow.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
 		if key.Name == fyne.KeyQ || key.Name == fyne.KeyEscape {
@@ -197,6 +211,7 @@ func main() {
 			}
 		}
 	} else {
+		go viewer.layout.AddTilesFromPath(imageFiles, viewer.gallery, myWindow)
 		viewer.scroll = container.NewScroll(viewer.gallery)
 		myWindow.SetContent(viewer.scroll)
 	}

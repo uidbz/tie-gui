@@ -8,10 +8,14 @@ import (
 	"os"
 	"path/filepath"
 
+	"strconv"
+	"time"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
-
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/disintegration/imaging"
 )
 
 type ImageView struct {
@@ -32,6 +36,7 @@ type ImageView struct {
 	pos               fyne.Position
 	size              fyne.Size
 	lastContainerSize fyne.Size
+	refreshBilinear   *time.Timer
 	newSize           bool
 	fillWindow        bool
 	OnClicked         func()
@@ -41,6 +46,7 @@ type ImageView struct {
 	hotkeys           []Hotkey
 	w                 fyne.Window
 	container         *fyne.Container
+	changeFn          func()
 }
 
 type Hotkey struct {
@@ -65,35 +71,81 @@ func (d *ImageLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Siz
 				iv.lastContainerSize = containerSize
 			}
 			if iv.lastContainerSize.Height != containerSize.Height || iv.lastContainerSize.Width != containerSize.Width {
-				newX := iv.pos.X + (containerSize.Width-iv.lastContainerSize.Width)/2
-				newY := iv.pos.Y + (containerSize.Height-iv.lastContainerSize.Height)/2
+				xCenter := (containerSize.Width - iv.lastContainerSize.Width) / 2
+				yCenter := (containerSize.Height - iv.lastContainerSize.Height) / 2
+				newX := iv.pos.X + xCenter
+				newY := iv.pos.Y + yCenter
 				iv.lastContainerSize = containerSize
 				iv.pos = fyne.NewPos(newX, newY)
 			}
 		}
 		if o.(*ImageView).newSize {
+			oldSize := o.Size()
 			newSize := iv.size
 			o.Resize(newSize)
 			iv.newSize = false
+			if iv.dragStart { // If dragging while zooming
+				delta := newSize.Subtract(oldSize)
+				iv.startPos = iv.startPos.Add(fyne.NewPos(delta.Width/2, delta.Height/2))
+			}
+			iv.changeFn()
 		}
-		o.Move(o.(*ImageView).pos)
+		o.Move(iv.pos)
 	}
+}
+
+func (iv *ImageView) GetImageInfo() string {
+	return filepath.Base(iv.path) + " (" + strconv.Itoa(iv.imgWidth) + "x" + strconv.Itoa(iv.imgHeight) + ")" + " [" + strconv.Itoa(iv.GetZoomLevel()) + "%]"
+}
+
+func (iv *ImageView) GetZoomLevel() int {
+	zoomLevel := iv.Size().Width / float32(iv.imgWidth) * 100
+	return int(zoomLevel)
+}
+
+func (iv *ImageView) RotateLeft() {
+	iv.fyneImage.Image = imaging.Rotate90(iv.fyneImage.Image)
+	iv.fyneImage.Refresh()
+}
+
+func (iv *ImageView) RotateRight() {
+	iv.fyneImage.Image = imaging.Rotate270(iv.fyneImage.Image)
+	iv.fyneImage.Refresh()
+}
+
+func (iv *ImageView) OriginalSize() {
+	iv.fillWindow = false
+	iv.size = fyne.NewSize(float32(iv.imgWidth), float32(iv.imgHeight))
+	w, h := iv.container.Size().Subtract(iv.size).Components()
+	iv.pos = fyne.NewPos(w/2, h/2)
+	iv.newSize = true
+	iv.container.Refresh()
+	iv.changeFn()
 }
 
 func NewImageView(path string, size fyne.Size, hideRegion bool, zoomable bool, dragable bool, w fyne.Window, focusFunc func(fyne.Focusable)) *ImageView {
 	iv := &ImageView{
-		focus:    focusFunc,
-		zoom:     2,
-		zoomable: zoomable,
-		dragable: dragable,
-		path:     path,
-		w:        w,
-		size:     size,
-		newSize:  true,
+		focus:           focusFunc,
+		zoom:            2,
+		zoomable:        zoomable,
+		dragable:        dragable,
+		path:            path,
+		w:               w,
+		size:            size,
+		newSize:         true,
+		refreshBilinear: time.NewTimer(100 * time.Millisecond),
 	}
 	if err := iv.LoadImage(); err != nil {
 		fmt.Println("Error:", err)
 	}
+	iv.refreshBilinear.Stop()
+	// go func() {
+	// 	for {
+	// 		<-iv.refreshBilinear.C
+	// 		iv.fyneImage.ScaleMode = canvas.ImageScaleSmooth
+	// 		iv.fyneImage.Refresh()
+	// 	}
+	// }()
 	iv.path = path
 
 	if !hideRegion {
@@ -131,10 +183,12 @@ func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 		return
 	}
 	if !iv.dragStart {
+		iv.newSize = false
 		iv.startPos = drag.PointEvent.Position
 		iv.dragStart = true
 		iv.fillWindow = false
 	}
+	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
 	iv.pos = drag.AbsolutePosition.Subtract(iv.startPos)
 
 	iv.container.Refresh()
@@ -142,6 +196,8 @@ func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 
 func (iv *ImageView) DragEnd() {
 	iv.dragStart = false
+	// iv.fyneImage.ScaleMode = canvas.ImageScaleSmooth
+	// iv.fyneImage.Refresh()
 }
 
 func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
@@ -167,6 +223,7 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 		return
 	}
 	iv.fillWindow = false
+	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
 	var zoom float32
 	if ev.Scrolled.DY > 0 {
 		zoom = 1 + (iv.zoom / 10)
@@ -188,7 +245,9 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 	iv.size = newSize
 	iv.newSize = true
 
+	iv.changeFn()
 	iv.container.Refresh()
+	// iv.refreshBilinear.Reset(100 * time.Millisecond)
 }
 
 func IsImage(entry fs.DirEntry) bool {
@@ -254,7 +313,7 @@ func (ren *ImageViewRenderer) Objects() []fyne.CanvasObject {
 }
 
 func (ren *ImageViewRenderer) MinSize() fyne.Size {
-	return fyne.NewSize(800, 800)
+	return fyne.NewSize(0, 0)
 }
 
 func (ren *ImageViewRenderer) Layout(s fyne.Size) {
