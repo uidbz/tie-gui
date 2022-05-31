@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"image"
 	"image/color"
 	"io/fs"
 	"os"
@@ -21,7 +20,6 @@ import (
 type ImageView struct {
 	widget.BaseWidget
 
-	origImage         image.Image
 	fyneImage         *canvas.Image
 	raster            *canvas.Raster
 	format            string
@@ -163,7 +161,6 @@ func (iv *ImageView) LoadImage() error {
 		return err
 	}
 	img, format, _ := Decode(imgReader)
-	iv.origImage = img
 	iv.format = format
 	iv.fyneImage = canvas.NewImageFromImage(img)
 	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest

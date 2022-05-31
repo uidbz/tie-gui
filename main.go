@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,15 @@ type ImageViewer struct {
 	defaultWidth   float32
 	defaultHeight  float32
 }
+
+const (
+	inputIsNothing = iota
+	inputError
+	inputIsNotSupported
+	inputIsDirectory
+	inputIsImage
+	inputIsZip
+)
 
 func (viewer *ImageViewer) LoadImageToCache(path string) *ImageView {
 	if x, ok := viewer.cache[path]; ok == false {
@@ -124,32 +134,59 @@ func SetImage(viewer *ImageViewer, path string, imageNumber int) {
 	img.changeFn()
 }
 
+func ParseInput(args []string) (absolutePath string, inputType int, err error) {
+	if len(os.Args) > 1 {
+		path := os.Args[1]
+		fi, err := os.Stat(path)
+		if err != nil {
+			absolutePath = ""
+			return absolutePath, inputError, err
+		}
+		absolutePath, err = filepath.Abs(path)
+		if err != nil {
+			absolutePath = ""
+			return absolutePath, inputError, err
+		}
+		if fi.IsDir() {
+			return absolutePath, inputIsDirectory, nil
+		}
+		if filepath.Ext(absolutePath) == ".zip" {
+			return "zip://" + absolutePath, inputIsZip, nil
+		}
+		if IsImageFromPath(absolutePath) {
+			return absolutePath, inputIsImage, nil
+		}
+		return absolutePath, inputIsNotSupported, errors.New("Unknown input type")
+	} else {
+		absolutePath = "."
+		return absolutePath, inputIsNothing, nil
+	}
+}
+
 func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("imgview")
 
 	loadingImage := false
-	path := "."
 	directory := "."
+	// isZip := false
+	absolutePath, inputType, err := ParseInput(os.Args)
 
-	if len(os.Args) > 1 {
-		if fi, err := os.Stat(os.Args[1]); err != nil {
-			panic(err)
-		} else {
-			if abspath, err := filepath.Abs(os.Args[1]); err != nil {
-				panic(err)
-			} else {
-				path = abspath
-				if fi.IsDir() {
-					directory = path
-				} else {
-					directory = filepath.Dir(path)
-				}
-				if IsImageFromPath(path) {
-					loadingImage = true
-				}
-			}
-		}
+	switch inputType {
+	case inputError:
+		panic(err)
+	case inputIsDirectory:
+		directory = absolutePath
+	case inputIsImage:
+		directory = filepath.Dir(absolutePath)
+		loadingImage = true
+	case inputIsZip:
+		directory = absolutePath
+		// isZip = true
+	case inputIsNothing:
+		// Use defaults
+	default:
+		panic("Input is not understood")
 	}
 
 	dir, _ := os.ReadDir(directory)
@@ -205,8 +242,8 @@ func main() {
 	})
 	if loadingImage {
 		for i, x := range imageFiles {
-			if y, err := filepath.Abs(path); err == nil && x == y {
-				SetImage(viewer, path, i)
+			if x == absolutePath {
+				SetImage(viewer, absolutePath, i)
 				break
 			}
 		}
