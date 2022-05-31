@@ -26,16 +26,9 @@ type TileLayout struct {
 	tileWidth    float32
 	gap          float32
 	minHeight    float32
-	imagesToLoad chan *TileContext
+	imagesToLoad chan ImageInfo
 	tabFn        func(t *Tile)
-}
-
-type TileContext struct {
-	grid   *fyne.Container
-	layout *TileLayout
-	window fyne.Window
-	path   string
-	order  int
+	grid         *fyne.Container
 }
 
 type Tile struct {
@@ -44,15 +37,28 @@ type Tile struct {
 	width     float32
 	height    float32
 	landscape bool
-	context   *TileContext
+	info   ImageInfo
 	tabFn     func(t *Tile)
+}
+
+type ImageInfo struct {
+	path  string
+	order int
 }
 
 func NewTileLayout(tileWidth float32, gap float32, workers int, tabFn func(t *Tile)) *TileLayout {
 	batchSize := 1024
 	tiles := make([]*Tile, 0)
-	imagesToLoad := make(chan *TileContext, batchSize)
-	layout := &TileLayout{tiles, sync.WaitGroup{}, tileWidth, gap, 0, imagesToLoad, tabFn}
+	imagesToLoad := make(chan ImageInfo, batchSize)
+	layout := &TileLayout{
+		tiles:        tiles,
+		wg:           sync.WaitGroup{},
+		tileWidth:    tileWidth,
+		gap:          gap,
+		minHeight:    0,
+		imagesToLoad: imagesToLoad,
+		tabFn:        tabFn,
+	}
 
 	for i := 0; i < workers; i++ {
 		go layout.imageLoader()
@@ -61,13 +67,13 @@ func NewTileLayout(tileWidth float32, gap float32, workers int, tabFn func(t *Ti
 	return layout
 }
 
-func (layout *TileLayout) AddTilesFromPath(imageFiles []string, grid *fyne.Container, window fyne.Window) {
+func (layout *TileLayout) AddTiles(imageFiles []ImageInfo) {
 	loadingImg := bytes.NewReader(loading)
-	for i, path := range imageFiles {
-		t := &TileContext{grid, layout, window, path, i}
+	for _, x := range imageFiles {
+		t := x
 		tile := layout.NewImageTile(loadingImg, t, nil)
 		layout.tiles = append(layout.tiles, tile)
-		grid.AddObject(tile)
+		layout.grid.AddObject(tile)
 		layout.imagesToLoad <- t
 	}
 }
@@ -142,16 +148,16 @@ func (layout *TileLayout) imageLoader() {
 			panic(err)
 		}
 		tile := layout.NewImageTile(imgReader, tc, layout.tabFn)
-		tc.layout.tiles[tc.order] = tile
-		tc.grid.Objects[tc.order] = tile
+		layout.tiles[tc.order] = tile
+		layout.grid.Objects[tc.order] = tile
 		if first {
 			go func() {
 				<-refreshTimer.C
-				tc.grid.Refresh()
+				layout.grid.Refresh()
 			}()
 		}
 		if i == 10 {
-			tc.grid.Refresh()
+			layout.grid.Refresh()
 			i = 0
 		} else {
 			refreshTimer.Reset(500 * time.Millisecond)
@@ -159,7 +165,7 @@ func (layout *TileLayout) imageLoader() {
 	}
 }
 
-func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *TileContext, tabFn func(t *Tile)) *Tile {
+func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context ImageInfo, tabFn func(t *Tile)) *Tile {
 	t := &Tile{}
 	decoded, _, _ := Decode(imgReader)
 	if decoded == nil {
@@ -182,7 +188,7 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *TileCon
 	}
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
-	t.context = context
+	t.info = context
 	t.width = float32(img.Image.Bounds().Max.X)
 	t.height = float32(img.Image.Bounds().Max.Y)
 	t.landscape = t.width > t.height

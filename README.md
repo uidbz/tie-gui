@@ -1,6 +1,6 @@
 ### Simple image viewer with gallery feature
 
-The gallery positions the images with consideration to landscape or portrait mode.  
+The gallery positions the images with consideration to landscape or portrait orientation.  
 I like it. I think it looks cool, and gives a good overview of the pictures.  
 Next step will be to do something with the background/white space.  
 
