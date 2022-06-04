@@ -8,6 +8,10 @@ It can read most common archive formats - such as zip, rar, tar, cbr, etc.
 
 It loads relatively fast on my computer, but zoom and reposition is unfortunatly rather slow on high resolution pictures :-/  
 
+# Download precompiled binary
+Imgview for Linux X11: [Download](https://tfh1.com/f5a21708dfb4300190bd22890123f33dc62e45f8592d04f42489503dd3fb7235/imgview-x11)
+Just download and remember to make it executable.
+
 # Build 
 Imgview is written in Go, and made using the excellent [fyne](https://fyne.io) GUI framework, which in turn depends on cgo - see details [here](https://developer.fyne.io/started)  
 When you have a C compiler and the dependencies of fyne installed, then compiling imgview is very straight forward.  
@@ -15,10 +19,13 @@ When you have a C compiler and the dependencies of fyne installed, then compilin
 git clone https://git.sr.ht/~uid/imgview
 cd imgview
 go build # -tags wayland # for building on wayland
-go install # to install to $GOPATH/bin - you can add this directory to your PATH to make it available system wide
-# or alternatively
+go install # to install to $GOPATH/bin
+~~~
+Or alternatively
+~~~sh
 go install git.sr.ht/~uid/imgview
 ~~~
+
 # Run
 ~~~sh
 imgview /path/to/img/or/dir/or/archive
