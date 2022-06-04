@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"image/color"
-	"io/fs"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -13,6 +15,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/widget"
+	"github.com/h2non/filetype"
 
 	"github.com/disintegration/imaging"
 )
@@ -38,7 +41,7 @@ type ImageView struct {
 	newSize           bool
 	fillWindow        bool
 	OnClicked         func()
-	path              string
+	info              ImageInfo
 	dragStart         bool
 	focus             func(fyne.Focusable)
 	hotkeys           []Hotkey
@@ -93,7 +96,7 @@ func (d *ImageLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Siz
 }
 
 func (iv *ImageView) GetImageInfo() string {
-	return filepath.Base(iv.path) + " (" + strconv.Itoa(iv.imgWidth) + "x" + strconv.Itoa(iv.imgHeight) + ")" + " [" + strconv.Itoa(iv.GetZoomLevel()) + "%]"
+	return filepath.Base(iv.info.path) + " (" + strconv.Itoa(iv.imgWidth) + "x" + strconv.Itoa(iv.imgHeight) + ")" + " [" + strconv.Itoa(iv.GetZoomLevel()) + "%]"
 }
 
 func (iv *ImageView) GetZoomLevel() int {
@@ -121,13 +124,13 @@ func (iv *ImageView) OriginalSize() {
 	iv.changeFn()
 }
 
-func NewImageView(path string, size fyne.Size, hideRegion bool, zoomable bool, dragable bool, w fyne.Window, focusFunc func(fyne.Focusable)) *ImageView {
+func NewImageView(info ImageInfo, size fyne.Size, hideRegion bool, zoomable bool, dragable bool, w fyne.Window, focusFunc func(fyne.Focusable)) *ImageView {
 	iv := &ImageView{
 		focus:           focusFunc,
 		zoom:            2,
 		zoomable:        zoomable,
 		dragable:        dragable,
-		path:            path,
+		info:            info,
 		w:               w,
 		size:            size,
 		newSize:         true,
@@ -144,7 +147,6 @@ func NewImageView(path string, size fyne.Size, hideRegion bool, zoomable bool, d
 	// 		iv.fyneImage.Refresh()
 	// 	}
 	// }()
-	iv.path = path
 
 	if !hideRegion {
 		iv.region = NewRegion(color.Black, iv)
@@ -154,13 +156,38 @@ func NewImageView(path string, size fyne.Size, hideRegion bool, zoomable bool, d
 	return iv
 }
 
-func (iv *ImageView) LoadImage() error {
+func (img *ImageInfo) GetReader() (io.ReadSeeker, error) {
+	if img.inputIsArchive {
+		if img.archiveFile == nil {
+			return nil, errors.New("Could not read zip file")
+		}
+		imgReader, err := img.archiveFile.Open(img.path)
+		if err != nil {
+			return nil, err
+		}
+		if file, err := io.ReadAll(imgReader); err != nil {
+			return nil, err
+		} else {
+			return bytes.NewReader(file), nil
+		}
+	} else {
+		imgReader, err := os.Open(img.path)
+		if err != nil {
+			return nil, err
+		}
+		return imgReader, nil
+	}
+}
 
-	imgReader, err := os.Open(iv.path)
+func (iv *ImageView) LoadImage() error {
+	reader, err := iv.info.GetReader()
 	if err != nil {
 		return err
 	}
-	img, format, _ := Decode(imgReader)
+	img, format, err2 := Decode(reader)
+	if err2 != nil {
+		return err2
+	}
 	iv.format = format
 	iv.fyneImage = canvas.NewImageFromImage(img)
 	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
@@ -247,26 +274,36 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 	// iv.refreshBilinear.Reset(100 * time.Millisecond)
 }
 
-func IsImage(entry fs.DirEntry) bool {
-	if entry.IsDir() {
+func IsImage(file io.Reader) bool {
+	head := make([]byte, 261)
+	if _, err := file.Read(head); err != nil {
 		return false
 	}
 
-	return IsImageFromPath(entry.Name())
-
+	return filetype.IsImage(head)
 }
 
 func IsImageFromPath(path string) bool {
-	switch filepath.Ext(path) {
-	case ".jpg":
-		return true
-	case ".png":
-		return true
-	case ".gif":
-		return true
-	default:
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Println("Error opening:", path)
 		return false
 	}
+	return IsImage(file)
+}
+
+func IsArchiveFromPath(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Println("Error opening:", path)
+		return false
+	}
+	head := make([]byte, 261)
+	if _, err := file.Read(head); err != nil {
+		return false
+	}
+
+	return filetype.IsArchive(head)
 }
 
 func (iv *ImageView) FocusGained() {

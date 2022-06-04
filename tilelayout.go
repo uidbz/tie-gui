@@ -1,10 +1,11 @@
 package main
 
 import (
+	// "archive/zip"
 	"bytes"
 	"fmt"
 	"io"
-	"os"
+	"io/fs"
 	"time"
 
 	_ "embed"
@@ -37,13 +38,15 @@ type Tile struct {
 	width     float32
 	height    float32
 	landscape bool
-	info   ImageInfo
+	info      ImageInfo
 	tabFn     func(t *Tile)
 }
 
 type ImageInfo struct {
-	path  string
-	order int
+	archiveFile    fs.FS
+	inputIsArchive bool
+	path           string
+	order          int
 }
 
 func NewTileLayout(tileWidth float32, gap float32, workers int, tabFn func(t *Tile)) *TileLayout {
@@ -142,12 +145,17 @@ func (layout *TileLayout) imageLoader() {
 
 	first := true
 	for tc := range layout.imagesToLoad {
-		imgReader, err := os.Open(tc.path)
+		reader, err := tc.GetReader()
 		if err != nil {
-			defer fmt.Println("Path:", tc.path)
-			panic(err)
+			fmt.Println(err)
+			continue
 		}
-		tile := layout.NewImageTile(imgReader, tc, layout.tabFn)
+		// imgReader, err := os.Open(tc.path)
+		// if err != nil {
+		// 	defer fmt.Println("Path:", tc.path)
+		// 	panic(err)
+		// }
+		tile := layout.NewImageTile(reader, tc, layout.tabFn)
 		layout.tiles[tc.order] = tile
 		layout.grid.Objects[tc.order] = tile
 		if first {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fyne.io/fyne/v2"
-
 	"fyne.io/fyne/v2/container"
 )
 
@@ -22,15 +21,15 @@ type ImageViewer struct {
 	hotkeys        []Hotkey
 }
 
-func (viewer *ImageViewer) LoadImageToCache(path string) *ImageView {
-	if x, ok := viewer.cache[path]; ok == false {
-		img := NewImageView(path, viewer.window.Canvas().Size(), true, true, true, viewer.window, viewer.window.Canvas().Focus)
+func (viewer *ImageViewer) LoadImageToCache(info ImageInfo) *ImageView {
+	if x, ok := viewer.cache[info.path]; ok == false {
+		img := NewImageView(info, viewer.window.Canvas().Size(), true, true, true, viewer.window, viewer.window.Canvas().Focus)
 		img.changeFn = func() {
 			go func() {
 				viewer.window.SetTitle("imgview - " + img.GetImageInfo())
 			}()
 		}
-		viewer.cache[path] = img
+		viewer.cache[info.path] = img
 		return img
 	} else {
 		return x
@@ -73,7 +72,13 @@ func (viewer *ImageViewer) InitHotkeys() {
 		Hotkey{fyne.KeyUp, func() {
 			viewer.currentImage.RotateLeft()
 		}},
+		Hotkey{fyne.KeyH, func() {
+			viewer.currentImage.RotateLeft()
+		}},
 		Hotkey{fyne.KeyDown, func() {
+			viewer.currentImage.RotateRight()
+		}},
+		Hotkey{fyne.KeyL, func() {
 			viewer.currentImage.RotateRight()
 		}},
 		Hotkey{fyne.KeyS, func() {
@@ -105,10 +110,10 @@ func (viewer *ImageViewer) InitHotkeys() {
 }
 
 func SetImage(viewer *ImageViewer, info ImageInfo) {
-	img := viewer.LoadImageToCache(info.path)
+	img := viewer.LoadImageToCache(info)
 	viewer.currentImage = img
 	go func() {
-		viewer.LoadImageToCache(viewer.NextImage().path)
+		viewer.LoadImageToCache(viewer.NextImage())
 	}()
 	img.fillWindow = true
 	img.container = viewer.imageContainer

@@ -1,10 +1,16 @@
 package main
 
 import (
+	"sort"
+	// "archive/zip"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/mholt/archiver/v4"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -18,7 +24,7 @@ const (
 	inputIsNotSupported
 	inputIsDirectory
 	inputIsImage
-	inputIsZip
+	inputIsArchive
 )
 
 func ParseInput(args []string) (absolutePath string, inputType int, err error) {
@@ -37,8 +43,8 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 		if fi.IsDir() {
 			return absolutePath, inputIsDirectory, nil
 		}
-		if filepath.Ext(absolutePath) == ".zip" {
-			return "zip://" + absolutePath, inputIsZip, nil
+		if IsArchiveFromPath(absolutePath) {
+			return absolutePath, inputIsArchive, nil
 		}
 		if IsImageFromPath(absolutePath) {
 			return absolutePath, inputIsImage, nil
@@ -50,40 +56,93 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 	}
 }
 
+func ReadImageDir(absolutePath string) (imageFiles []ImageInfo) {
+	dir, _ := os.ReadDir(absolutePath)
+	i := 0
+	for _, x := range dir {
+		if x.IsDir() {
+			continue
+		}
+		if IsImageFromPath(x.Name()) {
+			imageFiles = append(imageFiles, ImageInfo{
+				path:  filepath.Join(absolutePath, x.Name()),
+				order: i,
+			})
+			i++
+		}
+	}
+
+	return imageFiles
+}
+
+func ReadImageZip(zipFile string) (imageFiles []ImageInfo) {
+	fsys, err := archiver.FileSystem(zipFile)
+	if err != nil {
+		fmt.Println(err)
+		return []ImageInfo{}
+	}
+	i := 0
+	fs.WalkDir(fsys, ".", func(path string, x fs.DirEntry, err error) error {
+		if x.IsDir() {
+			return nil
+		}
+		file, err := fsys.Open(path)
+		if err != nil {
+			fmt.Println("Error opening:", x.Name())
+			return nil
+		}
+		if IsImage(file) {
+			imageFiles = append(imageFiles, ImageInfo{
+				inputIsArchive: true,
+				path:           path,
+				archiveFile:    fsys,
+				order:          i,
+			})
+			i++
+		}
+		return nil
+	})
+	sort.Slice(imageFiles, func(i, j int) bool {
+		return imageFiles[i].path < imageFiles[j].path
+	})
+	for i, _ := range imageFiles {
+		imageFiles[i].order = i
+	}
+	return imageFiles
+}
+
 func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("imgview")
 
+	var imageFiles []ImageInfo
 	loadingImage := false
 	directory := "."
-	// isZip := false
 	absolutePath, inputType, err := ParseInput(os.Args)
 
 	switch inputType {
 	case inputError:
 		panic(err)
+
 	case inputIsDirectory:
 		directory = absolutePath
+		imageFiles = ReadImageDir(directory)
+
 	case inputIsImage:
 		directory = filepath.Dir(absolutePath)
+		imageFiles = ReadImageDir(directory)
 		loadingImage = true
-	case inputIsZip:
+
+	case inputIsArchive:
 		directory = absolutePath
-		// isZip = true
-	case inputIsNothing:
-		// Use defaults
+		imageFiles = ReadImageZip(directory)
+
+	case inputIsNothing: // Use current working directory
+		directory = absolutePath
+		imageFiles = ReadImageDir(directory)
+
 	default:
 		panic("Input is not understood")
-	}
-
-	dir, _ := os.ReadDir(directory)
-	imageFiles := []ImageInfo{}
-	i := 0
-	for _, x := range dir {
-		if IsImage(x) {
-			imageFiles = append(imageFiles, ImageInfo{filepath.Join(directory, x.Name()), i})
-			i++
-		}
 	}
 
 	viewer := &ImageViewer{
