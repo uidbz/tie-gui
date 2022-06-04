@@ -14,6 +14,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/dialog"
 
 	"fyne.io/fyne/v2/container"
 )
@@ -30,12 +31,12 @@ const (
 func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 	if len(os.Args) > 1 {
 		path := os.Args[1]
-		fi, err := os.Stat(path)
+		absolutePath, err = filepath.Abs(path)
+		fi, err := os.Stat(absolutePath)
 		if err != nil {
 			absolutePath = ""
 			return absolutePath, inputError, err
 		}
-		absolutePath, err = filepath.Abs(path)
 		if err != nil {
 			absolutePath = ""
 			return absolutePath, inputError, err
@@ -63,9 +64,10 @@ func ReadImageDir(absolutePath string) (imageFiles []ImageInfo) {
 		if x.IsDir() {
 			continue
 		}
-		if IsImageFromPath(x.Name()) {
+		fullpath := filepath.Join(absolutePath, x.Name())
+		if IsImageFromPath(fullpath) {
 			imageFiles = append(imageFiles, ImageInfo{
-				path:  filepath.Join(absolutePath, x.Name()),
+				path:  fullpath,
 				order: i,
 			})
 			i++
@@ -122,7 +124,9 @@ func main() {
 
 	switch inputType {
 	case inputError:
-		panic(err)
+		dialog.ShowError(err, myWindow)
+		myWindow.ShowAndRun()
+		return
 
 	case inputIsDirectory:
 		directory = absolutePath

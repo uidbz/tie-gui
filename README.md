@@ -9,7 +9,7 @@ It can read most common archive formats - such as zip, rar, tar, cbr, etc.
 It loads relatively fast on my computer, but zoom and reposition is unfortunatly rather slow on high resolution pictures :-/  
 
 # Download precompiled binary
-Imgview for Linux X11: [Download](https://tfh1.com/f5a21708dfb4300190bd22890123f33dc62e45f8592d04f42489503dd3fb7235/imgview-x11)
+Imgview for Linux X11: [Download](https://tfh1.com/5df499eaa91783fa98a2340fa962c892b13c0952840d759c9939871daef6b3c4/imgview)  
 Just download and remember to make it executable.
 
 # Build 
