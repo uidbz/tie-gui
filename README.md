@@ -11,18 +11,20 @@ It loads relatively fast on my computer, but zoom and reposition is unfortunatly
 # Build 
 Imgview is written in Go, and made using the excellent [fyne](https://fyne.io) GUI framework, which in turn depends on cgo - see details [here](https://developer.fyne.io/started)  
 When you have a C compiler and the dependencies of fyne installed, then compiling imgview is very straight forward.  
-`git clone https://git.sr.ht/~uid/imgview
+~~~sh
+git clone https://git.sr.ht/~uid/imgview
 cd imgview
 go build # -tags wayland # for building on wayland
 go install # to install to $GOPATH/bin - you can add this directory to your PATH to make it available system wide
 # or alternatively
 go install git.sr.ht/~uid/imgview
-`
+~~~
 # Run
-`imgview /path/to/img/or/dir/or/archive
+~~~sh
+imgview /path/to/img/or/dir/or/archive
 # optionally set a size of the window
 imgview /path/to/img/or/dir/or/archive 1024 768
-`
+~~~
 ## Hotkeys/controls
 
 ### In gallery mode
