@@ -285,6 +285,7 @@ func IsImage(file io.Reader) bool {
 
 func IsImageFromPath(path string) bool {
 	file, err := os.Open(path)
+	defer file.Close()
 	if err != nil {
 		fmt.Println("Error opening:", path)
 		return false

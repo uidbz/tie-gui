@@ -1,6 +1,8 @@
 package main
 
 import (
+	"sync"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 )
@@ -19,6 +21,7 @@ type ImageViewer struct {
 	defaultWidth   float32
 	defaultHeight  float32
 	hotkeys        []Hotkey
+	loadingDir     sync.WaitGroup
 }
 
 func (viewer *ImageViewer) LoadImageToCache(info ImageInfo) *ImageView {
@@ -37,6 +40,7 @@ func (viewer *ImageViewer) LoadImageToCache(info ImageInfo) *ImageView {
 }
 
 func (viewer *ImageViewer) NextImage() ImageInfo {
+	viewer.loadingDir.Wait()
 	nextImg := viewer.currentIndex + 1
 	if nextImg == len(viewer.imageFiles) {
 		nextImg = len(viewer.imageFiles) - 1
@@ -45,6 +49,7 @@ func (viewer *ImageViewer) NextImage() ImageInfo {
 }
 
 func (viewer *ImageViewer) PrevImage() ImageInfo {
+	viewer.loadingDir.Wait()
 	nextImg := viewer.currentIndex - 1
 	if nextImg < 0 {
 		nextImg = 0
@@ -119,7 +124,9 @@ func SetImage(viewer *ImageViewer, info ImageInfo) {
 	img.container = viewer.imageContainer
 	img.hotkeys = viewer.hotkeys
 	viewer.imageContainer.Objects = []fyne.CanvasObject{img}
-	viewer.currentIndex = info.order
+	if info.order != -1 {
+		viewer.currentIndex = info.order
+	}
 	viewer.window.SetContent(viewer.imageContainer)
 	viewer.window.Canvas().Focus(img)
 	viewer.imageContainer.Refresh()

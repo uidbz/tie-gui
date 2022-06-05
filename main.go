@@ -57,7 +57,7 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 	}
 }
 
-func ReadImageDir(absolutePath string) (imageFiles []ImageInfo) {
+func ReadImageDir(absolutePath string, selected *ImageInfo) (imageFiles []ImageInfo) {
 	dir, _ := os.ReadDir(absolutePath)
 	i := 0
 	for _, x := range dir {
@@ -66,10 +66,15 @@ func ReadImageDir(absolutePath string) (imageFiles []ImageInfo) {
 		}
 		fullpath := filepath.Join(absolutePath, x.Name())
 		if IsImageFromPath(fullpath) {
-			imageFiles = append(imageFiles, ImageInfo{
-				path:  fullpath,
-				order: i,
-			})
+			if selected != nil && selected.path == fullpath {
+				selected.order = i
+				imageFiles = append(imageFiles, *selected)
+			} else {
+				imageFiles = append(imageFiles, ImageInfo{
+					path:  fullpath,
+					order: i,
+				})
+			}
 			i++
 		}
 	}
@@ -117,7 +122,16 @@ func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("imgview")
 
-	var imageFiles []ImageInfo
+	viewer := &ImageViewer{
+		app:            myApp,
+		window:         myWindow,
+		imageContainer: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
+		cache:          make(map[string]*ImageView),
+		defaultWidth:   1024,
+		defaultHeight:  1024,
+	}
+
+	var selected *ImageInfo
 	loadingImage := false
 	directory := "."
 	absolutePath, inputType, err := ParseInput(os.Args)
@@ -130,34 +144,42 @@ func main() {
 
 	case inputIsDirectory:
 		directory = absolutePath
-		imageFiles = ReadImageDir(directory)
+		viewer.loadingDir.Add(1)
+		go func() {
+			viewer.imageFiles = ReadImageDir(directory, nil)
+			viewer.loadingDir.Done()
+		}()
 
 	case inputIsImage:
 		directory = filepath.Dir(absolutePath)
-		imageFiles = ReadImageDir(directory)
+		selected = &ImageInfo{
+			path:  absolutePath,
+			order: -1,
+		}
+		viewer.loadingDir.Add(1)
+		go func() {
+			viewer.imageFiles = ReadImageDir(directory, selected)
+			viewer.currentIndex = selected.order
+			viewer.loadingDir.Done()
+		}()
 		loadingImage = true
 
 	case inputIsArchive:
 		directory = absolutePath
-		imageFiles = ReadImageZip(directory)
+		viewer.imageFiles = ReadImageZip(directory)
 
 	case inputIsNothing: // Use current working directory
 		directory = absolutePath
-		imageFiles = ReadImageDir(directory)
+		viewer.loadingDir.Add(1)
+		go func() {
+			viewer.imageFiles = ReadImageDir(directory, nil)
+			viewer.loadingDir.Done()
+		}()
 
 	default:
 		panic("Input is not understood")
 	}
 
-	viewer := &ImageViewer{
-		app:            myApp,
-		window:         myWindow,
-		imageFiles:     imageFiles,
-		imageContainer: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
-		cache:          make(map[string]*ImageView),
-		defaultWidth:   1024,
-		defaultHeight:  1024,
-	}
 	viewer.InitHotkeys()
 
 	if len(os.Args) > 2 {
@@ -195,14 +217,12 @@ func main() {
 		}
 	})
 	if loadingImage {
-		for _, x := range imageFiles {
-			if x.path == absolutePath {
-				SetImage(viewer, x)
-				break
-			}
-		}
+		SetImage(viewer, *selected)
 	} else {
-		go viewer.layout.AddTiles(imageFiles)
+		go func() {
+			viewer.loadingDir.Wait()
+			viewer.layout.AddTiles(viewer.imageFiles)
+		}()
 		viewer.scroll = container.NewScroll(viewer.gallery)
 		myWindow.SetContent(viewer.scroll)
 	}
