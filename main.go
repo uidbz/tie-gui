@@ -57,7 +57,7 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 	}
 }
 
-func ReadImageDir(absolutePath string, selected *ImageInfo) (imageFiles []ImageInfo) {
+func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 	dir, _ := os.ReadDir(absolutePath)
 	i := 0
 	for _, x := range dir {
@@ -68,9 +68,10 @@ func ReadImageDir(absolutePath string, selected *ImageInfo) (imageFiles []ImageI
 		if IsImageFromPath(fullpath) {
 			if selected != nil && selected.path == fullpath {
 				selected.order = i
-				imageFiles = append(imageFiles, *selected)
+				viewer.currentIndex = i
+				viewer.imageFiles = append(viewer.imageFiles, *selected)
 			} else {
-				imageFiles = append(imageFiles, ImageInfo{
+				viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
 					path:  fullpath,
 					order: i,
 				})
@@ -79,7 +80,7 @@ func ReadImageDir(absolutePath string, selected *ImageInfo) (imageFiles []ImageI
 		}
 	}
 
-	return imageFiles
+	viewer.loadingDir.Done()
 }
 
 func ReadImageZip(zipFile string) (imageFiles []ImageInfo) {
@@ -136,6 +137,8 @@ func main() {
 	directory := "."
 	absolutePath, inputType, err := ParseInput(os.Args)
 
+	viewer.loadingDir.Add(1)
+
 	switch inputType {
 	case inputError:
 		dialog.ShowError(err, myWindow)
@@ -144,11 +147,7 @@ func main() {
 
 	case inputIsDirectory:
 		directory = absolutePath
-		viewer.loadingDir.Add(1)
-		go func() {
-			viewer.imageFiles = ReadImageDir(directory, nil)
-			viewer.loadingDir.Done()
-		}()
+		go viewer.ReadImageDir(directory, nil)
 
 	case inputIsImage:
 		directory = filepath.Dir(absolutePath)
@@ -156,25 +155,17 @@ func main() {
 			path:  absolutePath,
 			order: -1,
 		}
-		viewer.loadingDir.Add(1)
-		go func() {
-			viewer.imageFiles = ReadImageDir(directory, selected)
-			viewer.currentIndex = selected.order
-			viewer.loadingDir.Done()
-		}()
+		go viewer.ReadImageDir(directory, selected)
 		loadingImage = true
 
 	case inputIsArchive:
 		directory = absolutePath
 		viewer.imageFiles = ReadImageZip(directory)
+		viewer.loadingDir.Done()
 
 	case inputIsNothing: // Use current working directory
 		directory = absolutePath
-		viewer.loadingDir.Add(1)
-		go func() {
-			viewer.imageFiles = ReadImageDir(directory, nil)
-			viewer.loadingDir.Done()
-		}()
+		viewer.ReadImageDir(directory, nil)
 
 	default:
 		panic("Input is not understood")

@@ -91,6 +91,7 @@ func (viewer *ImageViewer) InitHotkeys() {
 		}},
 		Hotkey{fyne.KeyEscape, func() {
 			if viewer.scroll == nil {
+				viewer.loadingDir.Wait()
 				go viewer.layout.AddTiles(viewer.imageFiles)
 				viewer.scroll = container.NewScroll(viewer.gallery)
 			}
