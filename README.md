@@ -10,7 +10,7 @@ It loads relatively fast on my computer, but zoom and reposition is unfortunatly
 
 # Download precompiled binary
 * 2022-06-05 - Imgview for Linux X11: [Download](https://tfh1.com/da8f38e0757d90302fefc9e086a01b337b779bf6d8afa7cccfbe09fc0fd8e699/imgview)
-* 2022-06-05 - Imgview for Windows: [Download](https://tfh1.com/5c37548721b0de0a40467cb4e3fc2318d6d7047cb5080a730ba344228ea2e9a0/imgview)
+* 2022-06-05 - Imgview for Windows: [Download](https://tfh1.com/5c37548721b0de0a40467cb4e3fc2318d6d7047cb5080a730ba344228ea2e9a0/imgview.exe)
 
 Just download and remember to make it executable.
 
