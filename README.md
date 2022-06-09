@@ -14,6 +14,9 @@ It loads relatively fast on my computer, but zoom and reposition is unfortunatly
 
 Just download and remember to make it executable.
 
+# TODO (report bugs and wishes)
+[Here](https://todo.sr.ht/~uid/imgview)
+
 # Build 
 Imgview is written in Go, and made using the excellent [fyne](https://fyne.io) GUI framework, which in turn depends on cgo - see details [here](https://developer.fyne.io/started)  
 When you have a C compiler and the dependencies of fyne installed, then compiling imgview is very straight forward.  
@@ -34,6 +37,7 @@ imgview /path/to/img/or/dir/or/archive
 # optionally set a size of the window
 imgview /path/to/img/or/dir/or/archive 1024 768
 ~~~
+
 ## Default Key Bindings
 Change by copying config.toml to ~/.config/imgview/config.toml and then edit.
 
