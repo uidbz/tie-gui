@@ -34,7 +34,8 @@ imgview /path/to/img/or/dir/or/archive
 # optionally set a size of the window
 imgview /path/to/img/or/dir/or/archive 1024 768
 ~~~
-## Hotkeys/controls
+## Default Key Bindings
+Change by copying config.toml to ~/.config/imgview/config.toml and then edit.
 
 ### In gallery mode
 | Key | Action |

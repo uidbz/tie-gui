@@ -3,6 +3,7 @@ package main
 import (
 	"sort"
 	// "archive/zip"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,7 +18,11 @@ import (
 	"fyne.io/fyne/v2/dialog"
 
 	"fyne.io/fyne/v2/container"
+	"github.com/pelletier/go-toml/v2"
 )
+
+//go:embed config.toml
+var configData []byte
 
 const (
 	inputIsNothing = iota
@@ -119,9 +124,34 @@ func ReadImageZip(zipFile string) (imageFiles []ImageInfo) {
 	return imageFiles
 }
 
+func LoadConfig(window fyne.Window) (config Config) {
+	if err := toml.Unmarshal(configData, &config); err != nil {
+		panic("Bundled config is not valid TOML")
+	}
+
+	if dir, err := os.UserConfigDir(); err == nil {
+		imgviewConfig := filepath.Join(dir, "imgview", "config.toml")
+		if _, err2 := os.Stat(imgviewConfig); !os.IsNotExist(err2) {
+			configFile, errRead := os.ReadFile(imgviewConfig)
+			if errRead != nil {
+				dialog.ShowError(errors.New("Error reading config file: "+errRead.Error()), window)
+				window.ShowAndRun()
+			}
+			if err3 := toml.Unmarshal(configFile, &config); err3 != nil {
+				dialog.ShowError(errors.New("Config file error: "+err3.Error()+"\nin: "+imgviewConfig), window)
+				window.ShowAndRun()
+			}
+		}
+	}
+
+	return config
+}
+
 func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("imgview")
+
+	config := LoadConfig(myWindow)
 
 	viewer := &ImageViewer{
 		app:            myApp,
@@ -130,6 +160,7 @@ func main() {
 		cache:          make(map[string]*ImageView),
 		defaultWidth:   1024,
 		defaultHeight:  1024,
+		config:         config,
 	}
 
 	var selected *ImageInfo
@@ -171,8 +202,6 @@ func main() {
 		panic("Input is not understood")
 	}
 
-	viewer.InitHotkeys()
-
 	if len(os.Args) > 2 {
 		if f, err := strconv.ParseFloat(os.Args[2], 32); err == nil {
 			viewer.defaultWidth = float32(f)
@@ -189,22 +218,18 @@ func main() {
 		SetImage(viewer, t.info)
 	}
 
-	viewer.layout = NewTileLayout(300, 5, 8, tileOnclick)
+	viewer.layout = NewTileLayout(config, myWindow, myApp, viewer, 300, 5, 8, tileOnclick)
 	empty := make([]fyne.CanvasObject, 0)
 	viewer.gallery = container.New(viewer.layout, empty...)
 	viewer.layout.grid = viewer.gallery
+	viewer.layout.InitHotkeys()
+	viewer.InitHotkeys()
 
 	myWindow.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
-		if key.Name == fyne.KeyQ || key.Name == fyne.KeyEscape {
-			myApp.Quit()
-		}
-		if key.Name == fyne.KeyDown || key.Name == fyne.KeyJ {
-			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y + 300
-			viewer.scroll.Refresh()
-		}
-		if key.Name == fyne.KeyUp || key.Name == fyne.KeyK {
-			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y - 300
-			viewer.scroll.Refresh()
+		for _, x := range viewer.layout.hotkeys {
+			if key.Name == x.Name {
+				x.Functon()
+			}
 		}
 	})
 	if loadingImage {

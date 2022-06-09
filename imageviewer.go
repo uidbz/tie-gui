@@ -22,6 +22,30 @@ type ImageViewer struct {
 	defaultHeight  float32
 	hotkeys        []Hotkey
 	loadingDir     sync.WaitGroup
+	config         Config
+}
+
+type Config struct {
+	Image   ImageConfig
+	Gallery GalleryConfig
+}
+
+type ImageConfig struct {
+	NextImage     []fyne.KeyName
+	PreviousImage []fyne.KeyName
+	RotateLeft    []fyne.KeyName
+	RotateRight   []fyne.KeyName
+	OriginalSize  []fyne.KeyName
+	FillWindow    []fyne.KeyName
+	Escape        []fyne.KeyName
+	Quit          []fyne.KeyName
+	FullScreen    []fyne.KeyName
+}
+
+type GalleryConfig struct {
+	Quit       []fyne.KeyName
+	ScrollDown []fyne.KeyName
+	ScrollUp   []fyne.KeyName
 }
 
 func (viewer *ImageViewer) LoadImageToCache(info ImageInfo) *ImageView {
@@ -58,38 +82,40 @@ func (viewer *ImageViewer) PrevImage() ImageInfo {
 }
 
 func (viewer *ImageViewer) InitHotkeys() {
-	viewer.hotkeys = []Hotkey{
-		Hotkey{fyne.KeyRight, func() {
+	viewer.hotkeys = []Hotkey{}
+	bindings := viewer.config.Image
+
+	add := func(h Hotkey) {
+		viewer.hotkeys = append(viewer.hotkeys, h)
+	}
+
+	for _, x := range bindings.NextImage {
+		add(Hotkey{x, func() {
 			SetImage(viewer, viewer.NextImage())
-		}},
-		Hotkey{fyne.KeyJ, func() {
-			SetImage(viewer, viewer.NextImage())
-		}},
-		Hotkey{fyne.KeySpace, func() {
-			SetImage(viewer, viewer.NextImage())
-		}},
-		Hotkey{fyne.KeyLeft, func() {
+		}})
+	}
+	for _, x := range bindings.PreviousImage {
+		add(Hotkey{x, func() {
 			SetImage(viewer, viewer.PrevImage())
-		}},
-		Hotkey{fyne.KeyK, func() {
-			SetImage(viewer, viewer.PrevImage())
-		}},
-		Hotkey{fyne.KeyUp, func() {
+		}})
+	}
+	for _, x := range bindings.RotateLeft {
+		add(Hotkey{x, func() {
 			viewer.currentImage.RotateLeft()
-		}},
-		Hotkey{fyne.KeyH, func() {
-			viewer.currentImage.RotateLeft()
-		}},
-		Hotkey{fyne.KeyDown, func() {
+		}})
+	}
+	for _, x := range bindings.RotateRight {
+		add(Hotkey{x, func() {
 			viewer.currentImage.RotateRight()
-		}},
-		Hotkey{fyne.KeyL, func() {
-			viewer.currentImage.RotateRight()
-		}},
-		Hotkey{fyne.KeyS, func() {
+		}})
+	}
+	for _, x := range bindings.OriginalSize {
+		add(Hotkey{x, func() {
 			viewer.currentImage.OriginalSize()
-		}},
-		Hotkey{fyne.KeyEscape, func() {
+		}})
+	}
+	for _, x := range bindings.Escape {
+		add(Hotkey{x, func() {
 			if viewer.scroll == nil {
 				viewer.loadingDir.Wait()
 				go viewer.layout.AddTiles(viewer.imageFiles)
@@ -97,22 +123,27 @@ func (viewer *ImageViewer) InitHotkeys() {
 			}
 			viewer.window.SetTitle("imgview")
 			viewer.window.SetContent(viewer.scroll)
-		}},
-		Hotkey{fyne.KeyQ, func() {
+		}})
+	}
+	for _, x := range bindings.Quit {
+		add(Hotkey{x, func() {
 			viewer.app.Quit()
-		}},
-		Hotkey{fyne.KeyX, func() {
+		}})
+	}
+	for _, x := range bindings.FillWindow {
+		add(Hotkey{x, func() {
 			viewer.currentImage.fillWindow = true
 			viewer.imageContainer.Refresh()
-		}},
-		Hotkey{fyne.KeyF, func() {
+		}})
+	}
+	for _, x := range bindings.FullScreen {
+		add(Hotkey{x, func() {
 			viewer.currentImage.fillWindow = false
 			viewer.window.SetFullScreen(!viewer.window.FullScreen())
 			viewer.currentImage.fillWindow = true
 			viewer.imageContainer.Refresh()
-		}},
+		}})
 	}
-
 }
 
 func SetImage(viewer *ImageViewer, info ImageInfo) {

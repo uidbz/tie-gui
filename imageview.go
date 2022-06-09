@@ -212,7 +212,7 @@ func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 		iv.dragStart = true
 		iv.fillWindow = false
 	}
-	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
+	// iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
 	iv.pos = drag.AbsolutePosition.Subtract(iv.startPos)
 
 	iv.container.Refresh()
@@ -247,7 +247,7 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 		return
 	}
 	iv.fillWindow = false
-	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
+	// iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
 	var zoom float32
 	if ev.Scrolled.DY > 0 {
 		zoom = 1 + (iv.zoom / 10)

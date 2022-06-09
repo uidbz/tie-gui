@@ -30,6 +30,11 @@ type TileLayout struct {
 	imagesToLoad chan ImageInfo
 	tabFn        func(t *Tile)
 	grid         *fyne.Container
+	hotkeys      []Hotkey
+	config       Config
+	window       fyne.Window
+	app          fyne.App
+	viewer       *ImageViewer
 }
 
 type Tile struct {
@@ -49,7 +54,7 @@ type ImageInfo struct {
 	order          int
 }
 
-func NewTileLayout(tileWidth float32, gap float32, workers int, tabFn func(t *Tile)) *TileLayout {
+func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *ImageViewer, tileWidth float32, gap float32, workers int, tabFn func(t *Tile)) *TileLayout {
 	batchSize := 1024
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan ImageInfo, batchSize)
@@ -61,6 +66,10 @@ func NewTileLayout(tileWidth float32, gap float32, workers int, tabFn func(t *Ti
 		minHeight:    0,
 		imagesToLoad: imagesToLoad,
 		tabFn:        tabFn,
+		config:       config,
+		window:       window,
+		app:          app,
+		viewer:       viewer,
 	}
 
 	for i := 0; i < workers; i++ {
@@ -150,11 +159,6 @@ func (layout *TileLayout) imageLoader() {
 			fmt.Println(err)
 			continue
 		}
-		// imgReader, err := os.Open(tc.path)
-		// if err != nil {
-		// 	defer fmt.Println("Path:", tc.path)
-		// 	panic(err)
-		// }
 		tile := layout.NewImageTile(reader, tc, layout.tabFn)
 		layout.tiles[tc.order] = tile
 		layout.grid.Objects[tc.order] = tile
@@ -210,6 +214,33 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context ImageInf
 
 func (t *Tile) Tapped(_ *fyne.PointEvent) {
 	t.tabFn(t)
+}
+
+func (layout *TileLayout) InitHotkeys() {
+	layout.hotkeys = []Hotkey{}
+	bindings := layout.config.Gallery
+
+	add := func(h Hotkey) {
+		layout.hotkeys = append(layout.hotkeys, h)
+	}
+
+	for _, x := range bindings.Quit {
+		add(Hotkey{x, func() {
+			layout.app.Quit()
+		}})
+	}
+	for _, x := range bindings.ScrollDown {
+		add(Hotkey{x, func() {
+			layout.viewer.scroll.Offset.Y = layout.viewer.scroll.Offset.Y + 300
+			layout.viewer.scroll.Refresh()
+		}})
+	}
+	for _, x := range bindings.ScrollUp {
+		add(Hotkey{x, func() {
+			layout.viewer.scroll.Offset.Y = layout.viewer.scroll.Offset.Y - 300
+			layout.viewer.scroll.Refresh()
+		}})
+	}
 }
 
 func (ta *Tile) CreateRenderer() fyne.WidgetRenderer {
