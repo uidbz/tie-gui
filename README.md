@@ -39,11 +39,14 @@ imgview /path/to/img/or/dir/or/archive 1024 768
 ~~~
 
 ## Default Key Bindings
-Change by copying config.toml to ~/.config/imgview/config.toml and then edit.
+Change by copying config.toml to:
+Linux: ~/.config/imgview/config.toml
+Windows: %AppData%\imgview\config.toml 
+and then edit to your liking :-)
 
 ### In gallery mode
 | Key | Action |
-| ----------- | ----------- |
+| --------- | --------------------- |
 | Q | Quit |
 | Esc | Quit |
 | Down/J | Scroll down |
@@ -51,18 +54,19 @@ Change by copying config.toml to ~/.config/imgview/config.toml and then edit.
 
 ### In single picture mode
 | Key | Action |
-| ----------- | ----------- |
+| --------- | --------------------- |
 | Esc | Go back to gallery |
-| Right/J/Space | Next picture | 
+| Right/J | Next picture | 
 | Left/K | Previous picture | 
 | Up/H | Rotate left | 
 | Down/L | Rotate right | 
 | X | Fit to window |
+| B | Switch filtering mode |
 | S | Zoom to original size | 
 | F | Fullscreen (fails on wayland) | 
 
 | Mouse | Action |
-| ----------- | ----------- |
+| --------- | --------------------- |
 | Scroll down| Zoom in | 
 | Scroll up | Zoom out | 
 | Drag | Reposition image | 
