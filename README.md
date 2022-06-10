@@ -39,9 +39,9 @@ imgview /path/to/img/or/dir/or/archive 1024 768
 ~~~
 
 ## Default Key Bindings
-Change by copying config.toml to:
-Linux: ~/.config/imgview/config.toml
-Windows: %AppData%\imgview\config.toml 
+Change by copying config.toml to:  
+Linux: ~/.config/imgview/config.toml  
+Windows: %AppData%\imgview\config.toml   
 and then edit to your liking :-)
 
 ### In gallery mode
