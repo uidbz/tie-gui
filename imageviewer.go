@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 )
 
@@ -18,8 +19,6 @@ type ImageViewer struct {
 	currentImage   *ImageView
 	cache          map[string]*ImageView
 	scroll         *container.Scroll
-	defaultWidth   float32
-	defaultHeight  float32
 	hotkeys        []Hotkey
 	loadingDir     sync.WaitGroup
 	config         Config
@@ -28,6 +27,15 @@ type ImageViewer struct {
 type Config struct {
 	Image   ImageConfig
 	Gallery GalleryConfig
+	General GeneralConfig
+}
+
+type GeneralConfig struct {
+	DefaultWidth  float32
+	DefaultHeight float32
+	TileWidth     float32
+	TileGap       float32
+	Workers       int
 }
 
 type ImageConfig struct {
@@ -37,7 +45,8 @@ type ImageConfig struct {
 	RotateRight   []fyne.KeyName
 	OriginalSize  []fyne.KeyName
 	FillWindow    []fyne.KeyName
-	Escape        []fyne.KeyName
+	Filtering     []fyne.KeyName
+	ShowGallery   []fyne.KeyName
 	Quit          []fyne.KeyName
 	FullScreen    []fyne.KeyName
 }
@@ -114,7 +123,7 @@ func (viewer *ImageViewer) InitHotkeys() {
 			viewer.currentImage.OriginalSize()
 		}})
 	}
-	for _, x := range bindings.Escape {
+	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, func() {
 			if viewer.scroll == nil {
 				viewer.loadingDir.Wait()
@@ -133,6 +142,16 @@ func (viewer *ImageViewer) InitHotkeys() {
 	for _, x := range bindings.FillWindow {
 		add(Hotkey{x, func() {
 			viewer.currentImage.fillWindow = true
+			viewer.imageContainer.Refresh()
+		}})
+	}
+	for _, x := range bindings.Filtering {
+		add(Hotkey{x, func() {
+			if viewer.currentImage.fyneImage.ScaleMode == canvas.ImageScaleFastest {
+				viewer.currentImage.fyneImage.ScaleMode = canvas.ImageScalePixels
+			} else {
+				viewer.currentImage.fyneImage.ScaleMode = canvas.ImageScaleFastest
+			}
 			viewer.imageContainer.Refresh()
 		}})
 	}

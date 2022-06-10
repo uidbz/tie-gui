@@ -5,11 +5,19 @@ RotateLeft = ['Up', 'H']
 RotateRight = ['Down', 'L']
 OriginalSize = ['S']
 FillWindow = ['X']
-Escape = ['Escape']
+Filtering = ['B']
+ShowGallery = ['Escape'] 
 Quit = ['Q']
 FullScreen = ['F']
 
 [Gallery]
-Quit = ['Q']
+Quit = ['Q', 'Escape']
 ScrollDown = ['Down', 'J']
 ScrollUp = ['Up', 'K']
+
+[General]
+DefaultWidth = 1024.0
+DefaultHeight = 1024.0
+TileWidth = 300.0
+TileGap = 5.0
+Workers = 8

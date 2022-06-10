@@ -24,8 +24,6 @@ var loading []byte
 type TileLayout struct {
 	tiles        []*Tile
 	wg           sync.WaitGroup
-	tileWidth    float32
-	gap          float32
 	minHeight    float32
 	imagesToLoad chan ImageInfo
 	tabFn        func(t *Tile)
@@ -54,15 +52,13 @@ type ImageInfo struct {
 	order          int
 }
 
-func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *ImageViewer, tileWidth float32, gap float32, workers int, tabFn func(t *Tile)) *TileLayout {
+func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *ImageViewer, tabFn func(t *Tile)) *TileLayout {
 	batchSize := 1024
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan ImageInfo, batchSize)
 	layout := &TileLayout{
 		tiles:        tiles,
 		wg:           sync.WaitGroup{},
-		tileWidth:    tileWidth,
-		gap:          gap,
 		minHeight:    0,
 		imagesToLoad: imagesToLoad,
 		tabFn:        tabFn,
@@ -72,7 +68,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Imag
 		viewer:       viewer,
 	}
 
-	for i := 0; i < workers; i++ {
+	for i := 0; i < config.General.Workers; i++ {
 		go layout.imageLoader()
 	}
 
@@ -90,30 +86,32 @@ func (layout *TileLayout) AddTiles(imageFiles []ImageInfo) {
 	}
 }
 
-func (d *TileLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	w := float32(d.tileWidth + d.gap)
-	return fyne.NewSize(w, d.minHeight)
+func (layout *TileLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	w := float32(layout.config.General.TileWidth + layout.config.General.TileGap)
+	return fyne.NewSize(w, layout.minHeight)
 }
 
-func (d *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size) {
-	tilesPerRow := int(containerSize.Width / d.tileWidth)
+func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size) {
+	tileWidth := layout.config.General.TileWidth
+	gap := layout.config.General.TileGap
+	tilesPerRow := int(containerSize.Width / tileWidth)
 	bottom := make([]float32, tilesPerRow+1)
 
 	peakLandscape := func(i int) bool {
-		if i < len(d.tiles)-1 {
-			return d.tiles[i+1].landscape
+		if i < len(layout.tiles)-1 {
+			return layout.tiles[i+1].landscape
 		}
 		return false
 	}
-	if containerSize.Width < d.tileWidth+d.gap {
+	if containerSize.Width < tileWidth+gap {
 		return
 	}
 	for i := 0; i < len(objects); {
-		prevLeft := float32(int(containerSize.Width)%int(d.tileWidth)) / 3
+		prevLeft := float32(int(containerSize.Width)%int(tileWidth)) / 3
 		for j := 0; j < tilesPerRow && i < len(objects); j++ {
 			o := objects[i]
-			tile := d.tiles[i]
-			newWidth := d.tileWidth
+			tile := layout.tiles[i]
+			newWidth := tileWidth
 			scale := newWidth / tile.width
 			newHeight := tile.height * scale
 			// fmt.Println("Scale portrait:", scale)
@@ -123,7 +121,7 @@ func (d *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size
 			}
 
 			if tile.landscape {
-				newWidth = newWidth*2 + d.gap
+				newWidth = newWidth*2 + gap
 				scale = newWidth / tile.width
 				newHeight = tile.height * scale
 				// fmt.Println("Scale landscape:", scale)
@@ -132,13 +130,13 @@ func (d *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size
 			o.Resize(fyne.NewSize(newWidth, newHeight))
 			o.Move(fyne.NewPos(prevLeft, top))
 
-			bottom[j] = top + newHeight + d.gap
+			bottom[j] = top + newHeight + gap
 			if tile.landscape && j < len(bottom) {
 				j++
 				bottom[j] = bottom[j-1]
 			}
-			prevLeft = prevLeft + newWidth + d.gap
-			d.minHeight = bottom[j]
+			prevLeft = prevLeft + newWidth + gap
+			layout.minHeight = bottom[j]
 
 			if tilesPerRow-j == 2 && peakLandscape(i) {
 				j++
@@ -185,9 +183,9 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context ImageInf
 		decoded2, _, _ := Decode(na)
 		decoded = decoded2
 	}
-	tileWidth := int(layout.tileWidth)
+	tileWidth := int(layout.config.General.TileWidth)
 	if decoded.Bounds().Max.X > decoded.Bounds().Max.Y {
-		tileWidth = int(layout.tileWidth * 2)
+		tileWidth = int(layout.config.General.TileWidth * 2)
 	}
 	var img *canvas.Image
 	if tileWidth > decoded.Bounds().Max.X {

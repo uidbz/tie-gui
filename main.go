@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/mholt/archiver/v4"
 
@@ -126,7 +125,7 @@ func ReadImageZip(zipFile string) (imageFiles []ImageInfo) {
 
 func LoadConfig(window fyne.Window) (config Config) {
 	if err := toml.Unmarshal(configData, &config); err != nil {
-		panic("Bundled config is not valid TOML")
+		panic("Bundled config is not valid TOML: " + err.Error())
 	}
 
 	if dir, err := os.UserConfigDir(); err == nil {
@@ -158,8 +157,6 @@ func main() {
 		window:         myWindow,
 		imageContainer: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
 		cache:          make(map[string]*ImageView),
-		defaultWidth:   1024,
-		defaultHeight:  1024,
 		config:         config,
 	}
 
@@ -202,23 +199,11 @@ func main() {
 		panic("Input is not understood")
 	}
 
-	if len(os.Args) > 2 {
-		if f, err := strconv.ParseFloat(os.Args[2], 32); err == nil {
-			viewer.defaultWidth = float32(f)
-			viewer.defaultHeight = float32(f)
-		}
-		if len(os.Args) > 3 {
-			if f, err := strconv.ParseFloat(os.Args[3], 32); err == nil {
-				viewer.defaultHeight = float32(f)
-			}
-		}
-	}
-
 	tileOnclick := func(t *Tile) {
 		SetImage(viewer, t.info)
 	}
 
-	viewer.layout = NewTileLayout(config, myWindow, myApp, viewer, 300, 5, 8, tileOnclick)
+	viewer.layout = NewTileLayout(config, myWindow, myApp, viewer, tileOnclick)
 	empty := make([]fyne.CanvasObject, 0)
 	viewer.gallery = container.New(viewer.layout, empty...)
 	viewer.layout.grid = viewer.gallery
@@ -242,7 +227,7 @@ func main() {
 		viewer.scroll = container.NewScroll(viewer.gallery)
 		myWindow.SetContent(viewer.scroll)
 	}
-	myWindow.Resize(fyne.NewSize(viewer.defaultWidth, viewer.defaultHeight))
+	myWindow.Resize(fyne.NewSize(config.General.DefaultWidth, config.General.DefaultHeight))
 
 	myWindow.ShowAndRun()
 }
