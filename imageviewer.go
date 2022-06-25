@@ -1,11 +1,15 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 )
 
 type ImageViewer struct {
@@ -22,6 +26,10 @@ type ImageViewer struct {
 	hotkeys        []Hotkey
 	loadingDir     sync.WaitGroup
 	config         Config
+	object         fyne.CanvasObject
+	bottomBar      *fyne.Container
+	currentPage    int
+	maxPages       int
 }
 
 type Config struct {
@@ -36,6 +44,7 @@ type GeneralConfig struct {
 	TileWidth     float32
 	TileGap       float32
 	Workers       int
+	ImagesPerPage int
 }
 
 type ImageConfig struct {
@@ -55,6 +64,63 @@ type GalleryConfig struct {
 	Quit       []fyne.KeyName
 	ScrollDown []fyne.KeyName
 	ScrollUp   []fyne.KeyName
+}
+
+func (viewer *ImageViewer) Init() {
+	tileOnclick := func(t *Tile) {
+		SetImage(viewer, t.info)
+	}
+	viewer.layout = NewTileLayout(viewer.config, viewer.window, viewer.app, viewer, tileOnclick)
+	empty := make([]fyne.CanvasObject, 0)
+	viewer.gallery = container.New(viewer.layout, empty...)
+	viewer.layout.grid = viewer.gallery
+	viewer.layout.InitHotkeys()
+	viewer.InitHotkeys()
+}
+
+func (viewer *ImageViewer) Load() {
+	go func() {
+		viewer.loadingDir.Wait()
+		viewer.layout.PlaceTiles(viewer.imageFiles)
+	}()
+	prevPage := widget.NewHyperlink("Prev", nil)
+	prevPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage - 1) }
+	nextPage := widget.NewHyperlink("Next", nil)
+	nextPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage + 1) }
+
+	viewer.bottomBar = container.NewHBox(prevPage, nextPage)
+	imagesPerPage := viewer.config.General.ImagesPerPage
+	viewer.maxPages = len(viewer.imageFiles)/imagesPerPage + 1
+	for i := 0; i < viewer.maxPages; i++ {
+		i := i
+		start := i * imagesPerPage
+		page := widget.NewHyperlink(strconv.Itoa(start)+"-"+strconv.Itoa(start+imagesPerPage-1), nil)
+		page.OnTapped = func() {
+			viewer.ChangePage(i)
+		}
+		if i == viewer.currentPage {
+			page.TextStyle.Bold = true
+		}
+		viewer.bottomBar.AddObject(page)
+	}
+	viewer.scroll = container.NewScroll(viewer.gallery)
+	viewer.object = container.NewBorder(nil, viewer.bottomBar, nil, nil, viewer.scroll)
+}
+
+func (viewer *ImageViewer) ChangePage(page int) {
+	if page < 0 || page > viewer.maxPages-1 {
+		return
+	}
+	// empty channel before changing page, then wait for workers to finish
+	for len(viewer.layout.imagesToLoad) > 0 {
+		<-viewer.layout.imagesToLoad
+	}
+	viewer.layout.currentlyLoading.Wait()
+
+	viewer.currentPage = page
+	viewer.layout.offset = page * viewer.config.General.ImagesPerPage
+	viewer.Load()
+	viewer.window.SetContent(viewer.object)
 }
 
 func (viewer *ImageViewer) LoadImageToCache(info ImageInfo) *ImageView {
@@ -126,12 +192,10 @@ func (viewer *ImageViewer) InitHotkeys() {
 	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, func() {
 			if viewer.scroll == nil {
-				viewer.loadingDir.Wait()
-				go viewer.layout.AddTiles(viewer.imageFiles)
-				viewer.scroll = container.NewScroll(viewer.gallery)
+				viewer.Load()
 			}
 			viewer.window.SetTitle("imgview")
-			viewer.window.SetContent(viewer.scroll)
+			viewer.window.SetContent(viewer.object)
 		}})
 	}
 	for _, x := range bindings.Quit {
@@ -182,4 +246,30 @@ func SetImage(viewer *ImageViewer, info ImageInfo) {
 	viewer.window.Canvas().Focus(img)
 	viewer.imageContainer.Refresh()
 	img.changeFn()
+}
+
+func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
+	dir, _ := os.ReadDir(absolutePath)
+	i := 0
+	for _, x := range dir {
+		if x.IsDir() {
+			continue
+		}
+		fullpath := filepath.Join(absolutePath, x.Name())
+		if IsImageFromPath(fullpath) {
+			if selected != nil && selected.path == fullpath {
+				selected.order = i
+				viewer.currentIndex = i
+				viewer.imageFiles = append(viewer.imageFiles, *selected)
+			} else {
+				viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
+					path:  fullpath,
+					order: i,
+				})
+			}
+			i++
+		}
+	}
+
+	viewer.loadingDir.Done()
 }

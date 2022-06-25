@@ -22,17 +22,19 @@ import (
 var loading []byte
 
 type TileLayout struct {
-	tiles        []*Tile
-	wg           sync.WaitGroup
-	minHeight    float32
-	imagesToLoad chan ImageInfo
-	tabFn        func(t *Tile)
-	grid         *fyne.Container
-	hotkeys      []Hotkey
-	config       Config
-	window       fyne.Window
-	app          fyne.App
-	viewer       *ImageViewer
+	tiles            []*Tile
+	wg               sync.WaitGroup
+	minHeight        float32
+	imagesToLoad     chan ImageInfo
+	tabFn            func(t *Tile)
+	grid             *fyne.Container
+	hotkeys          []Hotkey
+	config           Config
+	window           fyne.Window
+	app              fyne.App
+	viewer           *ImageViewer
+	offset           int
+	currentlyLoading sync.WaitGroup
 }
 
 type Tile struct {
@@ -75,14 +77,18 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Imag
 	return layout
 }
 
-func (layout *TileLayout) AddTiles(imageFiles []ImageInfo) {
+func (layout *TileLayout) PlaceTiles(imageFiles []ImageInfo) {
 	loadingImg := bytes.NewReader(loading)
-	for _, x := range imageFiles {
-		t := x
-		tile := layout.NewImageTile(loadingImg, t, nil)
+	end := layout.offset + layout.config.General.ImagesPerPage
+	if end > len(imageFiles) {
+		end = len(imageFiles)
+	}
+	layout.grid.Objects = make([]fyne.CanvasObject, 0)
+	for i := layout.offset; i < end; i++ {
+		tile := layout.NewImageTile(loadingImg, imageFiles[i], nil)
 		layout.tiles = append(layout.tiles, tile)
 		layout.grid.AddObject(tile)
-		layout.imagesToLoad <- t
+		layout.imagesToLoad <- imageFiles[i]
 	}
 }
 
@@ -152,14 +158,16 @@ func (layout *TileLayout) imageLoader() {
 
 	first := true
 	for tc := range layout.imagesToLoad {
+		layout.currentlyLoading.Add(1)
+
 		reader, err := tc.GetReader()
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
 		tile := layout.NewImageTile(reader, tc, layout.tabFn)
-		layout.tiles[tc.order] = tile
-		layout.grid.Objects[tc.order] = tile
+		layout.tiles[tc.order-layout.offset] = tile
+		layout.grid.Objects[tc.order-layout.offset] = tile
 		if first {
 			go func() {
 				<-refreshTimer.C
@@ -172,6 +180,7 @@ func (layout *TileLayout) imageLoader() {
 		} else {
 			refreshTimer.Reset(500 * time.Millisecond)
 		}
+		layout.currentlyLoading.Done()
 	}
 }
 

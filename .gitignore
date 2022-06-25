@@ -1,4 +1,5 @@
 *.kate-swp
 *.swp
 fyne-cross/*
+package/*
 imgview

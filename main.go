@@ -23,6 +23,9 @@ import (
 //go:embed config.toml
 var configData []byte
 
+//go:embed Icon.png
+var icon []byte
+
 const (
 	inputIsNothing = iota
 	inputError
@@ -59,32 +62,6 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 		absolutePath = "."
 		return absolutePath, inputIsNothing, nil
 	}
-}
-
-func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
-	dir, _ := os.ReadDir(absolutePath)
-	i := 0
-	for _, x := range dir {
-		if x.IsDir() {
-			continue
-		}
-		fullpath := filepath.Join(absolutePath, x.Name())
-		if IsImageFromPath(fullpath) {
-			if selected != nil && selected.path == fullpath {
-				selected.order = i
-				viewer.currentIndex = i
-				viewer.imageFiles = append(viewer.imageFiles, *selected)
-			} else {
-				viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
-					path:  fullpath,
-					order: i,
-				})
-			}
-			i++
-		}
-	}
-
-	viewer.loadingDir.Done()
 }
 
 func ReadImageZip(zipFile string) (imageFiles []ImageInfo) {
@@ -148,6 +125,7 @@ func LoadConfig(window fyne.Window) (config Config) {
 
 func main() {
 	myApp := app.New()
+	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
 	myWindow := myApp.NewWindow("imgview")
 
 	config := LoadConfig(myWindow)
@@ -199,16 +177,7 @@ func main() {
 		panic("Input is not understood")
 	}
 
-	tileOnclick := func(t *Tile) {
-		SetImage(viewer, t.info)
-	}
-
-	viewer.layout = NewTileLayout(config, myWindow, myApp, viewer, tileOnclick)
-	empty := make([]fyne.CanvasObject, 0)
-	viewer.gallery = container.New(viewer.layout, empty...)
-	viewer.layout.grid = viewer.gallery
-	viewer.layout.InitHotkeys()
-	viewer.InitHotkeys()
+	viewer.Init()
 
 	myWindow.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
 		for _, x := range viewer.layout.hotkeys {
@@ -220,12 +189,8 @@ func main() {
 	if loadingImage {
 		SetImage(viewer, *selected)
 	} else {
-		go func() {
-			viewer.loadingDir.Wait()
-			viewer.layout.AddTiles(viewer.imageFiles)
-		}()
-		viewer.scroll = container.NewScroll(viewer.gallery)
-		myWindow.SetContent(viewer.scroll)
+		viewer.Load()
+		myWindow.SetContent(viewer.object)
 	}
 	myWindow.Resize(fyne.NewSize(config.General.DefaultWidth, config.General.DefaultHeight))
 
