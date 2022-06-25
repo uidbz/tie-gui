@@ -1,16 +1,10 @@
 package main
 
 import (
-	"sort"
-	// "archive/zip"
 	_ "embed"
 	"errors"
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-
-	"github.com/mholt/archiver/v4"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -62,42 +56,6 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 		absolutePath = "."
 		return absolutePath, inputIsNothing, nil
 	}
-}
-
-func ReadImageZip(zipFile string) (imageFiles []ImageInfo) {
-	fsys, err := archiver.FileSystem(zipFile)
-	if err != nil {
-		fmt.Println(err)
-		return []ImageInfo{}
-	}
-	i := 0
-	fs.WalkDir(fsys, ".", func(path string, x fs.DirEntry, err error) error {
-		if x.IsDir() {
-			return nil
-		}
-		file, err := fsys.Open(path)
-		if err != nil {
-			fmt.Println("Error opening:", x.Name())
-			return nil
-		}
-		if IsImage(file) {
-			imageFiles = append(imageFiles, ImageInfo{
-				inputIsArchive: true,
-				path:           path,
-				archiveFile:    fsys,
-				order:          i,
-			})
-			i++
-		}
-		return nil
-	})
-	sort.Slice(imageFiles, func(i, j int) bool {
-		return imageFiles[i].path < imageFiles[j].path
-	})
-	for i, _ := range imageFiles {
-		imageFiles[i].order = i
-	}
-	return imageFiles
 }
 
 func LoadConfig(window fyne.Window) (config Config) {
@@ -166,8 +124,7 @@ func main() {
 
 	case inputIsArchive:
 		directory = absolutePath
-		viewer.imageFiles = ReadImageZip(directory)
-		viewer.loadingDir.Done()
+		go viewer.ReadImageArchive(directory)
 
 	case inputIsNothing: // Use current working directory
 		directory = absolutePath

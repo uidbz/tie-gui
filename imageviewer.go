@@ -1,10 +1,15 @@
 package main
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
+
+	"github.com/mholt/archiver/v4"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -249,6 +254,8 @@ func SetImage(viewer *ImageViewer, info ImageInfo) {
 }
 
 func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
+	defer viewer.loadingDir.Done()
+
 	dir, _ := os.ReadDir(absolutePath)
 	i := 0
 	for _, x := range dir {
@@ -270,6 +277,41 @@ func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo
 			i++
 		}
 	}
+}
 
-	viewer.loadingDir.Done()
+func (viewer *ImageViewer) ReadImageArchive(zipFile string) {
+	defer viewer.loadingDir.Done()
+
+	fsys, err := archiver.FileSystem(zipFile)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	i := 0
+	fs.WalkDir(fsys, ".", func(path string, x fs.DirEntry, err error) error {
+		if x.IsDir() {
+			return nil
+		}
+		file, err := fsys.Open(path)
+		if err != nil {
+			fmt.Println("Error opening:", x.Name())
+			return nil
+		}
+		if IsImage(file) {
+			viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
+				inputIsArchive: true,
+				path:           path,
+				archiveFile:    fsys,
+				order:          i,
+			})
+			i++
+		}
+		return nil
+	})
+	sort.Slice(viewer.imageFiles, func(i, j int) bool {
+		return viewer.imageFiles[i].path < viewer.imageFiles[j].path
+	})
+	for i, _ := range viewer.imageFiles {
+		viewer.imageFiles[i].order = i
+	}
 }
