@@ -84,8 +84,8 @@ func (viewer *ImageViewer) Init() {
 }
 
 func (viewer *ImageViewer) Load() {
+	viewer.loadingDir.Wait()
 	go func() {
-		viewer.loadingDir.Wait()
 		viewer.layout.PlaceTiles(viewer.imageFiles)
 	}()
 	prevPage := widget.NewHyperlink("Prev", nil)
