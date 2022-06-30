@@ -9,8 +9,8 @@ It can read most common archive formats - such as zip, rar, tar, cbr, etc.
 It loads relatively fast on my computer, but zoom and reposition is unfortunatly rather slow on high resolution pictures :-/  
 
 ## Download precompiled binary
-* 2022-06-10 - Imgview for Linux X11: [Download](https://tfh1.com/b6cf2666b0cccdfa029cdbc0a1ac4415fe1a9dd4fc64fd40d2942eac73a51733/imgview)
-* 2022-06-10 - Imgview for Windows: [Download](https://tfh1.com/a5e3ab4a84b2b83fa918fc6d6979acd5e90f7e6a91c77f568432d2e97f226c8e/imgview.exe) (Windows is untested)
+* 2022-06-30 - Imgview for Linux X11: [Download](https://tfh1.com/c9038d72d514ee3b936550bfd75d37d7b9dcb212024bb897afc038b4fc0553f1/imgview)
+* 2022-06-30 - Imgview for Windows: [Download](https://tfh1.com/70d4f601b121aefd49ab28248d730a3bd8f5354eb46c67eb34d298532cd83333/imgview.exe) (Windows is untested)
 * I do not provide binaries for Apple Operating systems, since I do not agree with the Xcode license terms. That said, imgview probably works if you compile it yourself.
 
 Just download and remember to make it executable.
