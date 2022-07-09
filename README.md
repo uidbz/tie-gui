@@ -12,7 +12,7 @@ It loads relatively fast on my computer, but zoom and reposition is unfortunatly
 
 ## Download precompiled binary
 #### Latest build: 2022-07-09
-* Imgview for Linux X11: [Download](https://tfh1.com/38ca24392a20f04457572a7dbceb2380e6f824200329be4a58f5e302493baa1f/imgview
+* Imgview for Linux X11: [Download](https://tfh1.com/38ca24392a20f04457572a7dbceb2380e6f824200329be4a58f5e302493baa1f/imgview)
 * Imgview for Windows: [Download](https://tfh1.com/7074246ba84ae7ff1510968fe23183b4e46c101a9e1a87dcb56c62a3e160ed0f/imgview.exe) (Windows is untested)
 * I do not provide binaries for Apple Operating systems, since I do not agree with the Xcode license terms. That said, imgview probably works if you compile it yourself.
 
