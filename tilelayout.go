@@ -125,11 +125,11 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 			newHeight := tile.height * scale
 			// fmt.Println("Scale portrait:", scale)
 			top := bottom[j]
-			if j < len(bottom) && top < bottom[j+1] {
-				top = bottom[j+1]
-			}
 
 			if tile.landscape {
+				if j < len(bottom) && top < bottom[j+1] { // Avoid overlapping next img in above row
+					top = bottom[j+1]
+				}
 				newWidth = newWidth*2 + gap
 				scale = newWidth / tile.width
 				newHeight = tile.height * scale
