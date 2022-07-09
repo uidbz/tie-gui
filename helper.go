@@ -1,6 +1,7 @@
 package main
 
 import (
+	// "fmt"
 	"image"
 	"io"
 	"io/fs"
@@ -9,13 +10,17 @@ import (
 
 	"github.com/disintegration/imaging"
 	// "github.com/nfnt/resize"
+	// "github.com/bamiaux/rez"
 	"github.com/rwcarlsen/goexif/exif"
 )
 
-func scaleImage(img image.Image, w int) image.Image {
+func scaleImage(img image.Image, w int) (scaledImage image.Image) {
+	// err := rez.Convert(scaledImage, img, rez.NewBicubicFilter())
+	// if err != nil {
+	// 	fmt.Println("Error resizing image:", err)
+	// }
+	// return scaledImage
 	return imaging.Resize(img, w, 0, imaging.Lanczos)
-	// return resize.Thumbnail(w, h, img,
-	// 	resize.Bilinear)
 }
 
 func Decode(reader io.ReadSeeker) (image.Image, string, error) {

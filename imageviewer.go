@@ -98,8 +98,12 @@ func (viewer *ImageViewer) Load() {
 	viewer.maxPages = len(viewer.imageFiles)/imagesPerPage + 1
 	for i := 0; i < viewer.maxPages; i++ {
 		i := i
-		start := i * imagesPerPage
-		page := widget.NewHyperlink(strconv.Itoa(start)+"-"+strconv.Itoa(start+imagesPerPage-1), nil)
+		start := i*imagesPerPage + 1
+		end := start + imagesPerPage - 1
+		if i == viewer.maxPages-1 {
+			end = len(viewer.imageFiles)
+		}
+		page := widget.NewHyperlink(strconv.Itoa(start)+"-"+strconv.Itoa(end), nil)
 		page.OnTapped = func() {
 			viewer.ChangePage(i)
 		}

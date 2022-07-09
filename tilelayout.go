@@ -35,6 +35,8 @@ type TileLayout struct {
 	viewer           *ImageViewer
 	offset           int
 	currentlyLoading sync.WaitGroup
+	cachedTiles      map[string]*Tile
+	cacheLock        sync.Mutex
 }
 
 type Tile struct {
@@ -68,6 +70,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Imag
 		window:       window,
 		app:          app,
 		viewer:       viewer,
+		cachedTiles:  make(map[string]*Tile),
 	}
 
 	for i := 0; i < config.General.Workers; i++ {
@@ -85,7 +88,7 @@ func (layout *TileLayout) PlaceTiles(imageFiles []ImageInfo) {
 	}
 	layout.grid.Objects = make([]fyne.CanvasObject, 0)
 	for i := layout.offset; i < end; i++ {
-		tile := layout.NewImageTile(loadingImg, imageFiles[i], nil)
+		tile := layout.NewImageTile(loadingImg, imageFiles[i], func(t *Tile) {})
 		layout.tiles = append(layout.tiles, tile)
 		layout.grid.AddObject(tile)
 		layout.imagesToLoad <- imageFiles[i]
@@ -152,6 +155,22 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 	}
 }
 
+func (layout *TileLayout) tileFromCache(path string) (*Tile, bool) {
+	layout.cacheLock.Lock()
+	defer layout.cacheLock.Unlock()
+
+	t, ok := layout.cachedTiles[path]
+
+	return t, ok
+}
+
+func (layout *TileLayout) tileToCache(path string, tile *Tile) {
+	layout.cacheLock.Lock()
+	defer layout.cacheLock.Unlock()
+
+	layout.cachedTiles[path] = tile
+}
+
 func (layout *TileLayout) imageLoader() {
 	i := 0
 	refreshTimer := time.NewTimer(500 * time.Millisecond)
@@ -160,12 +179,18 @@ func (layout *TileLayout) imageLoader() {
 	for tc := range layout.imagesToLoad {
 		layout.currentlyLoading.Add(1)
 
-		reader, err := tc.GetReader()
-		if err != nil {
-			fmt.Println(err)
-			continue
+		var tile *Tile
+		if t, ok := layout.tileFromCache(tc.path); ok {
+			tile = t
+		} else {
+			reader, err := tc.GetReader()
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			tile = layout.NewImageTile(reader, tc, layout.tabFn)
+			layout.tileToCache(tc.path, tile)
 		}
-		tile := layout.NewImageTile(reader, tc, layout.tabFn)
 		layout.tiles[tc.order-layout.offset] = tile
 		layout.grid.Objects[tc.order-layout.offset] = tile
 		if first {
@@ -173,6 +198,7 @@ func (layout *TileLayout) imageLoader() {
 				<-refreshTimer.C
 				layout.grid.Refresh()
 			}()
+			first = false
 		}
 		if i == 10 {
 			layout.grid.Refresh()

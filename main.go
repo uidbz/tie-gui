@@ -12,6 +12,7 @@ import (
 
 	"fyne.io/fyne/v2/container"
 	"github.com/pelletier/go-toml/v2"
+	// "github.com/pkg/profile"
 )
 
 //go:embed config.toml
@@ -82,6 +83,8 @@ func LoadConfig(window fyne.Window) (config Config) {
 }
 
 func main() {
+	// defer profile.Start(profile.MemProfile).Stop()
+	// defer profile.Start().Stop()
 	myApp := app.New()
 	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
 	myWindow := myApp.NewWindow("imgview")
