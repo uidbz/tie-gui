@@ -422,19 +422,24 @@ func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo
 	}
 }
 
-func (viewer *ImageViewer) ReadImageReaders(readers []io.ReadSeeker) {
+type CustomReader interface {
+	GetReader() (io.ReadSeeker, error)
+}
+
+func (viewer *ImageViewer) ReadCustom(custom []CustomReader) {
 	defer viewer.loadingDir.Done()
 
-	for i, r := range readers {
-		if IsImage(r) {
-			viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
-				InputIsReader: true,
-				reader:        readers[i],
-				order:         i,
-			})
+	for i, r := range custom {
+		if reader, err := r.GetReader(); err == nil {
+			if IsImage(reader) {
+				viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
+					InputIsReader: true,
+					CustomReader:  custom[i],
+					order:         i,
+				})
+			}
 		}
 	}
-
 }
 
 func (viewer *ImageViewer) ReadImageArchive(zipFile string) {

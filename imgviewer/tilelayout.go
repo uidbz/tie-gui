@@ -56,13 +56,13 @@ type ImageInfo struct {
 	InputIsArchive bool
 	InputIsDir     bool
 	InputIsReader  bool
+	Path           string
+	FullPath       string // Used to get path of zipFile
+	ShowArchive    bool
+	CustomReader   CustomReader
 
 	archiveName string
 	archiveFile fs.FS
-	reader      io.ReadSeeker
-	Path        string
-	FullPath    string // Used to get path of zipFile
-	ShowArchive bool
 	order       int
 }
 
@@ -73,10 +73,10 @@ func NewImageInfo(path string) ImageInfo {
 	}
 }
 
-func NewImageInfoFromReader(r io.ReadSeeker) ImageInfo {
+func NewImageInfoCustomReader(r CustomReader) ImageInfo {
 	return ImageInfo{
 		InputIsReader: true,
-		reader:        r,
+		CustomReader:  r,
 		order:         -1,
 	}
 }

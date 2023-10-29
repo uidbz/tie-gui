@@ -159,8 +159,15 @@ func NewImageView(info ImageInfo, size fyne.Size, hideRegion bool, zoomable bool
 
 func (img *ImageInfo) GetReader() (io.ReadSeeker, error) {
 	if img.InputIsReader {
-		img.reader.Seek(0, io.SeekStart)
-		return img.reader, nil
+		r, err := img.CustomReader.GetReader()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := r.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		} else {
+			return r, nil
+		}
 	}
 	if img.InputIsArchive {
 		if img.archiveFile == nil {
