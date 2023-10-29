@@ -1,4 +1,4 @@
-package main
+package imgviewer
 
 import (
 	"path/filepath"
@@ -47,19 +47,38 @@ type Tile struct {
 	width     float32
 	height    float32
 	landscape bool
-	info      ImageInfo
+	Viewer    *ImageViewer
+	Info      ImageInfo
 	tabFn     func(t *Tile)
 }
 
 type ImageInfo struct {
-	archiveName    string
-	archiveFile    fs.FS
-	inputIsArchive bool
-	inputIsDir     bool
-	path           string
-	fullPath       string // Used to get path of zipFile
-	showArchive    bool
-	order          int
+	InputIsArchive bool
+	InputIsDir     bool
+	InputIsReader  bool
+
+	archiveName string
+	archiveFile fs.FS
+	reader      io.ReadSeeker
+	Path        string
+	FullPath    string // Used to get path of zipFile
+	ShowArchive bool
+	order       int
+}
+
+func NewImageInfo(path string) ImageInfo {
+	return ImageInfo{
+		Path:  path,
+		order: -1,
+	}
+}
+
+func NewImageInfoFromReader(r io.ReadSeeker) ImageInfo {
+	return ImageInfo{
+		InputIsReader: true,
+		reader:        r,
+		order:         -1,
+	}
 }
 
 func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *ImageViewer, tabFn func(t *Tile)) *TileLayout {
@@ -191,7 +210,7 @@ func (layout *TileLayout) imageLoader() {
 		layout.currentlyLoading.Add(1)
 
 		var tile *Tile
-		if t, ok := layout.tileFromCache(tc.path); ok {
+		if t, ok := layout.tileFromCache(tc.Path); ok {
 			tile = t
 		} else {
 			reader, err := tc.GetReader()
@@ -200,7 +219,7 @@ func (layout *TileLayout) imageLoader() {
 				continue
 			}
 			tile = layout.NewImageTile(reader, tc, layout.tabFn)
-			layout.tileToCache(tc.path, tile)
+			layout.tileToCache(tc.Path, tile)
 		}
 		layout.tiles[tc.order-layout.offset] = tile
 		layout.grid.Objects[tc.order-layout.offset] = tile
@@ -218,7 +237,9 @@ func (layout *TileLayout) imageLoader() {
 }
 
 func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context ImageInfo, tabFn func(t *Tile)) *Tile {
-	t := &Tile{}
+	t := &Tile{
+		Viewer: layout.viewer,
+	}
 	decoded, _, _ := Decode(imgReader)
 	if decoded == nil {
 		na := bytes.NewReader(loading)
@@ -240,7 +261,7 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context ImageInf
 	}
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
-	t.info = context
+	t.Info = context
 	t.width = float32(img.Image.Bounds().Max.X)
 	t.height = float32(img.Image.Bounds().Max.Y)
 	t.landscape = t.width > t.height

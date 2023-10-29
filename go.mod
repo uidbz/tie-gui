@@ -1,4 +1,4 @@
-module imgview
+module git.sr.ht/~uid/imgview
 
 go 1.18
 

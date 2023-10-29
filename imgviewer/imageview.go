@@ -1,4 +1,4 @@
-package main
+package imgviewer
 
 import (
 	"bytes"
@@ -97,7 +97,7 @@ func (d *ImageLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Siz
 }
 
 func (iv *ImageView) GetImageInfo() string {
-	return filepath.Base(iv.info.path) + " (" + strconv.Itoa(iv.imgWidth) + "x" + strconv.Itoa(iv.imgHeight) + ")" + " [" + strconv.Itoa(iv.GetZoomLevel()) + "%]"
+	return filepath.Base(iv.info.Path) + " (" + strconv.Itoa(iv.imgWidth) + "x" + strconv.Itoa(iv.imgHeight) + ")" + " [" + strconv.Itoa(iv.GetZoomLevel()) + "%]"
 }
 
 func (iv *ImageView) GetZoomLevel() int {
@@ -158,11 +158,15 @@ func NewImageView(info ImageInfo, size fyne.Size, hideRegion bool, zoomable bool
 }
 
 func (img *ImageInfo) GetReader() (io.ReadSeeker, error) {
-	if img.inputIsArchive {
+	if img.InputIsReader {
+		img.reader.Seek(0, io.SeekStart)
+		return img.reader, nil
+	}
+	if img.InputIsArchive {
 		if img.archiveFile == nil {
 			return nil, errors.New("Could not read zip file")
 		}
-		imgReader, err := img.archiveFile.Open(img.path)
+		imgReader, err := img.archiveFile.Open(img.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -172,7 +176,7 @@ func (img *ImageInfo) GetReader() (io.ReadSeeker, error) {
 			return bytes.NewReader(file), nil
 		}
 	} else {
-		imgReader, err := os.Open(img.path)
+		imgReader, err := os.Open(img.Path)
 		if err != nil {
 			return nil, err
 		}

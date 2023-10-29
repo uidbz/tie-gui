@@ -10,7 +10,8 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/dialog"
 
-	"fyne.io/fyne/v2/container"
+	"git.sr.ht/~uid/imgview/imgviewer"
+
 	"github.com/pelletier/go-toml/v2"
 	// "github.com/pkg/profile"
 )
@@ -46,10 +47,10 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 		if fi.IsDir() {
 			return absolutePath, inputIsDirectory, nil
 		}
-		if IsArchiveFromPath(absolutePath) {
+		if imgviewer.IsArchiveFromPath(absolutePath) {
 			return absolutePath, inputIsArchive, nil
 		}
-		if IsImageFromPath(absolutePath) {
+		if imgviewer.IsImageFromPath(absolutePath) {
 			return absolutePath, inputIsImage, nil
 		}
 		return absolutePath, inputIsNotSupported, errors.New("Unknown input type")
@@ -59,7 +60,7 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 	}
 }
 
-func LoadConfig(window fyne.Window) (config Config) {
+func LoadConfig(window fyne.Window) (config imgviewer.Config) {
 	if err := toml.Unmarshal(configData, &config); err != nil {
 		panic("Bundled config is not valid TOML: " + err.Error())
 	}
@@ -91,20 +92,24 @@ func main() {
 
 	config := LoadConfig(myWindow)
 
-	viewer := &ImageViewer{
-		app:            myApp,
-		window:         myWindow,
-		imageContainer: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
-		cache:          make(map[string]*ImageView),
-		config:         config,
-	}
+	viewer := imgviewer.NewImageViewer(myApp, myWindow, config, func(t *imgviewer.Tile) {
+		switch true {
+		case t.Info.InputIsDir:
+			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
+		case t.Info.ShowArchive:
+			t.Viewer.ShowImageArchive(t.Info.FullPath)
+		default:
+			t.Viewer.SetImage(t.Info)
+		}
+	})
 
-	var selected *ImageInfo
+	viewer.Init()
+	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
+
+	var selected imgviewer.ImageInfo
 	loadingImage := false
 	directory := "."
 	absolutePath, inputType, err := ParseInput(os.Args)
-
-	viewer.loadingDir.Add(1)
 
 	switch inputType {
 	case inputError:
@@ -118,11 +123,8 @@ func main() {
 
 	case inputIsImage:
 		directory = filepath.Dir(absolutePath)
-		selected = &ImageInfo{
-			path:  absolutePath,
-			order: -1,
-		}
-		go viewer.ReadImageDir(directory, selected)
+		selected = imgviewer.NewImageInfo(absolutePath)
+		go viewer.ReadImageDir(directory, &selected)
 		loadingImage = true
 
 	case inputIsArchive:
@@ -137,20 +139,11 @@ func main() {
 		panic("Input is not understood")
 	}
 
-	viewer.Init()
-
-	myWindow.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
-		for _, x := range viewer.layout.hotkeys {
-			if key.Name == x.Name {
-				x.Functon()
-			}
-		}
-	})
 	if loadingImage {
-		SetImage(viewer, *selected)
+		viewer.SetImage(selected)
 	} else {
-		viewer.Load()
-		myWindow.SetContent(viewer.object)
+		viewer.LoadGallery()
+		myWindow.SetContent(viewer.Gallery)
 	}
 	myWindow.Resize(fyne.NewSize(config.General.DefaultWidth, config.General.DefaultHeight))
 

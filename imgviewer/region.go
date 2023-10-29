@@ -1,4 +1,4 @@
-package main
+package imgviewer
 
 import (
 	"image/color"
