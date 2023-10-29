@@ -1,6 +1,8 @@
 package main
 
 import (
+	"path/filepath"
+	// "path/filepath"
 	// "archive/zip"
 	"bytes"
 	"fmt"
@@ -50,9 +52,13 @@ type Tile struct {
 }
 
 type ImageInfo struct {
+	archiveName    string
 	archiveFile    fs.FS
 	inputIsArchive bool
+	inputIsDir     bool
 	path           string
+	fullPath       string // Used to get path of zipFile
+	showArchive    bool
 	order          int
 }
 
@@ -174,8 +180,13 @@ func (layout *TileLayout) tileToCache(path string, tile *Tile) {
 func (layout *TileLayout) imageLoader() {
 	i := 0
 	refreshTimer := time.NewTimer(500 * time.Millisecond)
+	go func() {
+		for {
+			<-refreshTimer.C
+			layout.grid.Refresh()
+		}
+	}()
 
-	first := true
 	for tc := range layout.imagesToLoad {
 		layout.currentlyLoading.Add(1)
 
@@ -193,20 +204,16 @@ func (layout *TileLayout) imageLoader() {
 		}
 		layout.tiles[tc.order-layout.offset] = tile
 		layout.grid.Objects[tc.order-layout.offset] = tile
-		if first {
-			go func() {
-				<-refreshTimer.C
-				layout.grid.Refresh()
-			}()
-			first = false
-		}
-		if i == 10 {
+
+		if i == 10 { // Refresh grid every 10 images
 			layout.grid.Refresh()
 			i = 0
 		} else {
-			refreshTimer.Reset(500 * time.Millisecond)
+			refreshTimer.Reset(500 * time.Millisecond) // Refresh grid 500 ms after last loaded image
 		}
+
 		layout.currentlyLoading.Done()
+		i++
 	}
 }
 
@@ -272,6 +279,11 @@ func (layout *TileLayout) InitHotkeys() {
 		add(Hotkey{x, func() {
 			layout.viewer.scroll.Offset.Y = layout.viewer.scroll.Offset.Y - 300
 			layout.viewer.scroll.Refresh()
+		}})
+	}
+	for _, x := range bindings.PathLevelUp {
+		add(Hotkey{x, func() {
+			layout.viewer.ShowImageDir(filepath.Dir(layout.viewer.currentPath))
 		}})
 	}
 }

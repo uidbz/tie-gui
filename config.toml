@@ -9,11 +9,16 @@ Filtering = ['B']
 ShowGallery = ['Escape'] 
 Quit = ['Q']
 FullScreen = ['F']
+RunCmdA = ['E']
+CmdA = 'echo "$FILE" > ~/hello.txt'
+SaveImage = ['U']
+SaveDir = ""
 
 [Gallery]
 Quit = ['Q', 'Escape']
 ScrollDown = ['Down', 'J']
 ScrollUp = ['Up', 'K']
+PathLevelUp = ['BackSpace']
 
 [General]
 DefaultWidth = 1024.0

@@ -41,6 +41,7 @@ type ImageView struct {
 	newSize           bool
 	fillWindow        bool
 	OnClicked         func()
+	OnDoubleClicked   func()
 	info              ImageInfo
 	dragStart         bool
 	focus             func(fyne.Focusable)
@@ -234,6 +235,12 @@ func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
 func (iv *ImageView) Tapped(_ *fyne.PointEvent) {
 	if iv.OnClicked != nil {
 		iv.OnClicked()
+	}
+}
+
+func (iv *ImageView) DoubleTapped(_ *fyne.PointEvent) {
+	if iv.OnDoubleClicked != nil {
+		iv.OnDoubleClicked()
 	}
 }
 

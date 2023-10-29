@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/mholt/archiver/v4"
@@ -26,6 +30,7 @@ type ImageViewer struct {
 	app            fyne.App
 	currentIndex   int
 	currentImage   *ImageView
+	currentPath    string
 	cache          map[string]*ImageView
 	scroll         *container.Scroll
 	hotkeys        []Hotkey
@@ -35,6 +40,7 @@ type ImageViewer struct {
 	bottomBar      *fyne.Container
 	currentPage    int
 	maxPages       int
+	isFullscreen   bool
 }
 
 type Config struct {
@@ -63,17 +69,47 @@ type ImageConfig struct {
 	ShowGallery   []fyne.KeyName
 	Quit          []fyne.KeyName
 	FullScreen    []fyne.KeyName
+	RunCmda       []fyne.KeyName
+	CmdA          string
+	SaveImage     []fyne.KeyName
+	SaveDir       string
 }
 
 type GalleryConfig struct {
-	Quit       []fyne.KeyName
-	ScrollDown []fyne.KeyName
-	ScrollUp   []fyne.KeyName
+	Quit        []fyne.KeyName
+	ScrollDown  []fyne.KeyName
+	ScrollUp    []fyne.KeyName
+	PathLevelUp []fyne.KeyName
+}
+
+func (viewer *ImageViewer) ShowImageDir(path string) {
+	viewer.loadingDir.Add(1)
+	viewer.imageFiles = make([]ImageInfo, 0)
+	go viewer.ReadImageDir(path, nil)
+	viewer.Init()
+	viewer.Load()
+	viewer.window.SetContent(viewer.object)
+}
+
+func (viewer *ImageViewer) ShowImageArchive(path string) {
+	viewer.loadingDir.Add(1)
+	viewer.imageFiles = make([]ImageInfo, 0)
+	go viewer.ReadImageArchive(path)
+	viewer.Init()
+	viewer.Load()
+	viewer.window.SetContent(viewer.object)
 }
 
 func (viewer *ImageViewer) Init() {
 	tileOnclick := func(t *Tile) {
-		SetImage(viewer, t.info)
+		switch true {
+		case t.info.inputIsDir:
+			viewer.ShowImageDir(filepath.Dir(t.info.path))
+		case t.info.showArchive:
+			viewer.ShowImageArchive(t.info.fullPath)
+		default:
+			SetImage(viewer, t.info)
+		}
 	}
 	viewer.layout = NewTileLayout(viewer.config, viewer.window, viewer.app, viewer, tileOnclick)
 	empty := make([]fyne.CanvasObject, 0)
@@ -140,10 +176,51 @@ func (viewer *ImageViewer) LoadImageToCache(info ImageInfo) *ImageView {
 				viewer.window.SetTitle("imgview - " + img.GetImageInfo())
 			}()
 		}
+		img.OnDoubleClicked = viewer.ToggleFullscreen
 		viewer.cache[info.path] = img
 		return img
 	} else {
 		return x
+	}
+}
+
+func (viewer *ImageViewer) ToggleFullscreen() {
+	viewer.isFullscreen = !viewer.isFullscreen
+	viewer.currentImage.fillWindow = false
+	viewer.window.SetFullScreen(viewer.isFullscreen)
+	viewer.currentImage.fillWindow = true
+	viewer.imageContainer.Refresh()
+}
+
+func (viewer *ImageViewer) RunCmdA() {
+	cmd := strings.ReplaceAll(viewer.config.Image.CmdA, "$FILE", viewer.currentImage.info.path)
+	c := exec.Command("/bin/sh", append([]string{"-c", cmd})...)
+	go func() {
+		if output, err := c.CombinedOutput(); err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Println(output)
+		}
+	}()
+}
+
+func (viewer *ImageViewer) SaveImage() {
+	if viewer.config.Image.SaveDir != "" {
+		info := viewer.currentImage.info
+		if r, err := info.GetReader(); err == nil {
+			if data, err := io.ReadAll(r); err == nil {
+				filename := filepath.Base(info.path)
+				var dest string
+				if info.inputIsArchive {
+					dest = filepath.Join(viewer.config.Image.SaveDir, info.archiveName+"-"+filename)
+				} else {
+					dest = filepath.Join(viewer.config.Image.SaveDir, filename)
+				}
+				if err := os.WriteFile(dest, data, 0755); err != nil {
+					fmt.Println(err)
+				}
+			}
+		}
 	}
 }
 
@@ -230,16 +307,24 @@ func (viewer *ImageViewer) InitHotkeys() {
 	}
 	for _, x := range bindings.FullScreen {
 		add(Hotkey{x, func() {
-			viewer.currentImage.fillWindow = false
-			viewer.window.SetFullScreen(!viewer.window.FullScreen())
-			viewer.currentImage.fillWindow = true
-			viewer.imageContainer.Refresh()
+			viewer.ToggleFullscreen()
+		}})
+	}
+	for _, x := range bindings.RunCmda {
+		add(Hotkey{x, func() {
+			viewer.RunCmdA()
+		}})
+	}
+	for _, x := range bindings.SaveImage {
+		add(Hotkey{x, func() {
+			viewer.SaveImage()
 		}})
 	}
 }
 
 func SetImage(viewer *ImageViewer, info ImageInfo) {
 	img := viewer.LoadImageToCache(info)
+	viewer.currentPath = filepath.Dir(info.path)
 	viewer.currentImage = img
 	go func() {
 		viewer.LoadImageToCache(viewer.NextImage())
@@ -260,21 +345,65 @@ func SetImage(viewer *ImageViewer, info ImageInfo) {
 func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 	defer viewer.loadingDir.Done()
 
+	viewer.currentPath = absolutePath
 	dir, _ := os.ReadDir(absolutePath)
 	i := 0
 	for _, x := range dir {
-		if x.IsDir() {
-			continue
-		}
-		fullpath := filepath.Join(absolutePath, x.Name())
-		if IsImageFromPath(fullpath) {
-			if selected != nil && selected.path == fullpath {
+		fullPath := filepath.Join(absolutePath, x.Name())
+		switch true {
+		case x.IsDir():
+			subDirAbsPath := filepath.Join(absolutePath, x.Name())
+			subDir, _ := os.ReadDir(subDirAbsPath)
+			for _, y := range subDir {
+				subFilePath := filepath.Join(subDirAbsPath, y.Name())
+				if !y.IsDir() && IsImageFromPath(subFilePath) {
+					viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
+						path:       subFilePath,
+						order:      i,
+						inputIsDir: true,
+					})
+					i++
+					break
+				}
+			}
+
+		case IsArchiveFromPath(fullPath):
+			fsys, err := archiver.FileSystem(context.Background(), fullPath)
+			if err != nil {
+				continue
+			}
+			fs.WalkDir(fsys, ".", func(path string, x fs.DirEntry, err error) error {
+				if x.IsDir() {
+					return nil
+				}
+				file, err := fsys.Open(path)
+				if err != nil {
+					return err
+				}
+				if IsImage(file) {
+					viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
+						inputIsArchive: true,
+						showArchive:    true,
+						archiveName:    filepath.Base(fullPath),
+						path:           path,
+						fullPath:       fullPath,
+						archiveFile:    fsys,
+						order:          i,
+					})
+					i++
+					return fs.SkipDir
+				}
+				return nil
+			})
+
+		case IsImageFromPath(fullPath):
+			if selected != nil && selected.path == fullPath {
 				selected.order = i
 				viewer.currentIndex = i
 				viewer.imageFiles = append(viewer.imageFiles, *selected)
 			} else {
 				viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
-					path:  fullpath,
+					path:  fullPath,
 					order: i,
 				})
 			}
@@ -286,7 +415,7 @@ func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo
 func (viewer *ImageViewer) ReadImageArchive(zipFile string) {
 	defer viewer.loadingDir.Done()
 
-	fsys, err := archiver.FileSystem(zipFile)
+	fsys, err := archiver.FileSystem(context.Background(), zipFile)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -304,6 +433,7 @@ func (viewer *ImageViewer) ReadImageArchive(zipFile string) {
 		if IsImage(file) {
 			viewer.imageFiles = append(viewer.imageFiles, ImageInfo{
 				inputIsArchive: true,
+				archiveName:    filepath.Base(zipFile),
 				path:           path,
 				archiveFile:    fsys,
 				order:          i,
