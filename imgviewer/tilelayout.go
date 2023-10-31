@@ -27,7 +27,7 @@ type TileLayout struct {
 	tiles            []*Tile
 	wg               sync.WaitGroup
 	minHeight        float32
-	imagesToLoad     chan ImageInfo
+	imagesToLoad     chan *ImageInfo
 	tabFn            func(t *Tile)
 	grid             *fyne.Container
 	hotkeys          []Hotkey
@@ -48,43 +48,52 @@ type Tile struct {
 	height    float32
 	landscape bool
 	Viewer    *ImageViewer
-	Info      ImageInfo
+	Info      *ImageInfo
 	tabFn     func(t *Tile)
 }
 
 type ImageInfo struct {
-	InputIsArchive bool
-	InputIsDir     bool
-	InputIsReader  bool
-	Path           string
-	FullPath       string // Used to get path of zipFile
-	ShowArchive    bool
-	CustomReader   CustomReader
+	InputIsArchive    bool
+	InputIsDir        bool
+	InputIsReader     bool
+	IsZoomable        bool
+	IsDraggable       bool
+	Path              string
+	FullPath          string // Used to get path of zipFile
+	ShowArchive       bool
+	CustomReader      CustomReader
+	OnTapped          func()
+	OnDoubleTapped    func()
+	OnTappedSecondary func()
 
 	archiveName string
 	archiveFile fs.FS
 	order       int
 }
 
-func NewImageInfo(path string) ImageInfo {
-	return ImageInfo{
-		Path:  path,
-		order: -1,
+func NewImageInfo(order int, path string) *ImageInfo {
+	return &ImageInfo{
+		Path:        path,
+		IsDraggable: true,
+		IsZoomable:  true,
+		order:       order,
 	}
 }
 
-func NewImageInfoCustomReader(r CustomReader) ImageInfo {
-	return ImageInfo{
+func NewImageInfoCustomReader(order int, r CustomReader) *ImageInfo {
+	return &ImageInfo{
 		InputIsReader: true,
 		CustomReader:  r,
-		order:         -1,
+		IsDraggable:   true,
+		IsZoomable:    true,
+		order:         order,
 	}
 }
 
 func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *ImageViewer, tabFn func(t *Tile)) *TileLayout {
 	batchSize := 1024
 	tiles := make([]*Tile, 0)
-	imagesToLoad := make(chan ImageInfo, batchSize)
+	imagesToLoad := make(chan *ImageInfo, batchSize)
 	layout := &TileLayout{
 		tiles:        tiles,
 		wg:           sync.WaitGroup{},
@@ -105,7 +114,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Imag
 	return layout
 }
 
-func (layout *TileLayout) PlaceTiles(imageFiles []ImageInfo) {
+func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	loadingImg := bytes.NewReader(loading)
 	end := layout.offset + layout.config.General.ImagesPerPage
 	if end > len(imageFiles) {
@@ -236,7 +245,7 @@ func (layout *TileLayout) imageLoader() {
 	}
 }
 
-func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context ImageInfo, tabFn func(t *Tile)) *Tile {
+func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *ImageInfo, tabFn func(t *Tile)) *Tile {
 	t := &Tile{
 		Viewer: layout.viewer,
 	}

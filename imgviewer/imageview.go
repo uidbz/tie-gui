@@ -29,8 +29,6 @@ type ImageView struct {
 	imgWidth          int
 	imgHeight         int
 	zoom              float32
-	zoomable          bool
-	dragable          bool
 	imgScale          float32
 	region            *Region
 	startPos          fyne.Position
@@ -40,9 +38,7 @@ type ImageView struct {
 	refreshBilinear   *time.Timer
 	newSize           bool
 	fillWindow        bool
-	OnClicked         func()
-	OnDoubleClicked   func()
-	info              ImageInfo
+	info              *ImageInfo
 	dragStart         bool
 	focus             func(fyne.Focusable)
 	hotkeys           []Hotkey
@@ -125,12 +121,10 @@ func (iv *ImageView) OriginalSize() {
 	iv.changeFn()
 }
 
-func NewImageView(info ImageInfo, size fyne.Size, hideRegion bool, zoomable bool, dragable bool, w fyne.Window, focusFunc func(fyne.Focusable)) *ImageView {
+func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Window, focusFunc func(fyne.Focusable)) *ImageView {
 	iv := &ImageView{
 		focus:           focusFunc,
 		zoom:            2,
-		zoomable:        zoomable,
-		dragable:        dragable,
 		info:            info,
 		w:               w,
 		size:            size,
@@ -215,7 +209,7 @@ func (iv *ImageView) Resize(size fyne.Size) {
 }
 
 func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
-	if !iv.dragable {
+	if !iv.info.IsDraggable {
 		return
 	}
 	if !iv.dragStart {
@@ -244,14 +238,20 @@ func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
 	}
 }
 func (iv *ImageView) Tapped(_ *fyne.PointEvent) {
-	if iv.OnClicked != nil {
-		iv.OnClicked()
+	if iv.info.OnTapped != nil {
+		iv.info.OnTapped()
+	}
+}
+
+func (iv *ImageView) TappedSecondary(_ *fyne.PointEvent) {
+	if iv.info.OnTappedSecondary != nil {
+		iv.info.OnTappedSecondary()
 	}
 }
 
 func (iv *ImageView) DoubleTapped(_ *fyne.PointEvent) {
-	if iv.OnDoubleClicked != nil {
-		iv.OnDoubleClicked()
+	if iv.info.OnDoubleTapped != nil {
+		iv.info.OnDoubleTapped()
 	}
 }
 
@@ -260,7 +260,7 @@ func (e *ImageView) RegisterKey(name fyne.KeyName, function func()) {
 }
 
 func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
-	if !iv.zoomable {
+	if !iv.info.IsZoomable {
 		fmt.Println("Not zoomable")
 		return
 	}
@@ -289,6 +289,7 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 
 	iv.changeFn()
 	iv.container.Refresh()
+	fmt.Println("huh")
 	// iv.refreshBilinear.Reset(100 * time.Millisecond)
 }
 

@@ -106,7 +106,7 @@ func main() {
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
 
-	var selected imgviewer.ImageInfo
+	var selected *imgviewer.ImageInfo
 	loadingImage := false
 	directory := "."
 	absolutePath, inputType, err := ParseInput(os.Args)
@@ -123,8 +123,8 @@ func main() {
 
 	case inputIsImage:
 		directory = filepath.Dir(absolutePath)
-		selected = imgviewer.NewImageInfo(absolutePath)
-		go viewer.ReadImageDir(directory, &selected)
+		selected = imgviewer.NewImageInfo(-1, absolutePath)
+		go viewer.ReadImageDir(directory, selected)
 		loadingImage = true
 
 	case inputIsArchive:
