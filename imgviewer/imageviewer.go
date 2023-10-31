@@ -22,7 +22,8 @@ import (
 )
 
 type ImageViewer struct {
-	Gallery fyne.CanvasObject
+	Gallery      fyne.CanvasObject
+	CurrentImage fyne.CanvasObject
 
 	gallery        *fyne.Container
 	imageFiles     []*ImageInfo
@@ -39,10 +40,15 @@ type ImageViewer struct {
 	loadingDir     sync.WaitGroup
 	config         Config
 	bottomBar      *fyne.Container
-	tileOnclick    func(*Tile)
-	currentPage    int
-	maxPages       int
-	isFullscreen   bool
+
+	tileOnclick       func(*Tile)
+	OnTapped          func()
+	OnDoubleTapped    func()
+	OnTappedSecondary func()
+
+	currentPage  int
+	maxPages     int
+	isFullscreen bool
 }
 
 type Config struct {
@@ -180,6 +186,12 @@ func (viewer *ImageViewer) ChangePage(page int) {
 
 func (viewer *ImageViewer) LoadImageToCache(info *ImageInfo) *ImageView {
 	if x, ok := viewer.cache[info.Path]; ok == false {
+		if viewer.OnTapped == nil {
+			info.OnTapped = viewer.OnTapped
+		}
+		if viewer.OnDoubleTapped == nil {
+			info.OnDoubleTapped = viewer.OnDoubleTapped
+		}
 		if info.OnDoubleTapped == nil {
 			info.OnDoubleTapped = viewer.ToggleFullscreen
 		}
@@ -264,12 +276,14 @@ func (viewer *ImageViewer) InitHotkeys() {
 
 	for _, x := range bindings.NextImage {
 		add(Hotkey{x, func() {
-			viewer.SetImage(viewer.NextImage())
+			viewer.ChangeImage(viewer.NextImage())
+			viewer.SetImage()
 		}})
 	}
 	for _, x := range bindings.PreviousImage {
 		add(Hotkey{x, func() {
-			viewer.SetImage(viewer.PrevImage())
+			viewer.ChangeImage(viewer.PrevImage())
+			viewer.SetImage()
 		}})
 	}
 	for _, x := range bindings.RotateLeft {
@@ -334,7 +348,7 @@ func (viewer *ImageViewer) InitHotkeys() {
 	}
 }
 
-func (viewer *ImageViewer) SetImage(info *ImageInfo) {
+func (viewer *ImageViewer) ChangeImage(info *ImageInfo) {
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
 	viewer.currentImage = img
@@ -348,10 +362,14 @@ func (viewer *ImageViewer) SetImage(info *ImageInfo) {
 	if info.order != -1 {
 		viewer.currentIndex = info.order
 	}
-	viewer.window.SetContent(viewer.imageContainer)
-	viewer.window.Canvas().Focus(img)
+	viewer.CurrentImage = viewer.imageContainer
 	viewer.imageContainer.Refresh()
 	img.changeFn()
+}
+
+func (viewer *ImageViewer) SetImage() {
+	viewer.window.SetContent(viewer.imageContainer)
+	viewer.window.Canvas().Focus(viewer.currentImage)
 }
 
 func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {

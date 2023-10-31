@@ -99,7 +99,8 @@ func main() {
 		case t.Info.ShowArchive:
 			t.Viewer.ShowImageArchive(t.Info.FullPath)
 		default:
-			t.Viewer.SetImage(t.Info)
+			t.Viewer.ChangeImage(t.Info)
+			t.Viewer.SetImage()
 		}
 	})
 
@@ -140,7 +141,8 @@ func main() {
 	}
 
 	if loadingImage {
-		viewer.SetImage(selected)
+		viewer.ChangeImage(selected)
+		viewer.SetImage()
 	} else {
 		viewer.LoadGallery()
 		myWindow.SetContent(viewer.Gallery)
