@@ -186,13 +186,13 @@ func (viewer *ImageViewer) ChangePage(page int) {
 
 func (viewer *ImageViewer) LoadImageToCache(info *ImageInfo) *ImageView {
 	if x, ok := viewer.cache[info.Path]; ok == false {
-		if viewer.OnTapped == nil {
+		if viewer.OnTapped != nil {
 			info.OnTapped = viewer.OnTapped
 		}
-		if viewer.OnDoubleTapped == nil {
+		if viewer.OnDoubleTapped != nil {
 			info.OnDoubleTapped = viewer.OnDoubleTapped
 		}
-		if info.OnDoubleTapped == nil {
+		if info.OnDoubleTapped != nil {
 			info.OnDoubleTapped = viewer.ToggleFullscreen
 		}
 		img := NewImageView(info, viewer.window.Canvas().Size(), true, viewer.window, viewer.window.Canvas().Focus)

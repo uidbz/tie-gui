@@ -289,7 +289,6 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 
 	iv.changeFn()
 	iv.container.Refresh()
-	fmt.Println("huh")
 	// iv.refreshBilinear.Reset(100 * time.Millisecond)
 }
 
