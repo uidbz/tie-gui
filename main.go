@@ -3,8 +3,12 @@ package main
 import (
 	_ "embed"
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
+
+	// "fyne.io/fyne/v2/container"
+	// "fyne.io/fyne/v2/widget"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -29,9 +33,17 @@ const (
 	inputIsDirectory
 	inputIsImage
 	inputIsArchive
+	inputIsTieMode
 )
 
 func ParseInput(args []string) (absolutePath string, inputType int, err error) {
+	tiePtr := flag.Bool("tie", false, "Start in tie mode")
+	tieTag := flag.String("tag", "favorite", "Show images with tag")
+	flag.Parse()
+	if *tiePtr {
+		absolutePath = *tieTag
+		return absolutePath, inputIsTieMode, nil
+	}
 	if len(os.Args) > 1 {
 		path := os.Args[1]
 		absolutePath, err = filepath.Abs(path)
@@ -109,7 +121,6 @@ func main() {
 
 	var selected *imgviewer.ImageInfo
 	loadingImage := false
-	directory := "."
 	absolutePath, inputType, err := ParseInput(os.Args)
 
 	switch inputType {
@@ -119,22 +130,22 @@ func main() {
 		return
 
 	case inputIsDirectory:
-		directory = absolutePath
-		go viewer.ReadImageDir(directory, nil)
+		viewer.ReadImageDir(absolutePath, nil)
 
 	case inputIsImage:
-		directory = filepath.Dir(absolutePath)
 		selected = imgviewer.NewImageInfo(-1, absolutePath)
-		go viewer.ReadImageDir(directory, selected)
+		viewer.ReadImageDir(filepath.Dir(absolutePath), selected)
 		loadingImage = true
 
 	case inputIsArchive:
-		directory = absolutePath
-		go viewer.ReadImageArchive(directory)
+		viewer.ReadImageArchive(absolutePath)
 
 	case inputIsNothing: // Use current working directory
-		directory = absolutePath
-		viewer.ReadImageDir(directory, nil)
+		viewer.ReadImageDir(".", nil)
+
+	case inputIsTieMode:
+		viewer.TieMode = true
+		viewer.ReadFromTie(absolutePath)
 
 	default:
 		panic("Input is not understood")
@@ -145,7 +156,8 @@ func main() {
 		viewer.SetImage()
 	} else {
 		viewer.LoadGallery()
-		myWindow.SetContent(viewer.Gallery)
+		viewer.UpdateContent()
+		myWindow.SetContent(viewer.Content)
 	}
 	myWindow.Resize(fyne.NewSize(config.General.DefaultWidth, config.General.DefaultHeight))
 

@@ -43,7 +43,7 @@ type TileLayout struct {
 
 type Tile struct {
 	widget.BaseWidget
-	content   *canvas.Image
+	Content   *canvas.Image
 	width     float32
 	height    float32
 	landscape bool
@@ -112,6 +112,11 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Imag
 	}
 
 	return layout
+}
+
+func (layout *TileLayout) Clear() {
+	layout.tiles = make([]*Tile, 0)
+	layout.offset = 0
 }
 
 func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
@@ -224,7 +229,7 @@ func (layout *TileLayout) imageLoader() {
 		} else {
 			reader, err := tc.GetReader()
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("Error getting reader:", err)
 				continue
 			}
 			tile = layout.NewImageTile(reader, tc, layout.tabFn)
@@ -249,7 +254,10 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *ImageIn
 	t := &Tile{
 		Viewer: layout.viewer,
 	}
-	decoded, _, _ := Decode(imgReader)
+	decoded, _, err := Decode(imgReader)
+	if err != nil {
+		fmt.Println("Error decoding image when creating new tile:", err, context)
+	}
 	if decoded == nil {
 		na := bytes.NewReader(loading)
 		decoded2, _, _ := Decode(na)
@@ -274,7 +282,7 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *ImageIn
 	t.width = float32(img.Image.Bounds().Max.X)
 	t.height = float32(img.Image.Bounds().Max.Y)
 	t.landscape = t.width > t.height
-	t.content = img
+	t.Content = img
 	t.tabFn = tabFn
 
 	t.ExtendBaseWidget(t)
@@ -319,5 +327,5 @@ func (layout *TileLayout) InitHotkeys() {
 }
 
 func (ta *Tile) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(ta.content)
+	return widget.NewSimpleRenderer(ta.Content)
 }

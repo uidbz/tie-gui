@@ -24,6 +24,7 @@ func scaleImage(img image.Image, w int) (scaledImage image.Image) {
 }
 
 func Decode(reader io.ReadSeeker) (image.Image, string, error) {
+	reader.Seek(0, io.SeekStart)
 	img, fmt, err := image.Decode(reader)
 	if err != nil {
 		return img, fmt, err

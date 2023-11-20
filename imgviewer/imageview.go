@@ -157,11 +157,12 @@ func (img *ImageInfo) GetReader() (io.ReadSeeker, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := r.Seek(0, io.SeekStart); err != nil {
+		_, err = r.Seek(0, io.SeekStart)
+		if err != nil {
 			return nil, err
-		} else {
-			return r, nil
 		}
+
+		return r, nil
 	}
 	if img.InputIsArchive {
 		if img.archiveFile == nil {
