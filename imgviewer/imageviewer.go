@@ -539,14 +539,8 @@ func (t *tieReader) GetReader() (io.ReadSeeker, error) {
 
 func (viewer *ImageViewer) ReadFromTie(key string) {
 	config := client.Config{}
-	if path, err := conf.PathUserConfigDir("tie", "config"); err != nil {
+	if _, err := conf.LoadFromUserConfigDir("tie", "config.toml", &config); err != nil {
 		fmt.Println("Error reading tie config:", err)
-		return
-	} else {
-		if err := conf.ReadConfig(path, &config); err != nil {
-			fmt.Println("Error reading tie config:", err)
-			return
-		}
 	}
 	tie := client.NewTieClient(config)
 	o := client.GetOptions{Reverse: true, Filter: "tag"}
