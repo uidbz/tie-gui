@@ -5,7 +5,7 @@ go 1.21.0
 toolchain go1.21.4
 
 require (
-	fyne.io/fyne/v2 v2.4.1
+	fyne.io/fyne/v2 v2.4.2
 	git.sr.ht/~uid/conf v1.1.5
 	git.sr.ht/~uid/tie v0.3.2-0.20231117184915-a7396e1f9145
 	github.com/disintegration/imaging v1.6.2
@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	fyne.io/systray v1.10.1-0.20230722100817-88df1e0ffa9a // indirect
+	fyne.io/systray v1.10.1-0.20231115130155-104f5ef7839e // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/sevenzip v1.4.4 // indirect
@@ -31,10 +31,10 @@ require (
 	github.com/fyne-io/glfw-js v0.0.0-20231117203605-bc7c6f97d52f // indirect
 	github.com/fyne-io/image v0.0.0-20230811065323-ed435dc8bca6 // indirect
 	github.com/go-gl/gl v0.0.0-20231021071112-07e5d0ea2e71 // indirect
-	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20231117230948-b8b00452e321 // indirect
+	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20231124074035-2de0cf0c80af // indirect
 	github.com/go-resty/resty/v2 v2.10.0 // indirect
 	github.com/go-text/render v0.0.0-20230619120952-35bccb6164b8 // indirect
-	github.com/go-text/typesetting v0.0.0-20231120180320-af78120ccb13 // indirect
+	github.com/go-text/typesetting v0.0.0-20231201171600-344014252a3f // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/gopherjs/gopherjs v1.17.2 // indirect
@@ -42,7 +42,7 @@ require (
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/jsummers/gobmp v0.0.0-20230614200233-a9de23ed2e25 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
-	github.com/klauspost/compress v1.17.3 // indirect
+	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/libdns/libdns v0.2.1 // indirect
@@ -62,14 +62,14 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
-	golang.org/x/crypto v0.15.0 // indirect
+	golang.org/x/crypto v0.16.0 // indirect
 	golang.org/x/image v0.14.0 // indirect
-	golang.org/x/mobile v0.0.0-20231108233038-35478a0c49da // indirect
+	golang.org/x/mobile v0.0.0-20231127183840-76ac6878050a // indirect
 	golang.org/x/mod v0.14.0 // indirect
-	golang.org/x/net v0.18.0 // indirect
-	golang.org/x/sys v0.14.0 // indirect
+	golang.org/x/net v0.19.0 // indirect
+	golang.org/x/sys v0.15.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
-	golang.org/x/tools v0.15.0 // indirect
+	golang.org/x/tools v0.16.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	honnef.co/go/js/dom v0.0.0-20231030024858-cb489e859d05 // indirect
 )

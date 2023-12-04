@@ -14,7 +14,9 @@ import (
 	"strings"
 	"sync"
 
-	"git.sr.ht/~uid/conf"
+	"git.sr.ht/~uid/tie/api"
+
+	"git.sr.ht/~uid/imgview/imgviewer/tagselection"
 
 	"git.sr.ht/~uid/tie/io/getlib"
 
@@ -34,6 +36,7 @@ type ImageViewer struct {
 	CurrentImage  fyne.CanvasObject
 	CustomReaders []CustomReader
 	TieMode       bool
+	Tie           *client.TieClient
 
 	gallery        *fyne.Container
 	imageFiles     []*ImageInfo
@@ -123,7 +126,6 @@ func (viewer *ImageViewer) ShowImageDir(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
 	viewer.ReadImageDir(path, nil)
 	viewer.LoadGallery()
-	viewer.UpdateContent()
 	viewer.window.SetContent(viewer.Content)
 }
 
@@ -131,7 +133,6 @@ func (viewer *ImageViewer) ShowImageArchive(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
 	viewer.ReadImageArchive(path)
 	viewer.LoadGallery()
-	viewer.UpdateContent()
 	viewer.window.SetContent(viewer.Content)
 }
 
@@ -146,22 +147,33 @@ func (viewer *ImageViewer) Init() {
 
 func (viewer *ImageViewer) MakeTieSidebar(mainPage fyne.CanvasObject) fyne.CanvasObject {
 	var split *container.Split
-	var queryFunc func()
-	query := widget.NewEntry()
-	queryFunc = func() {
-		if query.Text != "" {
-			viewer.ReadFromTie(query.Text)
-			viewer.ChangeGallery()
+	ts := tagselection.NewTagSelection(viewer.window)
+	viewer.Tie.SimpleGet("tags", func(r client.GetReply) {
+		if r.Success {
+			r.Result.ForEachValue2(func(key, val1, val2 string) {
+				switch val1 {
+				case "all":
+					ts.AddTag(val2)
+				case "favorite":
+					ts.AddFavorite(val2)
+				}
+			})
 		}
+	})
+	// query := widget.NewEntry()
+	ts.OnSelectedChanged = func() {
+		in, ex := ts.SelectedTags()
+		viewer.ReadFromTie(in, ex)
+		viewer.ChangeGallery()
 	}
-	border := container.NewBorder(query, nil, nil, nil, widget.NewButton("click 2", queryFunc))
-	split = container.NewHSplit(border, viewer.scroll)
+	// border := container.NewBorder(query, nil, nil, nil, widget.NewButton("click 2", queryFunc))
+	split = container.NewHSplit(ts, viewer.scroll)
 	split.SetOffset(0.2)
 
 	return split
 }
 
-func (viewer *ImageViewer) UpdateContent() {
+func (viewer *ImageViewer) CreateView() {
 	var mainPage fyne.CanvasObject
 	viewer.scroll = container.NewScroll(viewer.gallery)
 	if viewer.TieMode {
@@ -177,14 +189,16 @@ func (viewer *ImageViewer) LoadGallery() {
 	go func() {
 		viewer.layout.PlaceTiles(viewer.imageFiles)
 	}()
-	prevPage := widget.NewHyperlink("Prev", nil)
-	prevPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage - 1) }
-	nextPage := widget.NewHyperlink("Next", nil)
-	nextPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage + 1) }
-
-	viewer.bottomBar = container.NewHBox(prevPage, nextPage)
+	if viewer.bottomBar == nil {
+		prevPage := widget.NewHyperlink("Prev", nil)
+		prevPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage - 1) }
+		nextPage := widget.NewHyperlink("Next", nil)
+		nextPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage + 1) }
+		viewer.bottomBar = container.NewHBox(prevPage, nextPage)
+	}
 	imagesPerPage := viewer.config.General.ImagesPerPage
 	viewer.maxPages = len(viewer.imageFiles)/imagesPerPage + 1
+	viewer.bottomBar.Objects = viewer.bottomBar.Objects[:2]
 	for i := 0; i < viewer.maxPages; i++ {
 		i := i
 		start := i*imagesPerPage + 1
@@ -201,6 +215,7 @@ func (viewer *ImageViewer) LoadGallery() {
 		}
 		viewer.bottomBar.AddObject(page)
 	}
+	viewer.bottomBar.Refresh()
 }
 
 func (viewer *ImageViewer) ChangeGallery() {
@@ -211,9 +226,7 @@ func (viewer *ImageViewer) ChangeGallery() {
 	viewer.layout.currentlyLoading.Wait()
 
 	viewer.currentPage = 0
-	viewer.layout.Clear()
 	viewer.LoadGallery()
-	viewer.UpdateContent()
 	viewer.window.SetContent(viewer.Content)
 }
 
@@ -230,7 +243,6 @@ func (viewer *ImageViewer) ChangePage(page int) {
 	viewer.currentPage = page
 	viewer.layout.offset = page * viewer.config.General.ImagesPerPage
 	viewer.LoadGallery()
-	viewer.UpdateContent()
 	viewer.window.SetContent(viewer.Content)
 }
 
@@ -353,8 +365,9 @@ func (viewer *ImageViewer) InitHotkeys() {
 	}
 	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, func() {
-			if viewer.scroll == nil {
+			if viewer.Content == nil {
 				viewer.LoadGallery()
+				viewer.CreateView()
 			}
 			viewer.window.SetTitle("imgview")
 			viewer.window.SetContent(viewer.Content)
@@ -537,18 +550,38 @@ func (t *tieReader) GetReader() (io.ReadSeeker, error) {
 	return t.seeker, err
 }
 
-func (viewer *ImageViewer) ReadFromTie(key string) {
-	config := client.Config{}
-	if _, err := conf.LoadFromUserConfigDir("tie", "config.toml", &config); err != nil {
-		fmt.Println("Error reading tie config:", err)
+func (viewer *ImageViewer) ReadFromTie(include, exclude []string) {
+	if len(include) == 0 {
+		return
 	}
-	tie := client.NewTieClient(config)
-	o := client.GetOptions{Reverse: true, Filter: "tag"}
-	tie.Get(key, o, func(r client.GetReply) {
+	intersect := make([]api.Transform, len(include)-1)
+	for i := 1; i < len(include); i++ {
+		intersect[i-1] = api.Transform{
+			Key:     include[i],
+			Reverse: true,
+		}
+	}
+	var ex []api.Transform
+	if exclude != nil {
+		ex = make([]api.Transform, len(exclude))
+		for i := 0; i < len(exclude); i++ {
+			ex[i] = api.Transform{
+				Key:     exclude[i],
+				Reverse: true,
+			}
+		}
+	}
+	o := client.GetOptions{
+		Intersect: intersect,
+		Exclude:   ex,
+		Reverse:   true,
+		Filter:    "tag",
+	}
+	viewer.Tie.Get(include[0], o, func(r client.GetReply) {
 		if r.Success {
 			viewer.CustomReaders = make([]CustomReader, 0)
 			r.Result.ForEachKey(func(hash string) {
-				viewer.CustomReaders = append(viewer.CustomReaders, &tieReader{host: tie.Config.FileHosts["fast"], hash: hash})
+				viewer.CustomReaders = append(viewer.CustomReaders, &tieReader{host: viewer.Tie.Config.FileHosts["fast"], hash: hash})
 			})
 			viewer.ReadCustom()
 		} else {

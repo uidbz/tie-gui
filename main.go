@@ -4,8 +4,13 @@ import (
 	_ "embed"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"git.sr.ht/~uid/conf"
+
+	"git.sr.ht/~uid/tie/client"
 
 	// "fyne.io/fyne/v2/container"
 	// "fyne.io/fyne/v2/widget"
@@ -145,7 +150,12 @@ func main() {
 
 	case inputIsTieMode:
 		viewer.TieMode = true
-		viewer.ReadFromTie(absolutePath)
+		config := client.Config{}
+		if _, err := conf.LoadFromUserConfigDir("tie", "config.toml", &config); err != nil {
+			fmt.Println("Error reading tie config:", err)
+		}
+		viewer.Tie = client.NewTieClient(config)
+		viewer.ReadFromTie([]string{absolutePath}, nil)
 
 	default:
 		panic("Input is not understood")
@@ -156,7 +166,7 @@ func main() {
 		viewer.SetImage()
 	} else {
 		viewer.LoadGallery()
-		viewer.UpdateContent()
+		viewer.CreateView()
 		myWindow.SetContent(viewer.Content)
 	}
 	myWindow.Resize(fyne.NewSize(config.General.DefaultWidth, config.General.DefaultHeight))
