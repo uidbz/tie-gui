@@ -117,7 +117,6 @@ func main() {
 			t.Viewer.ShowImageArchive(t.Info.FullPath)
 		default:
 			t.Viewer.ChangeImage(t.Info)
-			t.Viewer.SetImage()
 		}
 	})
 
@@ -161,14 +160,19 @@ func main() {
 		panic("Input is not understood")
 	}
 
+	viewer.OnImageChange = func(info *imgviewer.ImageInfo) {
+		myWindow.Canvas().Focus(viewer.CurrentImageView)
+	}
+
+	myWindow.SetContent(viewer.Content)
+
 	if loadingImage {
 		viewer.ChangeImage(selected)
-		viewer.SetImage()
 	} else {
 		viewer.LoadGallery()
 		viewer.CreateView()
-		myWindow.SetContent(viewer.Content)
 	}
+
 	myWindow.Resize(fyne.NewSize(config.General.DefaultWidth, config.General.DefaultHeight))
 
 	myWindow.ShowAndRun()

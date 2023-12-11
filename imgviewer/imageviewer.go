@@ -31,33 +31,33 @@ import (
 )
 
 type ImageViewer struct {
-	// Content       fyne.CanvasObject
-	Content       fyne.CanvasObject
-	CurrentImage  fyne.CanvasObject
+	Content       *fyne.Container
+	CurrentImage  *fyne.Container
 	CustomReaders []CustomReader
 	TieMode       bool
 	Tie           *client.TieClient
 
-	gallery        *fyne.Container
-	imageFiles     []*ImageInfo
-	imageContainer *fyne.Container
-	layout         *TileLayout
-	window         fyne.Window
-	app            fyne.App
-	currentIndex   int
-	currentImage   *ImageView
-	currentPath    string
-	cache          map[string]*ImageView
-	scroll         *container.Scroll
-	hotkeys        []Hotkey
-	loading        sync.WaitGroup
-	config         Config
-	bottomBar      *fyne.Container
+	gallery          *fyne.Container
+	imageFiles       []*ImageInfo
+	layout           *TileLayout
+	window           fyne.Window
+	app              fyne.App
+	currentIndex     int
+	CurrentImageView *ImageView
+	currentPath      string
+	cache            map[string]*ImageView
+	scroll           *container.Scroll
+	hotkeys          []Hotkey
+	loading          sync.WaitGroup
+	galleryLoaded    bool
+	config           Config
+	bottomBar        *fyne.Container
 
 	tileOnclick       func(*Tile)
 	OnTapped          func()
 	OnDoubleTapped    func()
 	OnTappedSecondary func()
+	OnImageChange     func(info *ImageInfo)
 
 	currentPage  int
 	maxPages     int
@@ -105,12 +105,13 @@ type GalleryConfig struct {
 
 func NewImageViewer(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *ImageViewer {
 	return &ImageViewer{
-		app:            app,
-		window:         window,
-		imageContainer: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
-		cache:          make(map[string]*ImageView),
-		config:         config,
-		tileOnclick:    tileOnclick,
+		app:          app,
+		window:       window,
+		Content:      container.NewStack([]fyne.CanvasObject{}...),
+		CurrentImage: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
+		cache:        make(map[string]*ImageView),
+		config:       config,
+		tileOnclick:  tileOnclick,
 	}
 }
 
@@ -181,7 +182,10 @@ func (viewer *ImageViewer) CreateView() {
 	} else {
 		mainPage = viewer.scroll
 	}
-	viewer.Content = container.NewBorder(nil, viewer.bottomBar, nil, nil, mainPage)
+	// viewer.Content.Objects = []fyne.CanvasObject{}
+	// viewer.Content.Refresh()
+	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, viewer.bottomBar, nil, nil, mainPage)}
+	// viewer.Content = container.NewBorder(nil, viewer.bottomBar, nil, nil, mainPage)
 }
 
 func (viewer *ImageViewer) LoadGallery() {
@@ -216,6 +220,11 @@ func (viewer *ImageViewer) LoadGallery() {
 		viewer.bottomBar.AddObject(page)
 	}
 	viewer.bottomBar.Refresh()
+	viewer.galleryLoaded = true
+}
+
+func (viewer *ImageViewer) CurrentImageInfo() *ImageInfo {
+	return viewer.CurrentImageView.info
 }
 
 func (viewer *ImageViewer) ChangeGallery() {
@@ -272,14 +281,14 @@ func (viewer *ImageViewer) LoadImageToCache(info *ImageInfo) *ImageView {
 
 func (viewer *ImageViewer) ToggleFullscreen() {
 	viewer.isFullscreen = !viewer.isFullscreen
-	viewer.currentImage.fillWindow = false
+	viewer.CurrentImageView.fillWindow = false
 	viewer.window.SetFullScreen(viewer.isFullscreen)
-	viewer.currentImage.fillWindow = true
-	viewer.imageContainer.Refresh()
+	viewer.CurrentImageView.fillWindow = true
+	viewer.Content.Refresh()
 }
 
 func (viewer *ImageViewer) RunCmdA() {
-	cmd := strings.ReplaceAll(viewer.config.Image.CmdA, "$FILE", viewer.currentImage.info.Path)
+	cmd := strings.ReplaceAll(viewer.config.Image.CmdA, "$FILE", viewer.CurrentImageView.info.Path)
 	c := exec.Command("/bin/sh", append([]string{"-c", cmd})...)
 	go func() {
 		if output, err := c.CombinedOutput(); err != nil {
@@ -292,7 +301,7 @@ func (viewer *ImageViewer) RunCmdA() {
 
 func (viewer *ImageViewer) SaveImage() {
 	if viewer.config.Image.SaveDir != "" {
-		info := viewer.currentImage.info
+		info := viewer.CurrentImageView.info
 		if r, err := info.GetReader(); err == nil {
 			if data, err := io.ReadAll(r); err == nil {
 				filename := filepath.Base(info.Path)
@@ -339,36 +348,34 @@ func (viewer *ImageViewer) InitHotkeys() {
 	for _, x := range bindings.NextImage {
 		add(Hotkey{x, func() {
 			viewer.ChangeImage(viewer.NextImage())
-			viewer.SetImage()
 		}})
 	}
 	for _, x := range bindings.PreviousImage {
 		add(Hotkey{x, func() {
 			viewer.ChangeImage(viewer.PrevImage())
-			viewer.SetImage()
 		}})
 	}
 	for _, x := range bindings.RotateLeft {
 		add(Hotkey{x, func() {
-			viewer.currentImage.RotateLeft()
+			viewer.CurrentImageView.RotateLeft()
 		}})
 	}
 	for _, x := range bindings.RotateRight {
 		add(Hotkey{x, func() {
-			viewer.currentImage.RotateRight()
+			viewer.CurrentImageView.RotateRight()
 		}})
 	}
 	for _, x := range bindings.OriginalSize {
 		add(Hotkey{x, func() {
-			viewer.currentImage.OriginalSize()
+			viewer.CurrentImageView.OriginalSize()
 		}})
 	}
 	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, func() {
-			if viewer.Content == nil {
+			if !viewer.galleryLoaded {
 				viewer.LoadGallery()
-				viewer.CreateView()
 			}
+			viewer.CreateView()
 			viewer.window.SetTitle("imgview")
 			viewer.window.SetContent(viewer.Content)
 		}})
@@ -380,18 +387,18 @@ func (viewer *ImageViewer) InitHotkeys() {
 	}
 	for _, x := range bindings.FillWindow {
 		add(Hotkey{x, func() {
-			viewer.currentImage.fillWindow = true
-			viewer.imageContainer.Refresh()
+			viewer.CurrentImageView.fillWindow = true
+			viewer.Content.Refresh()
 		}})
 	}
 	for _, x := range bindings.Filtering {
 		add(Hotkey{x, func() {
-			if viewer.currentImage.fyneImage.ScaleMode == canvas.ImageScaleFastest {
-				viewer.currentImage.fyneImage.ScaleMode = canvas.ImageScalePixels
+			if viewer.CurrentImageView.fyneImage.ScaleMode == canvas.ImageScaleFastest {
+				viewer.CurrentImageView.fyneImage.ScaleMode = canvas.ImageScalePixels
 			} else {
-				viewer.currentImage.fyneImage.ScaleMode = canvas.ImageScaleFastest
+				viewer.CurrentImageView.fyneImage.ScaleMode = canvas.ImageScaleFastest
 			}
-			viewer.imageContainer.Refresh()
+			viewer.Content.Refresh()
 		}})
 	}
 	for _, x := range bindings.FullScreen {
@@ -414,26 +421,30 @@ func (viewer *ImageViewer) InitHotkeys() {
 func (viewer *ImageViewer) ChangeImage(info *ImageInfo) {
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
-	viewer.currentImage = img
+	viewer.CurrentImageView = img
 	go func() {
 		viewer.LoadImageToCache(viewer.NextImage())
 	}()
 	img.fillWindow = true
-	img.container = viewer.imageContainer
+	img.container = viewer.Content
 	img.hotkeys = viewer.hotkeys
-	viewer.imageContainer.Objects = []fyne.CanvasObject{img}
+	viewer.CurrentImage.Objects = []fyne.CanvasObject{img}
 	if info.order != -1 {
 		viewer.currentIndex = info.order
 	}
-	viewer.CurrentImage = viewer.imageContainer
-	viewer.imageContainer.Refresh()
+	// viewer.CurrentImage = viewer.imageContainer
+	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
+	viewer.Content.Refresh()
+	if viewer.OnImageChange != nil {
+		viewer.OnImageChange(info)
+	}
 	img.changeFn()
 }
 
-func (viewer *ImageViewer) SetImage() {
-	viewer.window.SetContent(viewer.imageContainer)
-	viewer.window.Canvas().Focus(viewer.currentImage)
-}
+// func (viewer *ImageViewer) SetImage() {
+// 	viewer.window.SetContent(viewer.imageContainer)
+// 	viewer.window.Canvas().Focus(viewer.currentImage)
+// }
 
 func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 	viewer.loading.Add(1)
