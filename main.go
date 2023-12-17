@@ -154,7 +154,7 @@ func main() {
 			fmt.Println("Error reading tie config:", err)
 		}
 		viewer.Tie = client.NewTieClient(config)
-		viewer.ReadFromTie([]string{absolutePath}, nil)
+		viewer.ReadFromTie([]string{absolutePath}, nil, "tag")
 
 	default:
 		panic("Input is not understood")

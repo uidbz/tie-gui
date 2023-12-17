@@ -164,7 +164,7 @@ func (viewer *ImageViewer) MakeTieSidebar(mainPage fyne.CanvasObject) fyne.Canva
 	// query := widget.NewEntry()
 	ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
-		viewer.ReadFromTie(in, ex)
+		viewer.ReadFromTie(in, ex, "tag")
 		viewer.ChangeGallery()
 	}
 	// border := container.NewBorder(query, nil, nil, nil, widget.NewButton("click 2", queryFunc))
@@ -561,7 +561,7 @@ func (t *tieReader) GetReader() (io.ReadSeeker, error) {
 	return t.seeker, err
 }
 
-func (viewer *ImageViewer) ReadFromTie(include, exclude []string) {
+func (viewer *ImageViewer) ReadFromTie(include, exclude []string, filter string) {
 	if len(include) == 0 {
 		return
 	}
@@ -586,7 +586,7 @@ func (viewer *ImageViewer) ReadFromTie(include, exclude []string) {
 		Intersect: intersect,
 		Exclude:   ex,
 		Reverse:   true,
-		Filter:    "tag",
+		Filter:    filter,
 	}
 	viewer.Tie.Get(include[0], o, func(r client.GetReply) {
 		if r.Success {
