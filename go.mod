@@ -5,13 +5,14 @@ go 1.21.0
 toolchain go1.21.4
 
 require (
-	fyne.io/fyne/v2 v2.4.2
+	fyne.io/fyne/v2 v2.4.3
 	git.sr.ht/~uid/conf v1.1.5
 	git.sr.ht/~uid/tie v0.3.2-0.20231213084537-0cba977a80ea
 	github.com/disintegration/imaging v1.6.2
 	github.com/h2non/filetype v1.1.3
 	github.com/mholt/archiver/v4 v4.0.0-alpha.8
 	github.com/pelletier/go-toml/v2 v2.1.1
+	github.com/pkg/profile v1.7.0
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 )
 
@@ -26,6 +27,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dsnet/compress v0.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
+	github.com/felixge/fgprof v0.9.3 // indirect
 	github.com/fredbi/uri v1.0.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/fyne-io/gl-js v0.0.0-20220119005834-d2da28d9ccfe // indirect
@@ -38,6 +40,7 @@ require (
 	github.com/go-text/typesetting v0.0.0-20230616162802-9c17dd34aa4a // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/google/pprof v0.0.0-20211214055906-6f57359322fd // indirect
 	github.com/gopherjs/gopherjs v1.17.2 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect

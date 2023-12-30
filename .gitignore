@@ -3,3 +3,4 @@
 fyne-cross/*
 package/*
 imgview
+imgview.debug

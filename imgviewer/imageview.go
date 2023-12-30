@@ -221,8 +221,9 @@ func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 	}
 	// iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
 	iv.pos = drag.AbsolutePosition.Subtract(iv.startPos)
+	iv.Move(iv.pos)
 
-	iv.container.Refresh()
+	// iv.container.Refresh()
 }
 
 func (iv *ImageView) DragEnd() {
