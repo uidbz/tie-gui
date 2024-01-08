@@ -81,7 +81,9 @@ func LoadConfig(window fyne.Window) (config imgviewer.Config) {
 	if err := toml.Unmarshal(configData, &config); err != nil {
 		panic("Bundled config is not valid TOML: " + err.Error())
 	}
-
+	if config.General.ThumbnailDir == "" {
+		config.General.ThumbnailDir = filepath.Join(os.TempDir(), "imgview")
+	}
 	if dir, err := os.UserConfigDir(); err == nil {
 		imgviewConfig := filepath.Join(dir, "imgview", "config.toml")
 		if _, err2 := os.Stat(imgviewConfig); !os.IsNotExist(err2) {
@@ -95,6 +97,9 @@ func LoadConfig(window fyne.Window) (config imgviewer.Config) {
 				window.ShowAndRun()
 			}
 		}
+	}
+	if config.General.ThumbnailDir == "" {
+		config.General.ThumbnailDir = filepath.Join(os.TempDir(), "imgview")
 	}
 
 	return config

@@ -1,7 +1,13 @@
 package imgviewer
 
 import (
+	"errors"
+	"image/jpeg"
+	"os"
 	"path/filepath"
+
+	"git.sr.ht/~uid/tie/io/putlib"
+
 	// "path/filepath"
 	// "archive/zip"
 	"bytes"
@@ -53,11 +59,6 @@ type Tile struct {
 }
 
 type ImageInfo struct {
-	InputIsArchive    bool
-	InputIsDir        bool
-	InputIsReader     bool
-	IsZoomable        bool
-	IsDraggable       bool
 	Path              string
 	FullPath          string // Used to get path of zipFile
 	ShowArchive       bool
@@ -66,9 +67,15 @@ type ImageInfo struct {
 	OnDoubleTapped    func()
 	OnTappedSecondary func()
 
-	archiveName string
-	archiveFile fs.FS
-	order       int
+	archiveName       string
+	archiveFile       fs.FS
+	order             int
+	InputIsArchive    bool
+	InputIsDir        bool
+	InputIsReader     bool
+	IsZoomable        bool
+	IsDraggable       bool
+	ThumbnailIsScaled bool
 }
 
 func NewImageInfo(order int, path string) *ImageInfo {
@@ -127,10 +134,14 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	}
 	layout.grid.Objects = make([]fyne.CanvasObject, 0)
 	for i := layout.offset; i < end; i++ {
-		tile := layout.NewImageTile(loadingImg, imageFiles[i], func(t *Tile) {})
-		layout.tiles = append(layout.tiles, tile)
-		layout.grid.AddObject(tile)
-		layout.imagesToLoad <- imageFiles[i]
+		tile, err := layout.NewImageTile(loadingImg, imageFiles[i], func(t *Tile) {})
+		if err != nil {
+			fmt.Println("Error loading tile:", err)
+		} else {
+			layout.tiles = append(layout.tiles, tile)
+			layout.grid.AddObject(tile)
+			layout.imagesToLoad <- imageFiles[i]
+		}
 	}
 }
 
@@ -227,18 +238,24 @@ func (layout *TileLayout) imageLoader() {
 		if t, ok := layout.tileFromCache(tc.Path); ok {
 			tile = t
 		} else {
-			reader, err := tc.GetReader()
+			thumb, err := layout.GetThumbnail(tc)
 			if err != nil {
-				fmt.Println("Error getting reader:", err)
+				fmt.Println("Error creating thumbnail:", err)
+				layout.currentlyLoading.Done()
 				continue
 			}
-			tile = layout.NewImageTile(reader, tc, layout.tabFn)
+			tile, err = layout.NewImageTile(thumb, tc, layout.tabFn)
+			if err != nil {
+				fmt.Println("Error creating tile:", err)
+				layout.currentlyLoading.Done()
+				continue
+			}
 			layout.tileToCache(tc.Path, tile)
 		}
 		layout.tiles[tc.order-layout.offset] = tile
 		layout.grid.Objects[tc.order-layout.offset] = tile
 
-		if i == 10 { // Refresh grid every 10 images
+		if i == 20 { // Refresh grid every 10 images
 			layout.grid.Refresh()
 			i = 0
 		} else {
@@ -250,11 +267,90 @@ func (layout *TileLayout) imageLoader() {
 	}
 }
 
-func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *ImageInfo, tabFn func(t *Tile)) *Tile {
+func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
+	var thumbnail string
+	var thumbnailDir string = layout.config.General.ThumbnailDir
+	var reader io.ReadSeeker
+	var hash string
+	if context.InputIsReader { // should check specifically for tie
+		hash = context.Path
+	} else {
+		pc := putlib.PutConfig{}
+		r, err := context.GetReader()
+		if err != nil {
+			return nil, err
+		}
+		r.Seek(0, io.SeekStart)
+		b, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		hash, err = pc.AddressOf(bytes.NewReader(b))
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(b)
+	}
+	if len(hash) != 64 {
+		return nil, errors.New("Invalid hash: " + hash)
+	}
+	max := lvlDeep * dirWidth
+	for i := 0; i <= max; i = i + dirWidth {
+		thumbnailDir = filepath.Join(thumbnailDir, hash[i:i+dirWidth])
+	}
+	thumbnail = filepath.Join(thumbnailDir, hash)
+	if _, err := os.Stat(thumbnail); err == nil {
+		reader, err = os.Open(thumbnail)
+		if err != nil {
+			return nil, err
+		}
+		context.ThumbnailIsScaled = true
+		return reader, nil
+	} else {
+		if reader == nil {
+			reader, err = context.GetReader()
+			if err != nil {
+				return nil, err
+			}
+		}
+		err := os.MkdirAll(thumbnailDir, 0755)
+		if err != nil {
+			fmt.Println("Error creating thumbnail dir at:", thumbnailDir)
+		} else {
+			decoded, _, err := Decode(reader)
+			if err != nil {
+				return nil, err
+			}
+			tileWidth := int(layout.config.General.TileWidth)
+			scaled := scaleImage(decoded, tileWidth*2)
+			decoded = nil
+			buf := &bytes.Buffer{}
+			err = jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90})
+			if err == nil {
+				if err := os.WriteFile(thumbnail, buf.Bytes(), 0755); err != nil {
+					fmt.Println("Error writing thumbnail to:", thumbnail)
+				}
+			}
+			context.ThumbnailIsScaled = true
+
+			return bytes.NewReader(buf.Bytes()), nil
+		}
+	}
+
+	return context.GetReader()
+}
+
+const (
+	lvlDeep  = 3
+	dirWidth = 2
+	max      = lvlDeep * dirWidth
+)
+
+func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, context *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
 	t := &Tile{
 		Viewer: layout.viewer,
 	}
-	decoded, _, err := Decode(imgReader)
+	decoded, _, err := Decode(reader)
 	if err != nil {
 		fmt.Println("Error decoding image when creating new tile:", err, context)
 	}
@@ -263,19 +359,9 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *ImageIn
 		decoded2, _, _ := Decode(na)
 		decoded = decoded2
 	}
-	tileWidth := int(layout.config.General.TileWidth)
-	if decoded.Bounds().Max.X > decoded.Bounds().Max.Y {
-		tileWidth = int(layout.config.General.TileWidth * 2)
-	}
-	var img *canvas.Image
-	if tileWidth > decoded.Bounds().Max.X {
-		img = canvas.NewImageFromImage(decoded) // do not resize if picture is smaller than tile
-		decoded = nil
-	} else {
-		scaled := scaleImage(decoded, tileWidth)
-		decoded = nil
-		img = canvas.NewImageFromImage(scaled)
-	}
+	img := canvas.NewImageFromImage(decoded) // do not resize if picture is smaller than tile
+	decoded = nil
+
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
 	t.Info = context
@@ -287,7 +373,7 @@ func (layout *TileLayout) NewImageTile(imgReader io.ReadSeeker, context *ImageIn
 
 	t.ExtendBaseWidget(t)
 
-	return t
+	return t, nil
 }
 
 func (t *Tile) Tapped(_ *fyne.PointEvent) {

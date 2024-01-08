@@ -21,6 +21,7 @@ ScrollUp = ['Up', 'K']
 PathLevelUp = ['BackSpace']
 
 [General]
+ThumbnailDir = ''
 DefaultWidth = 1024.0
 DefaultHeight = 1024.0
 TileWidth = 300.0

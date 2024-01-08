@@ -71,6 +71,7 @@ type Config struct {
 }
 
 type GeneralConfig struct {
+	ThumbnailDir  string
 	DefaultWidth  float32
 	DefaultHeight float32
 	TileWidth     float32
@@ -176,16 +177,15 @@ func (viewer *ImageViewer) MakeTieSidebar(mainPage fyne.CanvasObject) fyne.Canva
 
 func (viewer *ImageViewer) CreateView() {
 	var mainPage fyne.CanvasObject
-	viewer.scroll = container.NewScroll(viewer.gallery)
+	if viewer.scroll == nil {
+		viewer.scroll = container.NewScroll(viewer.gallery)
+	}
 	if viewer.TieMode {
 		mainPage = viewer.MakeTieSidebar(viewer.scroll)
 	} else {
 		mainPage = viewer.scroll
 	}
-	// viewer.Content.Objects = []fyne.CanvasObject{}
-	// viewer.Content.Refresh()
 	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, viewer.bottomBar, nil, nil, mainPage)}
-	// viewer.Content = container.NewBorder(nil, viewer.bottomBar, nil, nil, mainPage)
 }
 
 func (viewer *ImageViewer) LoadGallery() {
@@ -247,7 +247,9 @@ func (viewer *ImageViewer) ChangePage(page int) {
 	for len(viewer.layout.imagesToLoad) > 0 {
 		<-viewer.layout.imagesToLoad
 	}
+	fmt.Println("Currently waiting")
 	viewer.layout.currentlyLoading.Wait()
+	fmt.Println("finished waiting")
 
 	viewer.currentPage = page
 	viewer.layout.offset = page * viewer.config.General.ImagesPerPage
