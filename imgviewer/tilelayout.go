@@ -299,7 +299,7 @@ func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error
 		thumbnailDir = filepath.Join(thumbnailDir, hash[i:i+dirWidth])
 	}
 	thumbnail = filepath.Join(thumbnailDir, hash)
-	if _, err := os.Stat(thumbnail); err == nil {
+	if _, err := os.Stat(thumbnail); err == nil && !layout.viewer.refreshThumbs { // && false {
 		reader, err = os.Open(thumbnail)
 		if err != nil {
 			return nil, err

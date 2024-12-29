@@ -40,6 +40,7 @@ type ImageView struct {
 	fillWindow        bool
 	info              *ImageInfo
 	dragStart         bool
+	showTagger        bool
 	focus             func(fyne.Focusable)
 	hotkeys           []Hotkey
 	w                 fyne.Window

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	"git.sr.ht/~uid/tie/tiedb"
+
 	"git.sr.ht/~uid/tie/api"
 
 	"git.sr.ht/~uid/imgview/imgviewer/tagselection"
@@ -35,6 +37,7 @@ type ImageViewer struct {
 	CurrentImage  *fyne.Container
 	CustomReaders []CustomReader
 	TieMode       bool
+	TagMode       bool
 	Tie           *client.TieClient
 
 	gallery          *fyne.Container
@@ -52,6 +55,8 @@ type ImageViewer struct {
 	galleryLoaded    bool
 	config           Config
 	bottomBar        *fyne.Container
+	tagSidebar       *tagselection.TagSelection
+	refreshThumbs    bool
 
 	tileOnclick       func(*Tile)
 	OnTapped          func()
@@ -92,6 +97,7 @@ type ImageConfig struct {
 	Quit          []fyne.KeyName
 	FullScreen    []fyne.KeyName
 	RunCmda       []fyne.KeyName
+	ShowTagbar    []fyne.KeyName
 	CmdA          string
 	SaveImage     []fyne.KeyName
 	SaveDir       string
@@ -105,15 +111,22 @@ type GalleryConfig struct {
 }
 
 func NewImageViewer(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *ImageViewer {
-	return &ImageViewer{
-		app:          app,
-		window:       window,
-		Content:      container.NewStack([]fyne.CanvasObject{}...),
-		CurrentImage: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
-		cache:        make(map[string]*ImageView),
-		config:       config,
-		tileOnclick:  tileOnclick,
+	// rect := canvas.NewRectangle(color.Black)
+	// rect.SetMinSize(fyne.NewSize(100, 100))
+	iv := &ImageViewer{
+		app:     app,
+		window:  window,
+		Content: container.NewStack([]fyne.CanvasObject{}...),
+		// CurrentImage: container.NewBorder(nil, nil, nil, rect, container.New(&ImageLayout{}, []fyne.CanvasObject{}...)),
+		CurrentImage:  container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
+		cache:         make(map[string]*ImageView),
+		config:        config,
+		tileOnclick:   tileOnclick,
+		refreshThumbs: false,
 	}
+	iv.makeTagSidebar()
+
+	return iv
 }
 
 func (viewer *ImageViewer) KeyPress(key *fyne.KeyEvent) {
@@ -420,6 +433,11 @@ func (viewer *ImageViewer) InitHotkeys() {
 	}
 }
 
+func (viewer *ImageViewer) makeTagSidebar() {
+	viewer.tagSidebar = tagselection.NewTagSelection(viewer.window)
+
+}
+
 func (viewer *ImageViewer) ChangeImage(info *ImageInfo) {
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
@@ -435,7 +453,11 @@ func (viewer *ImageViewer) ChangeImage(info *ImageInfo) {
 		viewer.currentIndex = info.order
 	}
 	// viewer.CurrentImage = viewer.imageContainer
-	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
+	if viewer.TieMode && viewer.TagMode {
+		viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, nil, nil, viewer.tagSidebar, viewer.CurrentImage)}
+	} else {
+		viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
+	}
 	viewer.Content.Refresh()
 	if viewer.OnImageChange != nil {
 		viewer.OnImageChange(info)
@@ -525,15 +547,15 @@ func (viewer *ImageViewer) ReadCustom() {
 
 	viewer.imageFiles = make([]*ImageInfo, 0)
 	for i, r := range viewer.CustomReaders {
-		if reader, err := r.GetReader(); err == nil {
-			if IsImage(reader) {
-				info := NewImageInfoCustomReader(i, r)
-				info.Path = r.Path()
-				viewer.imageFiles = append(viewer.imageFiles, info)
-			}
-		} else {
-			fmt.Println("Error getting reader:", err)
-		}
+		// if reader, err := r.GetReader(); err == nil {
+		// 	if IsImage(reader) {
+		info := NewImageInfoCustomReader(i, r)
+		info.Path = r.Path()
+		viewer.imageFiles = append(viewer.imageFiles, info)
+		// }
+		// } else {
+		// 	fmt.Println("Error getting reader:", err)
+		// }
 	}
 }
 
@@ -589,6 +611,7 @@ func (viewer *ImageViewer) ReadFromTie(include, exclude []string, filter string)
 		Exclude:   ex,
 		Reverse:   true,
 		Filter:    filter,
+		Sort:      tiedb.SortOptions{Limit: -1},
 	}
 	viewer.Tie.Get(include[0], o, func(r client.GetReply) {
 		if r.Success {

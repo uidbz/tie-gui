@@ -160,6 +160,7 @@ func main() {
 		}
 		viewer.Tie = client.NewTieClient(config)
 		viewer.ReadFromTie([]string{absolutePath}, nil, "tag")
+		// viewer.ReadFromTie([]string{"4"}, nil, "rating")
 
 	default:
 		panic("Input is not understood")
