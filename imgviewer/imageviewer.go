@@ -16,8 +16,6 @@ import (
 
 	"git.sr.ht/~uid/tie/tiedb"
 
-	"git.sr.ht/~uid/tie/api"
-
 	"git.sr.ht/~uid/imgview/imgviewer/tagselection"
 
 	"git.sr.ht/~uid/tie/io/getlib"
@@ -163,18 +161,25 @@ func (viewer *ImageViewer) Init() {
 func (viewer *ImageViewer) MakeTieSidebar(mainPage fyne.CanvasObject) fyne.CanvasObject {
 	var split *container.Split
 	ts := tagselection.NewTagSelection(viewer.window)
-	viewer.Tie.SimpleGet("tags", func(r client.GetReply) {
-		if r.Success {
+	go func() {
+		r, err := viewer.Tie.SimpleGet("tags")
+		if err == nil {
 			r.Result.ForEachValue2(func(key, val1, val2 string) {
 				switch val1 {
 				case "all":
-					ts.AddTag(val2)
+					fyne.Do(func() {
+						ts.AddTag(val2)
+					})
 				case "favorite":
-					ts.AddFavorite(val2)
+					fyne.Do(func() {
+						ts.AddFavorite(val2)
+					})
 				}
 			})
+		} else {
+			fmt.Println("Error getting tags:", err)
 		}
-	})
+	}()
 	// query := widget.NewEntry()
 	ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
@@ -284,7 +289,9 @@ func (viewer *ImageViewer) LoadImageToCache(info *ImageInfo) *ImageView {
 		img := NewImageView(info, viewer.window.Canvas().Size(), true, viewer.window, viewer.window.Canvas().Focus)
 		img.changeFn = func() {
 			go func() {
-				viewer.window.SetTitle("imgview - " + img.GetImageInfo())
+				fyne.Do(func() {
+					viewer.window.SetTitle("imgview - " + img.GetImageInfo())
+				})
 			}()
 		}
 		viewer.cache[info.Path] = img
@@ -574,7 +581,7 @@ func (t *tieReader) GetReader() (io.ReadSeeker, error) {
 	var err error
 	var r io.Reader
 	if t.seeker == nil {
-		r, err = getlib.ReadFile(t.host, t.hash)
+		r, err = getlib.ReadFile(nil, t.host, t.hash)
 		if err == nil {
 			t.data, err = io.ReadAll(r)
 			if err == nil {
@@ -589,41 +596,32 @@ func (viewer *ImageViewer) ReadFromTie(include, exclude []string, filter string)
 	if len(include) == 0 {
 		return
 	}
-	intersect := make([]api.Transform, len(include)-1)
-	for i := 1; i < len(include); i++ {
-		intersect[i-1] = api.Transform{
-			Key:     include[i],
-			Reverse: true,
-		}
+	// First tag becomes the seed key, rest go into Include
+	var includeRest []string
+	if len(include) > 1 {
+		includeRest = include[1:]
 	}
-	var ex []api.Transform
-	if exclude != nil {
-		ex = make([]api.Transform, len(exclude))
-		for i := 0; i < len(exclude); i++ {
-			ex[i] = api.Transform{
-				Key:     exclude[i],
-				Reverse: true,
-			}
-		}
-	}
+	
 	o := client.GetOptions{
-		Intersect: intersect,
-		Exclude:   ex,
-		Reverse:   true,
-		Filter:    filter,
-		Sort:      tiedb.SortOptions{Limit: -1},
+		Include: includeRest,
+		Exclude: exclude,
+		Reverse: true,
+		Filter:  filter,
+		Sort:    tiedb.SortOptions{Limit: -1},
 	}
-	viewer.Tie.Get(include[0], o, func(r client.GetReply) {
-		if r.Success {
+	
+	go func() {
+		r, err := viewer.Tie.Get(include[0], o)
+		if err == nil {
 			viewer.CustomReaders = make([]CustomReader, 0)
 			r.Result.ForEachKey(func(hash string) {
-				viewer.CustomReaders = append(viewer.CustomReaders, &tieReader{host: viewer.Tie.Config.FileHosts["fast"], hash: hash})
+				viewer.CustomReaders = append(viewer.CustomReaders, &tieReader{host: viewer.Tie.Config.FileHosts["fast"].URL, hash: hash})
 			})
 			viewer.ReadCustom()
 		} else {
-			fmt.Println("Error happened quering tie:", r.Message)
+			fmt.Println("Error happened querying tie:", err)
 		}
-	})
+	}()
 }
 
 func (viewer *ImageViewer) ReadImageArchive(zipFile string) {

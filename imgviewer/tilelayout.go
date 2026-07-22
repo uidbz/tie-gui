@@ -132,14 +132,19 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	if end > len(imageFiles) {
 		end = len(imageFiles)
 	}
-	layout.grid.Objects = make([]fyne.CanvasObject, 0)
+	fyne.Do(func() {
+		layout.grid.Objects = make([]fyne.CanvasObject, 0)
+	})
 	for i := layout.offset; i < end; i++ {
 		tile, err := layout.NewImageTile(loadingImg, imageFiles[i], func(t *Tile) {})
 		if err != nil {
 			fmt.Println("Error loading tile:", err)
 		} else {
 			layout.tiles = append(layout.tiles, tile)
-			layout.grid.AddObject(tile)
+			tileCopy := tile // Capture tile in closure
+			fyne.Do(func() {
+				layout.grid.AddObject(tileCopy)
+			})
 			layout.imagesToLoad <- imageFiles[i]
 		}
 	}
@@ -224,10 +229,13 @@ func (layout *TileLayout) tileToCache(path string, tile *Tile) {
 func (layout *TileLayout) imageLoader() {
 	i := 0
 	refreshTimer := time.NewTimer(500 * time.Millisecond)
+
 	go func() {
 		for {
 			<-refreshTimer.C
-			layout.grid.Refresh()
+			fyne.Do(func() {
+				layout.grid.Refresh()
+			})
 		}
 	}()
 
@@ -250,14 +258,23 @@ func (layout *TileLayout) imageLoader() {
 				layout.currentlyLoading.Done()
 				continue
 			}
-			layout.tileToCache(tc.Path, tile)
+		layout.tileToCache(tc.Path, tile)
+	}
+	layout.tiles[tc.order-layout.offset] = tile
+	
+	tileCopy := tile
+	idx := tc.order - layout.offset
+	fyne.Do(func() {
+		if idx >= 0 && idx < len(layout.grid.Objects) {
+			layout.grid.Objects[idx] = tileCopy
 		}
-		layout.tiles[tc.order-layout.offset] = tile
-		layout.grid.Objects[tc.order-layout.offset] = tile
+	})
 
-		if i == 20 { // Refresh grid every 10 images
+	if i == 20 { // Refresh grid every 10 images
+		fyne.Do(func() {
 			layout.grid.Refresh()
-			i = 0
+		})
+		i = 0
 		} else {
 			refreshTimer.Reset(500 * time.Millisecond) // Refresh grid 500 ms after last loaded image
 		}

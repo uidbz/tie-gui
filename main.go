@@ -108,7 +108,7 @@ func LoadConfig(window fyne.Window) (config imgviewer.Config) {
 func main() {
 	// defer profile.Start(profile.CPUProfile).Stop()
 	// defer profile.Start().Stop()
-	myApp := app.New()
+	myApp := app.NewWithID("sr.ht.uid.imgview")
 	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
 	myWindow := myApp.NewWindow("imgview")
 
