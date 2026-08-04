@@ -1,19 +1,23 @@
 package gallery
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"image"
 	"image/color"
+	stdraw "image/draw"
 	"image/jpeg"
+	"io"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	// "path/filepath"
 	// "archive/zip"
 	"bytes"
 	"fmt"
-	"io"
-	"io/fs"
 	"time"
 
 	_ "embed"
@@ -354,8 +358,12 @@ func (layout *TileLayout) imageLoader() {
 }
 
 func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
-	// Video files cannot be decoded as images; return the loading placeholder.
+	// Video files: extract a frame thumbnail for local files; fall back to
+	// the loading placeholder for network-backed (CustomReader) entries.
 	if context.InputIsVideo {
+		if !context.InputIsReader {
+			return layout.videoThumbnail(context)
+		}
 		return bytes.NewReader(loading), nil
 	}
 
@@ -471,6 +479,144 @@ func (layout *TileLayout) makeDirectoryComposite(paths []string) []byte {
 	buf := &bytes.Buffer{}
 	jpeg.Encode(buf, composite, &jpeg.Options{Quality: 85})
 	return buf.Bytes()
+}
+
+// videoThumbnail generates (or retrieves from disk cache) a thumbnail for a
+// local video file. It extracts the first decodable frame using ffmpeg, scales
+// it to 2×tileWidth wide, and overlays a circular play icon in the top-left
+// corner. On any failure it falls back to the loading placeholder.
+func (layout *TileLayout) videoThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
+	tileW := int(layout.config.General.TileWidth)
+
+	// Check disk cache before running ffmpeg.
+	cachePath := layout.videoThumbnailCachePath(context.Path)
+	if data, err := os.ReadFile(cachePath); err == nil {
+		context.ThumbnailIsScaled = true
+		return bytes.NewReader(data), nil
+	}
+
+	// Extract a frame; fall back to loading placeholder if ffmpeg is absent.
+	frame := extractVideoFrame(context.Path)
+	if frame == nil {
+		return bytes.NewReader(loading), nil
+	}
+
+	// Scale to 2×tileWidth wide, keeping aspect ratio.
+	scaled := ScaleImage(frame, tileW*2)
+
+	// Convert to NRGBA for pixel-level drawing.
+	result := image.NewNRGBA(scaled.Bounds())
+	stdraw.Draw(result, result.Bounds(), scaled, image.Point{}, stdraw.Src)
+
+	// Overlay play icon in top-left corner.
+	iconPx := tileW * 2 / 4 // ~25 % of image width; halved at display scale
+	if iconPx < 24 {
+		iconPx = 24
+	}
+	drawVideoPlayIcon(result, iconPx/4, iconPx/4, iconPx)
+
+	// Encode and write to cache.
+	buf := &bytes.Buffer{}
+	jpeg.Encode(buf, result, &jpeg.Options{Quality: 90})
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
+		os.WriteFile(cachePath, buf.Bytes(), 0644)
+	}
+
+	context.ThumbnailIsScaled = true
+	return bytes.NewReader(buf.Bytes()), nil
+}
+
+// videoThumbnailCachePath returns the path under ThumbnailDir where the video
+// thumbnail is cached, using a SHA-256 hash of the video file path as the key
+// (avoiding reading the full video file just for hashing).
+func (layout *TileLayout) videoThumbnailCachePath(videoPath string) string {
+	sum := sha256.Sum256([]byte(videoPath))
+	hash := "v" + hex.EncodeToString(sum[:])
+	dir := layout.config.General.ThumbnailDir
+	for i := 0; i < 3; i++ {
+		// skip the "v" prefix when indexing into the hash for dir levels
+		dir = filepath.Join(dir, hash[i*2+1:i*2+3])
+	}
+	return filepath.Join(dir, hash)
+}
+
+// extractVideoFrame runs ffmpeg to extract one frame from the video at
+// approximately the 1-second mark, returning it as an image.Image. Returns
+// nil if ffmpeg is not available or the extraction fails.
+func extractVideoFrame(videoPath string) image.Image {
+	// Try at 1 second first; if the video is very short, retry at 0.
+	for _, ss := range []string{"00:00:01", "00:00:00"} {
+		cmd := exec.Command("ffmpeg",
+			"-ss", ss,
+			"-i", videoPath,
+			"-vframes", "1",
+			"-f", "image2pipe",
+			"-vcodec", "png",
+			"-")
+		cmd.Stderr = io.Discard
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+		img, _, err := image.Decode(&stdout)
+		if err == nil {
+			return img
+		}
+	}
+	return nil
+}
+
+// drawVideoPlayIcon overlays a semi-transparent circular play button at
+// (x0, y0) with the given pixel size onto dst.
+func drawVideoPlayIcon(dst *image.NRGBA, x0, y0, size int) {
+	radius := size / 2
+	cx := x0 + radius
+	cy := y0 + radius
+	bg := color.NRGBA{0, 0, 0, 160}
+	fg := color.NRGBA{255, 255, 255, 230}
+	b := dst.Bounds()
+
+	setPixel := func(x, y int, c color.NRGBA) {
+		if x >= b.Min.X && y >= b.Min.Y && x < b.Max.X && y < b.Max.Y {
+			// Alpha-blend onto existing pixel.
+			src := dst.NRGBAAt(x, y)
+			a := float32(c.A) / 255
+			dst.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(float32(c.R)*a + float32(src.R)*(1-a)),
+				G: uint8(float32(c.G)*a + float32(src.G)*(1-a)),
+				B: uint8(float32(c.B)*a + float32(src.B)*(1-a)),
+				A: 255,
+			})
+		}
+	}
+
+	// Semi-transparent circle background.
+	r2 := radius * radius
+	for dy := -radius; dy <= radius; dy++ {
+		for dx := -radius; dx <= radius; dx++ {
+			if dx*dx+dy*dy <= r2 {
+				setPixel(cx+dx, cy+dy, bg)
+			}
+		}
+	}
+
+	// Right-pointing triangle (play symbol).
+	pad := size / 5
+	tLeft := x0 + pad
+	tRight := x0 + size - pad
+	tHalfH := radius - pad
+	for y := cy - tHalfH; y <= cy+tHalfH; y++ {
+		dy := y - cy
+		if dy < 0 {
+			dy = -dy
+		}
+		t := float32(dy) / float32(tHalfH)
+		xLeft := tLeft + int(float32(tRight-tLeft)*t)
+		for x := xLeft; x <= tRight; x++ {
+			setPixel(x, y, fg)
+		}
+	}
 }
 
 const (

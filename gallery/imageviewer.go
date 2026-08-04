@@ -366,11 +366,18 @@ func (viewer *Viewer) ChangeImage(info *ImageInfo) {
 		info.OnOpen()
 		return
 	}
+	// Video files cannot be decoded as images; the caller's tile-onclick
+	// handler (e.g. in cmd/imgview) is responsible for starting the player.
+	if info.InputIsVideo {
+		return
+	}
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
 	viewer.CurrentImageView = img
 	go func() {
-		viewer.LoadImageToCache(viewer.NextImage())
+		if next := viewer.NextImage(); !next.InputIsVideo {
+			viewer.LoadImageToCache(next)
+		}
 	}()
 	img.fillWindow = true
 	img.container = viewer.Content
