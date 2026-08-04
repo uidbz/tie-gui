@@ -1,4 +1,4 @@
-package imgviewer
+package gallery
 
 import (
 	"bytes"
@@ -49,8 +49,8 @@ type ImageView struct {
 }
 
 type Hotkey struct {
-	Name    fyne.KeyName
-	Functon func()
+	Name     fyne.KeyName
+	Function func()
 }
 
 type ImageLayout struct{}
@@ -61,6 +61,7 @@ func (d *ImageLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 func (d *ImageLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size) {
 	for _, o := range objects {
 		iv := o.(*ImageView)
+		fmt.Printf("DEBUG ImageLayout.Layout containerSize=%v iv.size=%v fillWindow=%v\n", containerSize, iv.size, iv.fillWindow)
 		if iv.fillWindow {
 			iv.pos = fyne.NewPos(0, 0)
 			iv.size = containerSize
@@ -207,6 +208,7 @@ func (iv *ImageView) LoadImage() error {
 }
 
 func (iv *ImageView) Resize(size fyne.Size) {
+	fmt.Printf("DEBUG ImageView.Resize %v\n", size)
 	iv.BaseWidget.Resize(size)
 }
 
@@ -236,7 +238,7 @@ func (iv *ImageView) DragEnd() {
 func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
 	for _, x := range iv.hotkeys {
 		if key.Name == x.Name {
-			x.Functon()
+			x.Function()
 		}
 	}
 }
@@ -373,5 +375,6 @@ func (ren *ImageViewRenderer) MinSize() fyne.Size {
 }
 
 func (ren *ImageViewRenderer) Layout(s fyne.Size) {
+	fmt.Printf("DEBUG renderer.Layout s=%v widget=%v pos=%v\n", s, ren.imageView.Size(), ren.imageView.Position())
 	ren.imageView.fyneImage.Resize(s)
 }

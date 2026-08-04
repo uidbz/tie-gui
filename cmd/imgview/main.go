@@ -3,14 +3,8 @@ package main
 import (
 	_ "embed"
 	"errors"
-	"flag"
-	"fmt"
 	"os"
 	"path/filepath"
-
-	"git.sr.ht/~uid/conf"
-
-	"git.sr.ht/~uid/tie/client"
 
 	// "fyne.io/fyne/v2/container"
 	// "fyne.io/fyne/v2/widget"
@@ -19,14 +13,9 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/dialog"
 
-	"git.sr.ht/~uid/imgview/imgviewer"
-
-	"github.com/pelletier/go-toml/v2"
+	"git.sr.ht/~uid/imgview/gallery"
 	// "github.com/pkg/profile"
 )
-
-//go:embed config.toml
-var configData []byte
 
 //go:embed Icon.png
 var icon []byte
@@ -38,17 +27,9 @@ const (
 	inputIsDirectory
 	inputIsImage
 	inputIsArchive
-	inputIsTieMode
 )
 
 func ParseInput(args []string) (absolutePath string, inputType int, err error) {
-	tiePtr := flag.Bool("tie", false, "Start in tie mode")
-	tieTag := flag.String("tag", "favorite", "Show images with tag")
-	flag.Parse()
-	if *tiePtr {
-		absolutePath = *tieTag
-		return absolutePath, inputIsTieMode, nil
-	}
 	if len(os.Args) > 1 {
 		path := os.Args[1]
 		absolutePath, err = filepath.Abs(path)
@@ -64,10 +45,10 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 		if fi.IsDir() {
 			return absolutePath, inputIsDirectory, nil
 		}
-		if imgviewer.IsArchiveFromPath(absolutePath) {
+		if gallery.IsArchiveFromPath(absolutePath) {
 			return absolutePath, inputIsArchive, nil
 		}
-		if imgviewer.IsImageFromPath(absolutePath) {
+		if gallery.IsImageFromPath(absolutePath) {
 			return absolutePath, inputIsImage, nil
 		}
 		return absolutePath, inputIsNotSupported, errors.New("Unknown input type")
@@ -77,34 +58,6 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 	}
 }
 
-func LoadConfig(window fyne.Window) (config imgviewer.Config) {
-	if err := toml.Unmarshal(configData, &config); err != nil {
-		panic("Bundled config is not valid TOML: " + err.Error())
-	}
-	if config.General.ThumbnailDir == "" {
-		config.General.ThumbnailDir = filepath.Join(os.TempDir(), "imgview")
-	}
-	if dir, err := os.UserConfigDir(); err == nil {
-		imgviewConfig := filepath.Join(dir, "imgview", "config.toml")
-		if _, err2 := os.Stat(imgviewConfig); !os.IsNotExist(err2) {
-			configFile, errRead := os.ReadFile(imgviewConfig)
-			if errRead != nil {
-				dialog.ShowError(errors.New("Error reading config file: "+errRead.Error()), window)
-				window.ShowAndRun()
-			}
-			if err3 := toml.Unmarshal(configFile, &config); err3 != nil {
-				dialog.ShowError(errors.New("Config file error: "+err3.Error()+"\nin: "+imgviewConfig), window)
-				window.ShowAndRun()
-			}
-		}
-	}
-	if config.General.ThumbnailDir == "" {
-		config.General.ThumbnailDir = filepath.Join(os.TempDir(), "imgview")
-	}
-
-	return config
-}
-
 func main() {
 	// defer profile.Start(profile.CPUProfile).Stop()
 	// defer profile.Start().Stop()
@@ -112,9 +65,9 @@ func main() {
 	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
 	myWindow := myApp.NewWindow("imgview")
 
-	config := LoadConfig(myWindow)
+	config := gallery.LoadConfig(myWindow)
 
-	viewer := imgviewer.NewImageViewer(myApp, myWindow, config, func(t *imgviewer.Tile) {
+	viewer := gallery.NewViewer(myApp, myWindow, config, func(t *gallery.Tile) {
 		switch true {
 		case t.Info.InputIsDir:
 			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
@@ -128,7 +81,7 @@ func main() {
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
 
-	var selected *imgviewer.ImageInfo
+	var selected *gallery.ImageInfo
 	loadingImage := false
 	absolutePath, inputType, err := ParseInput(os.Args)
 
@@ -142,7 +95,7 @@ func main() {
 		viewer.ReadImageDir(absolutePath, nil)
 
 	case inputIsImage:
-		selected = imgviewer.NewImageInfo(-1, absolutePath)
+		selected = gallery.NewImageInfo(-1, absolutePath)
 		viewer.ReadImageDir(filepath.Dir(absolutePath), selected)
 		loadingImage = true
 
@@ -152,21 +105,11 @@ func main() {
 	case inputIsNothing: // Use current working directory
 		viewer.ReadImageDir(".", nil)
 
-	case inputIsTieMode:
-		viewer.TieMode = true
-		config := client.Config{}
-		if _, err := conf.LoadFromUserConfigDir("tie", "config.toml", &config); err != nil {
-			fmt.Println("Error reading tie config:", err)
-		}
-		viewer.Tie = client.NewTieClient(config)
-		viewer.ReadFromTie([]string{absolutePath}, nil, "tag")
-		// viewer.ReadFromTie([]string{"4"}, nil, "rating")
-
 	default:
 		panic("Input is not understood")
 	}
 
-	viewer.OnImageChange = func(info *imgviewer.ImageInfo) {
+	viewer.OnImageChange = func(info *gallery.ImageInfo) {
 		myWindow.Canvas().Focus(viewer.CurrentImageView)
 	}
 

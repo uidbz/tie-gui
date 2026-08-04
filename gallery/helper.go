@@ -1,4 +1,4 @@
-package imgviewer
+package gallery
 
 import (
 	// "fmt"
@@ -14,7 +14,7 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 )
 
-func scaleImage(img image.Image, w int) (scaledImage image.Image) {
+func ScaleImage(img image.Image, w int) (scaledImage image.Image) {
 	// err := rez.Convert(scaledImage, img, rez.NewBicubicFilter())
 	// if err != nil {
 	// 	fmt.Println("Error resizing image:", err)

@@ -1,5 +1,5 @@
 [Details]
-  Icon = "Icon.png"
+  Icon = "cmd/imgview/Icon.png"
   Name = "imgview"
   ID = "sr.ht.uid.imgview"
   Version = "1.0.0"

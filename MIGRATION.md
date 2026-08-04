@@ -1,7 +1,7 @@
-# Migration Guide: tie v0.3.5 → master (v0.4.0-dev)
+# Migration Guide: tie v0.3.5 → master (v0.4.1-dev)
 
 ## Overview
-This document describes the changes needed to migrate imgview to use the latest tie master branch.
+This document describes the changes needed to migrate imgview to the latest tie master branch.
 
 ## Config File Changes
 
@@ -14,8 +14,10 @@ fast = 'https://localhost:1169'
 backup = 'https://localhost:1169'
 ```
 
-### New Format (master/v0.4.0)
+### New Format (master/v0.4.x)
 ```toml
+DefaultFileHosts = ['fast']
+
 [FileHosts.fast]
 URL = 'https://localhost:1169'
 Insecure = true  # Set to true for self-signed certificates
@@ -25,17 +27,30 @@ URL = 'https://localhost:1169'
 Insecure = true
 ```
 
-**Note:** The `Insecure` field controls whether to skip TLS certificate verification. Set to `true` for self-signed certificates or localhost development.
+**Notes:**
+- The `Insecure` field controls whether to skip TLS certificate verification. Set to `true` for self-signed certificates or localhost development. imgview honors it for both downloads and thumbnail uploads.
+- imgview fetches content from the `fast` filehost when configured, otherwise from the first entry of `DefaultFileHosts`.
 
 ## Code Changes
 
-### 1. API Changes from Callbacks to Return Values
+### 1. Triple-set API replaced by flat Rows
+
+`SimpleGet`, `Get(key, GetOptions)` and the `TripleSet` result type are gone. The
+client surface is now:
+
+- `Get(key) (Row, error)` — one key's forward attributes.
+- `Query(QuerySpec) ([]Row, int, error)` — tag/association search with ordering and pagination.
+- `Expand(keys) ([]Row, error)` — many keys in one round trip.
+- `Set(key, relation, values)` — replace a relation's values in one op.
+
+A `Row` is `{Key, Attributes: map[relation][]values}`; read it with the helpers
+`client.RowValues(row, rel)`, `client.RowFirst(row, rel)` and `client.RowHas(row, rel, val)`.
 
 **Before:**
 ```go
 viewer.Tie.SimpleGet("tags", func(r client.GetReply) {
     if r.Success {
-        // Handle result
+        r.Result.ForEachValue2(func(key, val1, val2 string) { ... })
     }
 })
 ```
@@ -43,44 +58,49 @@ viewer.Tie.SimpleGet("tags", func(r client.GetReply) {
 **After:**
 ```go
 go func() {
-    r, err := viewer.Tie.SimpleGet("tags")
+    row, err := viewer.Tie.Get("tags")
     if err == nil {
-        // Handle result
         fyne.Do(func() {
-            // UI operations must be wrapped in fyne.Do
+            for _, tag := range client.RowValues(row, "all") {
+                ts.AddTag(tag)
+            }
         })
     }
 }()
 ```
 
-### 2. Transform API Removed
+### 2. GetOptions/Transform replaced by QuerySpec
+
+There is no positional seed key anymore; `Terms` is the full AND-list. With
+`Expand: true` each match's own forward attributes are attached to its Row, so
+per-image lookups (e.g. thumbnail mappings) need no extra round trips.
 
 **Before:**
 ```go
-intersect := make([]api.Transform, len(include)-1)
-for i := 1; i < len(include); i++ {
-    intersect[i-1] = api.Transform{
-        Key:     include[i],
-        Reverse: true,
-    }
-}
 o := client.GetOptions{
-    Intersect: intersect,
-    // ...
+    Include: include[1:],
+    Exclude: exclude,
+    Reverse: true,
+    Filter:  filter,
+    Sort:    tiedb.SortOptions{Limit: -1},
 }
+r, err := viewer.Tie.Get(include[0], o)
+r.Result.ForEachKey(func(hash string) { ... })
 ```
 
 **After:**
 ```go
-// First tag is seed key, rest go in Include
-var includeRest []string
-if len(include) > 1 {
-    includeRest = include[1:]
-}
-o := client.GetOptions{
-    Include: includeRest,
+rows, _, err := viewer.Tie.Query(client.QuerySpec{
+    Terms:   include, // full AND-list, no seed
     Exclude: exclude,
-    // ...
+    Reverse: true,
+    Filter:  filter,
+    Expand:  true,
+    Limit:   -1, // disable pagination
+})
+for _, row := range rows {
+    hash := row.Key
+    thumbHash := client.RowFirst(row, "thumbnail")
 }
 ```
 
@@ -93,30 +113,39 @@ host := viewer.Tie.Config.FileHosts["fast"] // Returns string
 
 **After:**
 ```go
-host := viewer.Tie.Config.FileHosts["fast"].URL // FileHost is now a struct
-insecure := viewer.Tie.Config.FileHosts["fast"].Insecure
+host := viewer.Tie.Config.FileHosts["fast"]     // FileHost struct
+url := host.URL
+insecure := host.Insecure
 ```
 
-### 4. getlib.ReadFile Signature Change
+### 4. getlib/putlib take an *http.Client
 
-**Before:**
-```go
-r, err := getlib.ReadFile(host, hash)
-```
-
-**After:**
 ```go
 r, err := getlib.ReadFile(httpClient, host, hash)
-// Pass nil for httpClient to use default
-r, err := getlib.ReadFile(nil, host, hash)
+// Pass nil to use http.DefaultClient; pass a custom client for
+// InsecureSkipVerify (self-signed filehosts).
 ```
+
+Uploads PUT to `<filehost>/upload/<hash>` (content-addressed), e.g. via
+`putlib.PutConfig{Client: httpClient}.UploadMultipart(...)`.
+
+## Tie-mode thumbnails live on the filehost
+
+Thumbnails for tie images are no longer stored in a local directory. On first
+view imgview generates the thumbnail from the full blob, uploads it to the
+filehost (content-addressed, so identical thumbnails dedupe across machines),
+and records a `(imageHash, "thumbnail", thumbHash)` triple via `Tie.Set`.
+Later views follow the mapping and fetch the thumbnail blob from the filehost;
+the mapping is trusted once written. The local `ThumbnailDir` setting only
+applies to non-tie (local disk) images.
 
 ## Building
 
-The application now requires the `migrated_fynedo` build tag to indicate it has been fully migrated to the fyne.Do threading model:
+Build with the `migrated_fynedo` tag to assert the fyne.Do threading model
+(without it fyne prints a migration warning on startup):
 
 ```bash
-go build -tags migrated_fynedo
+go build -tags migrated_fynedo ./cmd/imgview ./cmd/tieview
 ```
 
 The build script has been updated to include this tag automatically.
@@ -130,10 +159,13 @@ After migration, test both normal and tie modes:
 ./imgview /path/to/images
 
 # Tie mode
-./imgview -tie
+./tieview -tag favorite
 ```
 
 Expected behavior:
-- No fyne.Do threading warnings
-- TLS errors are expected if tie-daemon isn't running with proper certificates
-- Config parsing should succeed with no errors
+- No fyne.Do threading warnings (with the build tag).
+- Tie mode shows the query results on startup and after changing the tag selection.
+- First tie-mode view uploads thumbnails to the filehost (`Set` requests); subsequent
+  views only fetch the thumbnail blobs.
+- TLS errors are expected if tie-daemon isn't running with proper certificates.
+- Config parsing should succeed with no errors.

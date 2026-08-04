@@ -9,7 +9,7 @@ import (
 
 	"fyne.io/fyne/v2/canvas"
 
-	"git.sr.ht/~uid/imgview/imgviewer/tagselection/trie"
+	"git.sr.ht/~uid/imgview/tagselection/trie"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -53,7 +53,7 @@ func (e *queryEntry) KeyDown(key *fyne.KeyEvent) {
 	}
 }
 
-func NewSeachItem(ts *TagSelection) *SearchItem {
+func NewSearchItem(ts *TagSelection) *SearchItem {
 	si := &SearchItem{}
 	si.searchList = NewAutoExpandingList(
 		func() int {
@@ -287,7 +287,7 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 
 	lblFavorites := widget.NewLabel("Favorites")
 	lblFavorites.TextStyle.Bold = true
-	ts.search = NewSeachItem(ts)
+	ts.search = NewSearchItem(ts)
 	ts.content = container.NewVBox(ts.selectedList, canvas.NewLine(theme.ForegroundColor()), lblFavorites, ts.favoriteList)
 
 	ts.ExtendBaseWidget(ts)

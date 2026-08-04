@@ -27,21 +27,29 @@ When you have a C compiler and the dependencies of fyne installed, then compilin
 ~~~sh
 git clone https://git.sr.ht/~uid/imgview
 cd imgview
-go build # -tags wayland # for building on wayland
-go install # to install to $GOPATH/bin
+go build ./cmd/imgview # -tags wayland # for building on wayland
+go build ./cmd/tieview  # the tie-backed variant
 ~~~
 Or alternatively
 ~~~sh
-go install git.sr.ht/~uid/imgview
+go install git.sr.ht/~uid/imgview/cmd/imgview
+go install git.sr.ht/~uid/imgview/cmd/tieview
 ~~~
+
+## Repository layout
+* `gallery/` - the generic fyne image-viewing/gallery component shared by both apps (no tie dependency)
+* `cmd/imgview/` - the local-files image viewer (dirs and archives)
+* `cmd/tieview/` - the [tie](https://git.sr.ht/~uid/tie)-backed image viewer (tag queries, filehost-cached thumbnails)
+* `tagselection/` - the tag picker widget used by tieview
 
 ## Run
 ~~~sh
 imgview /path/to/img/or/dir/or/archive
+tieview -tag favorite
 ~~~
 
 ## Default Key Bindings
-Change by copying [config.toml](https://git.sr.ht/~uid/imgview/tree/master/item/config.toml) to:  
+Change by copying [config.toml](https://git.sr.ht/~uid/imgview/tree/master/item/gallery/config.toml) to:  
 Linux: ~/.config/imgview/config.toml  
 Windows: %AppData%\imgview\config.toml   
 and then edit to your liking :-)

@@ -2,5 +2,6 @@
 *.swp
 fyne-cross/*
 package/*
-imgview
-imgview.debug
+/imgview
+/tieview
+/imgview.debug

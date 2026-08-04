@@ -1,4 +1,4 @@
-package imgviewer
+package gallery
 
 import (
 	"image/color"

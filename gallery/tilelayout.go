@@ -1,12 +1,10 @@
-package imgviewer
+package gallery
 
 import (
 	"errors"
 	"image/jpeg"
 	"os"
 	"path/filepath"
-
-	"git.sr.ht/~uid/tie/io/putlib"
 
 	// "path/filepath"
 	// "archive/zip"
@@ -29,6 +27,13 @@ import (
 //go:embed loading.png
 var loading []byte
 
+// Thumbnailer supplies scaled thumbnails for gallery items. When the viewer's
+// Thumbnailer field is nil, thumbnails are generated from the image content
+// and cached in the directory given by GeneralConfig.ThumbnailDir.
+type Thumbnailer interface {
+	GetThumbnail(info *ImageInfo) (io.ReadSeeker, error)
+}
+
 type TileLayout struct {
 	tiles            []*Tile
 	wg               sync.WaitGroup
@@ -40,7 +45,7 @@ type TileLayout struct {
 	config           Config
 	window           fyne.Window
 	app              fyne.App
-	viewer           *ImageViewer
+	viewer           *Viewer
 	offset           int
 	currentlyLoading sync.WaitGroup
 	cachedTiles      map[string]*Tile
@@ -53,7 +58,7 @@ type Tile struct {
 	width     float32
 	height    float32
 	landscape bool
-	Viewer    *ImageViewer
+	Viewer    *Viewer
 	Info      *ImageInfo
 	tabFn     func(t *Tile)
 }
@@ -97,7 +102,7 @@ func NewImageInfoCustomReader(order int, r CustomReader) *ImageInfo {
 	}
 }
 
-func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *ImageViewer, tabFn func(t *Tile)) *TileLayout {
+func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Viewer, tabFn func(t *Tile)) *TileLayout {
 	batchSize := 1024
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan *ImageInfo, batchSize)
@@ -132,6 +137,9 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	if end > len(imageFiles) {
 		end = len(imageFiles)
 	}
+	// Start each page with a fresh tile list, indexed relative to
+	// layout.offset (same indexing imageLoader and Layout use).
+	layout.tiles = make([]*Tile, 0, end-layout.offset)
 	fyne.Do(func() {
 		layout.grid.Objects = make([]fyne.CanvasObject, 0)
 	})
@@ -170,9 +178,15 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 	if containerSize.Width < tileWidth+gap {
 		return
 	}
-	for i := 0; i < len(objects); {
+	// layout.tiles is reset and refilled by PlaceTiles independently of the
+	// grid's objects; only lay out the indices that exist in both.
+	n := len(objects)
+	if len(layout.tiles) < n {
+		n = len(layout.tiles)
+	}
+	for i := 0; i < n; {
 		prevLeft := float32(int(containerSize.Width)%int(tileWidth)) / 3
-		for j := 0; j < tilesPerRow && i < len(objects); j++ {
+		for j := 0; j < tilesPerRow && i < n; j++ {
 			o := objects[i]
 			tile := layout.tiles[i]
 			newWidth := tileWidth
@@ -258,23 +272,26 @@ func (layout *TileLayout) imageLoader() {
 				layout.currentlyLoading.Done()
 				continue
 			}
-		layout.tileToCache(tc.Path, tile)
-	}
-	layout.tiles[tc.order-layout.offset] = tile
-	
-	tileCopy := tile
-	idx := tc.order - layout.offset
-	fyne.Do(func() {
-		if idx >= 0 && idx < len(layout.grid.Objects) {
-			layout.grid.Objects[idx] = tileCopy
+			layout.tileToCache(tc.Path, tile)
 		}
-	})
-
-	if i == 20 { // Refresh grid every 10 images
+		tileCopy := tile
+		idx := tc.order - layout.offset
+		// tc may belong to a page that has since been replaced; only write
+		// back when its slot still exists in the current page.
+		if idx >= 0 && idx < len(layout.tiles) {
+			layout.tiles[idx] = tile
+		}
 		fyne.Do(func() {
-			layout.grid.Refresh()
+			if idx >= 0 && idx < len(layout.grid.Objects) {
+				layout.grid.Objects[idx] = tileCopy
+			}
 		})
-		i = 0
+
+		if i == 20 { // Refresh grid every 10 images
+			fyne.Do(func() {
+				layout.grid.Refresh()
+			})
+			i = 0
 		} else {
 			refreshTimer.Reset(500 * time.Millisecond) // Refresh grid 500 ms after last loaded image
 		}
@@ -285,29 +302,29 @@ func (layout *TileLayout) imageLoader() {
 }
 
 func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
+	// A custom Thumbnailer (e.g. one backed by network storage) takes
+	// precedence over the local thumbnail directory.
+	if layout.viewer.Thumbnailer != nil {
+		return layout.viewer.Thumbnailer.GetThumbnail(context)
+	}
+
 	var thumbnail string
 	var thumbnailDir string = layout.config.General.ThumbnailDir
 	var reader io.ReadSeeker
-	var hash string
-	if context.InputIsReader { // should check specifically for tie
-		hash = context.Path
-	} else {
-		pc := putlib.PutConfig{}
-		r, err := context.GetReader()
-		if err != nil {
-			return nil, err
-		}
-		r.Seek(0, io.SeekStart)
-		b, err := io.ReadAll(r)
-		if err != nil {
-			return nil, err
-		}
-		hash, err = pc.AddressOf(bytes.NewReader(b))
-		if err != nil {
-			return nil, err
-		}
-		reader = bytes.NewReader(b)
+	r, err := context.GetReader()
+	if err != nil {
+		return nil, err
 	}
+	r.Seek(0, io.SeekStart)
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	hash, err := contentHash(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	reader = bytes.NewReader(b)
 	if len(hash) != 64 {
 		return nil, errors.New("Invalid hash: " + hash)
 	}
@@ -324,12 +341,6 @@ func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error
 		context.ThumbnailIsScaled = true
 		return reader, nil
 	} else {
-		if reader == nil {
-			reader, err = context.GetReader()
-			if err != nil {
-				return nil, err
-			}
-		}
 		err := os.MkdirAll(thumbnailDir, 0755)
 		if err != nil {
 			fmt.Println("Error creating thumbnail dir at:", thumbnailDir)
@@ -339,7 +350,7 @@ func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error
 				return nil, err
 			}
 			tileWidth := int(layout.config.General.TileWidth)
-			scaled := scaleImage(decoded, tileWidth*2)
+			scaled := ScaleImage(decoded, tileWidth*2)
 			decoded = nil
 			buf := &bytes.Buffer{}
 			err = jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90})

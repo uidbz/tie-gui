@@ -1,7 +1,6 @@
-package imgviewer
+package gallery
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,29 +13,24 @@ import (
 	"strings"
 	"sync"
 
-	"git.sr.ht/~uid/tie/tiedb"
-
-	"git.sr.ht/~uid/imgview/imgviewer/tagselection"
-
-	"git.sr.ht/~uid/tie/io/getlib"
-
 	"github.com/mholt/archiver/v4"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-
-	"git.sr.ht/~uid/tie/client"
 )
 
-type ImageViewer struct {
+type Viewer struct {
 	Content       *fyne.Container
 	CurrentImage  *fyne.Container
 	CustomReaders []CustomReader
-	TieMode       bool
-	TagMode       bool
-	Tie           *client.TieClient
+	// Thumbnailer, when non-nil, supplies thumbnails for all items instead
+	// of the local thumbnail directory (see GeneralConfig.ThumbnailDir).
+	Thumbnailer Thumbnailer
+	// Sidebar, when non-nil, is shown left of the gallery (e.g. a tag
+	// selector) instead of a plain full-width gallery.
+	Sidebar fyne.CanvasObject
 
 	gallery          *fyne.Container
 	imageFiles       []*ImageInfo
@@ -53,7 +47,6 @@ type ImageViewer struct {
 	galleryLoaded    bool
 	config           Config
 	bottomBar        *fyne.Container
-	tagSidebar       *tagselection.TagSelection
 	refreshThumbs    bool
 
 	tileOnclick       func(*Tile)
@@ -67,51 +60,8 @@ type ImageViewer struct {
 	isFullscreen bool
 }
 
-type Config struct {
-	Image   ImageConfig
-	Gallery GalleryConfig
-	General GeneralConfig
-}
-
-type GeneralConfig struct {
-	ThumbnailDir  string
-	DefaultWidth  float32
-	DefaultHeight float32
-	TileWidth     float32
-	TileGap       float32
-	Workers       int
-	ImagesPerPage int
-}
-
-type ImageConfig struct {
-	NextImage     []fyne.KeyName
-	PreviousImage []fyne.KeyName
-	RotateLeft    []fyne.KeyName
-	RotateRight   []fyne.KeyName
-	OriginalSize  []fyne.KeyName
-	FillWindow    []fyne.KeyName
-	Filtering     []fyne.KeyName
-	ShowGallery   []fyne.KeyName
-	Quit          []fyne.KeyName
-	FullScreen    []fyne.KeyName
-	RunCmda       []fyne.KeyName
-	ShowTagbar    []fyne.KeyName
-	CmdA          string
-	SaveImage     []fyne.KeyName
-	SaveDir       string
-}
-
-type GalleryConfig struct {
-	Quit        []fyne.KeyName
-	ScrollDown  []fyne.KeyName
-	ScrollUp    []fyne.KeyName
-	PathLevelUp []fyne.KeyName
-}
-
-func NewImageViewer(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *ImageViewer {
-	// rect := canvas.NewRectangle(color.Black)
-	// rect.SetMinSize(fyne.NewSize(100, 100))
-	iv := &ImageViewer{
+func NewViewer(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Viewer {
+	iv := &Viewer{
 		app:     app,
 		window:  window,
 		Content: container.NewStack([]fyne.CanvasObject{}...),
@@ -122,34 +72,37 @@ func NewImageViewer(app fyne.App, window fyne.Window, config Config, tileOnclick
 		tileOnclick:   tileOnclick,
 		refreshThumbs: false,
 	}
-	iv.makeTagSidebar()
 
 	return iv
 }
 
-func (viewer *ImageViewer) KeyPress(key *fyne.KeyEvent) {
+func (viewer *Viewer) KeyPress(key *fyne.KeyEvent) {
 	for _, x := range viewer.layout.hotkeys {
 		if key.Name == x.Name {
-			x.Functon()
+			x.Function()
 		}
 	}
 }
 
-func (viewer *ImageViewer) ShowImageDir(path string) {
+func (viewer *Viewer) ShowImageDir(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
+	viewer.currentPage = 0
+	viewer.layout.offset = 0
 	viewer.ReadImageDir(path, nil)
 	viewer.LoadGallery()
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *ImageViewer) ShowImageArchive(path string) {
+func (viewer *Viewer) ShowImageArchive(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
+	viewer.currentPage = 0
+	viewer.layout.offset = 0
 	viewer.ReadImageArchive(path)
 	viewer.LoadGallery()
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *ImageViewer) Init() {
+func (viewer *Viewer) Init() {
 	viewer.layout = NewTileLayout(viewer.config, viewer.window, viewer.app, viewer, viewer.tileOnclick)
 	empty := make([]fyne.CanvasObject, 0)
 	viewer.gallery = container.New(viewer.layout, empty...)
@@ -158,55 +111,22 @@ func (viewer *ImageViewer) Init() {
 	viewer.InitHotkeys()
 }
 
-func (viewer *ImageViewer) MakeTieSidebar(mainPage fyne.CanvasObject) fyne.CanvasObject {
-	var split *container.Split
-	ts := tagselection.NewTagSelection(viewer.window)
-	go func() {
-		r, err := viewer.Tie.SimpleGet("tags")
-		if err == nil {
-			r.Result.ForEachValue2(func(key, val1, val2 string) {
-				switch val1 {
-				case "all":
-					fyne.Do(func() {
-						ts.AddTag(val2)
-					})
-				case "favorite":
-					fyne.Do(func() {
-						ts.AddFavorite(val2)
-					})
-				}
-			})
-		} else {
-			fmt.Println("Error getting tags:", err)
-		}
-	}()
-	// query := widget.NewEntry()
-	ts.OnSelectedChanged = func() {
-		in, ex := ts.SelectedTags()
-		viewer.ReadFromTie(in, ex, "tag")
-		viewer.ChangeGallery()
-	}
-	// border := container.NewBorder(query, nil, nil, nil, widget.NewButton("click 2", queryFunc))
-	split = container.NewHSplit(ts, viewer.scroll)
-	split.SetOffset(0.2)
-
-	return split
-}
-
-func (viewer *ImageViewer) CreateView() {
+func (viewer *Viewer) CreateView() {
 	var mainPage fyne.CanvasObject
 	if viewer.scroll == nil {
 		viewer.scroll = container.NewScroll(viewer.gallery)
 	}
-	if viewer.TieMode {
-		mainPage = viewer.MakeTieSidebar(viewer.scroll)
+	if viewer.Sidebar != nil {
+		split := container.NewHSplit(viewer.Sidebar, viewer.scroll)
+		split.SetOffset(0.2)
+		mainPage = split
 	} else {
 		mainPage = viewer.scroll
 	}
 	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, viewer.bottomBar, nil, nil, mainPage)}
 }
 
-func (viewer *ImageViewer) LoadGallery() {
+func (viewer *Viewer) LoadGallery() {
 	viewer.loading.Wait()
 	go func() {
 		viewer.layout.PlaceTiles(viewer.imageFiles)
@@ -241,11 +161,11 @@ func (viewer *ImageViewer) LoadGallery() {
 	viewer.galleryLoaded = true
 }
 
-func (viewer *ImageViewer) CurrentImageInfo() *ImageInfo {
+func (viewer *Viewer) CurrentImageInfo() *ImageInfo {
 	return viewer.CurrentImageView.info
 }
 
-func (viewer *ImageViewer) ChangeGallery() {
+func (viewer *Viewer) ChangeGallery() {
 	// empty channel before changing page, then wait for workers to finish
 	for len(viewer.layout.imagesToLoad) > 0 {
 		<-viewer.layout.imagesToLoad
@@ -253,11 +173,12 @@ func (viewer *ImageViewer) ChangeGallery() {
 	viewer.layout.currentlyLoading.Wait()
 
 	viewer.currentPage = 0
+	viewer.layout.offset = 0
 	viewer.LoadGallery()
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *ImageViewer) ChangePage(page int) {
+func (viewer *Viewer) ChangePage(page int) {
 	if page < 0 || page > viewer.maxPages-1 {
 		return
 	}
@@ -275,7 +196,7 @@ func (viewer *ImageViewer) ChangePage(page int) {
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *ImageViewer) LoadImageToCache(info *ImageInfo) *ImageView {
+func (viewer *Viewer) LoadImageToCache(info *ImageInfo) *ImageView {
 	if x, ok := viewer.cache[info.Path]; ok == false {
 		if viewer.OnTapped != nil {
 			info.OnTapped = viewer.OnTapped
@@ -301,7 +222,7 @@ func (viewer *ImageViewer) LoadImageToCache(info *ImageInfo) *ImageView {
 	}
 }
 
-func (viewer *ImageViewer) ToggleFullscreen() {
+func (viewer *Viewer) ToggleFullscreen() {
 	viewer.isFullscreen = !viewer.isFullscreen
 	viewer.CurrentImageView.fillWindow = false
 	viewer.window.SetFullScreen(viewer.isFullscreen)
@@ -309,9 +230,9 @@ func (viewer *ImageViewer) ToggleFullscreen() {
 	viewer.Content.Refresh()
 }
 
-func (viewer *ImageViewer) RunCmdA() {
+func (viewer *Viewer) RunCmdA() {
 	cmd := strings.ReplaceAll(viewer.config.Image.CmdA, "$FILE", viewer.CurrentImageView.info.Path)
-	c := exec.Command("/bin/sh", append([]string{"-c", cmd})...)
+	c := exec.Command("/bin/sh", "-c", cmd)
 	go func() {
 		if output, err := c.CombinedOutput(); err != nil {
 			fmt.Println(err)
@@ -321,7 +242,7 @@ func (viewer *ImageViewer) RunCmdA() {
 	}()
 }
 
-func (viewer *ImageViewer) SaveImage() {
+func (viewer *Viewer) SaveImage() {
 	if viewer.config.Image.SaveDir != "" {
 		info := viewer.CurrentImageView.info
 		if r, err := info.GetReader(); err == nil {
@@ -341,7 +262,7 @@ func (viewer *ImageViewer) SaveImage() {
 	}
 }
 
-func (viewer *ImageViewer) NextImage() *ImageInfo {
+func (viewer *Viewer) NextImage() *ImageInfo {
 	viewer.loading.Wait()
 	nextImg := viewer.currentIndex + 1
 	if nextImg == len(viewer.imageFiles) {
@@ -350,7 +271,7 @@ func (viewer *ImageViewer) NextImage() *ImageInfo {
 	return viewer.imageFiles[nextImg]
 }
 
-func (viewer *ImageViewer) PrevImage() *ImageInfo {
+func (viewer *Viewer) PrevImage() *ImageInfo {
 	viewer.loading.Wait()
 	nextImg := viewer.currentIndex - 1
 	if nextImg < 0 {
@@ -359,7 +280,7 @@ func (viewer *ImageViewer) PrevImage() *ImageInfo {
 	return viewer.imageFiles[nextImg]
 }
 
-func (viewer *ImageViewer) InitHotkeys() {
+func (viewer *Viewer) InitHotkeys() {
 	viewer.hotkeys = []Hotkey{}
 	bindings := viewer.config.Image
 
@@ -440,12 +361,7 @@ func (viewer *ImageViewer) InitHotkeys() {
 	}
 }
 
-func (viewer *ImageViewer) makeTagSidebar() {
-	viewer.tagSidebar = tagselection.NewTagSelection(viewer.window)
-
-}
-
-func (viewer *ImageViewer) ChangeImage(info *ImageInfo) {
+func (viewer *Viewer) ChangeImage(info *ImageInfo) {
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
 	viewer.CurrentImageView = img
@@ -459,12 +375,7 @@ func (viewer *ImageViewer) ChangeImage(info *ImageInfo) {
 	if info.order != -1 {
 		viewer.currentIndex = info.order
 	}
-	// viewer.CurrentImage = viewer.imageContainer
-	if viewer.TieMode && viewer.TagMode {
-		viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, nil, nil, viewer.tagSidebar, viewer.CurrentImage)}
-	} else {
-		viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
-	}
+	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
 	viewer.Content.Refresh()
 	if viewer.OnImageChange != nil {
 		viewer.OnImageChange(info)
@@ -472,12 +383,12 @@ func (viewer *ImageViewer) ChangeImage(info *ImageInfo) {
 	img.changeFn()
 }
 
-// func (viewer *ImageViewer) SetImage() {
+// func (viewer *Viewer) SetImage() {
 // 	viewer.window.SetContent(viewer.imageContainer)
 // 	viewer.window.Canvas().Focus(viewer.currentImage)
 // }
 
-func (viewer *ImageViewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
+func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 
@@ -548,83 +459,41 @@ type CustomReader interface {
 	Path() string // Used for caching and identification
 }
 
-func (viewer *ImageViewer) ReadCustom() {
+func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 
-	viewer.imageFiles = make([]*ImageInfo, 0)
-	for i, r := range viewer.CustomReaders {
-		// if reader, err := r.GetReader(); err == nil {
-		// 	if IsImage(reader) {
+	// Build into a local slice and swap, so overlapping tie queries can't
+	// interleave appends into viewer.imageFiles (last query wins).
+	imageFiles := make([]*ImageInfo, 0, len(readers))
+	for i, r := range readers {
 		info := NewImageInfoCustomReader(i, r)
 		info.Path = r.Path()
-		viewer.imageFiles = append(viewer.imageFiles, info)
-		// }
-		// } else {
-		// 	fmt.Println("Error getting reader:", err)
-		// }
+		imageFiles = append(imageFiles, info)
 	}
+	viewer.imageFiles = imageFiles
 }
 
-type tieReader struct {
-	seeker io.ReadSeeker
-	data   []byte
-	host   string
-	hash   string
-}
-
-func (t *tieReader) Path() string {
-	return t.hash
-}
-
-func (t *tieReader) GetReader() (io.ReadSeeker, error) {
-	var err error
-	var r io.Reader
-	if t.seeker == nil {
-		r, err = getlib.ReadFile(nil, t.host, t.hash)
-		if err == nil {
-			t.data, err = io.ReadAll(r)
-			if err == nil {
-				t.seeker = bytes.NewReader(t.data)
-			}
-		}
-	}
-	return t.seeker, err
-}
-
-func (viewer *ImageViewer) ReadFromTie(include, exclude []string, filter string) {
-	if len(include) == 0 {
-		return
-	}
-	// First tag becomes the seed key, rest go into Include
-	var includeRest []string
-	if len(include) > 1 {
-		includeRest = include[1:]
-	}
-	
-	o := client.GetOptions{
-		Include: includeRest,
-		Exclude: exclude,
-		Reverse: true,
-		Filter:  filter,
-		Sort:    tiedb.SortOptions{Limit: -1},
-	}
-	
+// ReadCustomAsync replaces the viewer's images with the readers produced by
+// fetch, which runs in a goroutine. LoadGallery blocks until fetch and the
+// swap have completed. A nil result from fetch (e.g. after it logged an
+// error) leaves the current images untouched.
+func (viewer *Viewer) ReadCustomAsync(fetch func() []CustomReader) {
+	// Add before spawning the goroutine so LoadGallery's loading.Wait()
+	// actually blocks until the query results have been turned into images.
+	viewer.loading.Add(1)
 	go func() {
-		r, err := viewer.Tie.Get(include[0], o)
-		if err == nil {
-			viewer.CustomReaders = make([]CustomReader, 0)
-			r.Result.ForEachKey(func(hash string) {
-				viewer.CustomReaders = append(viewer.CustomReaders, &tieReader{host: viewer.Tie.Config.FileHosts["fast"].URL, hash: hash})
-			})
-			viewer.ReadCustom()
-		} else {
-			fmt.Println("Error happened querying tie:", err)
+		defer viewer.loading.Done()
+		readers := fetch()
+		if readers == nil {
+			return
 		}
+		viewer.CustomReaders = readers
+		viewer.ReadCustom(readers)
 	}()
 }
 
-func (viewer *ImageViewer) ReadImageArchive(zipFile string) {
+func (viewer *Viewer) ReadImageArchive(zipFile string) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 
