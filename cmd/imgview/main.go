@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -73,6 +74,25 @@ func main() {
 			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
 		case t.Info.ShowArchive:
 			t.Viewer.ShowImageArchive(t.Info.FullPath)
+		case t.Info.InputIsVideo:
+			go func() {
+				player, err := newMPVPlayer(t.Info.Path)
+				if err != nil {
+					fmt.Println("Error starting video player:", err)
+					return
+				}
+				fyne.Do(func() {
+					videoWindow := myApp.NewWindow("Video: " + filepath.Base(t.Info.Path))
+					video := NewVideo(player)
+					videoWindow.SetCloseIntercept(func() {
+						video.Close()
+						videoWindow.Close()
+					})
+					videoWindow.SetContent(video)
+					videoWindow.Resize(fyne.NewSize(800, 520))
+					videoWindow.Show()
+				})
+			}()
 		default:
 			t.Viewer.ChangeImage(t.Info)
 		}

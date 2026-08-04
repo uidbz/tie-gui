@@ -7,6 +7,7 @@ require (
 	git.sr.ht/~uid/conf v1.1.5
 	git.sr.ht/~uid/tie v0.4.1-0.20260728164711-780a68d5e850
 	github.com/disintegration/imaging v1.6.2
+	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.1.0.20260707082822-2a407d02d01a
 	github.com/h2non/filetype v1.1.3
 	github.com/mholt/archiver/v4 v4.0.0-alpha.8
 	github.com/minio/highwayhash v1.0.3
@@ -35,7 +36,6 @@ require (
 	github.com/fyne-io/image v0.1.1 // indirect
 	github.com/fyne-io/oksvg v0.2.0 // indirect
 	github.com/go-gl/gl v0.0.0-20260331235117-4566fea9a276 // indirect
-	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.1.0.20260707082822-2a407d02d01a // indirect
 	github.com/go-text/render v0.2.1 // indirect
 	github.com/go-text/typesetting v0.3.4 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
@@ -68,3 +68,5 @@ require (
 	golang.org/x/text v0.22.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace fyne.io/fyne/v2 => /go/src/github.com/uidbz/fyne-mpv-video/fyne

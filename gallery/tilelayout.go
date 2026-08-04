@@ -66,6 +66,9 @@ type Tile struct {
 type ImageInfo struct {
 	Path              string
 	FullPath          string // Used to get path of zipFile
+	// DirPath is the primary sort key: the directory or container that this
+	// entry logically belongs to (subdir path, archive path, or parent dir).
+	DirPath           string
 	ShowArchive       bool
 	CustomReader      CustomReader
 	OnTapped          func()
@@ -83,6 +86,7 @@ type ImageInfo struct {
 	InputIsArchive    bool
 	InputIsDir        bool
 	InputIsReader     bool
+	InputIsVideo      bool
 	IsZoomable        bool
 	IsDraggable       bool
 	ThumbnailIsScaled bool
@@ -307,6 +311,11 @@ func (layout *TileLayout) imageLoader() {
 }
 
 func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
+	// Video files cannot be decoded as images; return the loading placeholder.
+	if context.InputIsVideo {
+		return bytes.NewReader(loading), nil
+	}
+
 	// A custom Thumbnailer (e.g. one backed by network storage) takes
 	// precedence over the local thumbnail directory.
 	if layout.viewer.Thumbnailer != nil {

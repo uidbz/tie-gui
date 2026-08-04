@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"strconv"
 	"time"
@@ -326,6 +327,17 @@ func IsImageFromPath(path string) bool {
 		return false
 	}
 	return IsImage(file)
+}
+
+// IsVideoFromPath reports whether the file at path is a common video format,
+// detected by file extension.
+func IsVideoFromPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv", ".m4v",
+		".ogv", ".ts", ".mpg", ".mpeg", ".3gp", ".3g2":
+		return true
+	}
+	return false
 }
 
 func IsArchiveFromPath(path string) bool {

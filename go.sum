@@ -15,8 +15,6 @@ cloud.google.com/go/pubsub v1.1.0/go.mod h1:EwwdRX2sKPjnvnqCa270oGRyludottCI76h+
 cloud.google.com/go/storage v1.0.0/go.mod h1:IhtSnM/ZTZV8YYJWCY8RULGVqBDmpoyjwiyrjsg+URw=
 cloud.google.com/go/storage v1.5.0/go.mod h1:tpKbwo567HUNpVclU5sGELwQWBDZ8gh0ZeosJ0Rtdos=
 dmitri.shuralyov.com/gpu/mtl v0.0.0-20190408044501-666a987793e9/go.mod h1:H6x//7gZCb22OMCxBHrMx7a5I7Hp++hsVxbQ4BYO7hU=
-fyne.io/fyne/v2 v2.8.0 h1:KNUdIk1eKsXSPy/wU6MdiR1hppAPvyzbjPbtJ8h6EUQ=
-fyne.io/fyne/v2 v2.8.0/go.mod h1:tLJK7CVtUBOnMiSDR+J88t/quiGuEhwGs09tIVM1RXg=
 fyne.io/systray v1.12.2 h1:Y8DZxgLHsVQt6rY9Zrkkg+j67S7vv/1F2viOWKPpVeA=
 fyne.io/systray v1.12.2/go.mod h1:RVwqP9nYMo7h5zViCBHri2FgjXF7H2cub7MAq4NSoLs=
 git.sr.ht/~uid/conf v1.1.5 h1:WIXxfWY2lthK+aEbwGaKDkEVzX4jRKN4mVvGawZZ7iU=

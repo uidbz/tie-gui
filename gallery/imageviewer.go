@@ -410,6 +410,7 @@ func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 				if !y.IsDir() && IsImageFromPath(subFilePath) {
 					info := NewImageInfo(i, subFilePath)
 					info.InputIsDir = true
+					info.DirPath = subDirAbsPath
 					viewer.imageFiles = append(viewer.imageFiles, info)
 					i++
 					break
@@ -432,6 +433,7 @@ func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 				if IsImage(file) {
 					info := NewImageInfo(i, path)
 					info.InputIsDir = true
+					info.DirPath = fullPath
 					info.FullPath = fullPath
 					info.archiveFile = fsys
 					info.archiveName = filepath.Base(fullPath)
@@ -444,17 +446,39 @@ func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 				return nil
 			})
 
+		case IsVideoFromPath(fullPath):
+			info := NewImageInfo(i, fullPath)
+			info.InputIsVideo = true
+			info.DirPath = absolutePath
+			viewer.imageFiles = append(viewer.imageFiles, info)
+			i++
+
 		case IsImageFromPath(fullPath):
 			if selected != nil && selected.Path == fullPath {
 				selected.order = i
+				selected.DirPath = absolutePath
 				viewer.currentIndex = i
 				viewer.imageFiles = append(viewer.imageFiles, selected)
 			} else {
 				info := NewImageInfo(i, fullPath)
+				info.DirPath = absolutePath
 				viewer.imageFiles = append(viewer.imageFiles, info)
 			}
 			i++
 		}
+	}
+
+	// Sort: primary key = DirPath (groups subdirs and archives together),
+	// secondary key = filename (alphabetical within each group).
+	sort.Slice(viewer.imageFiles, func(i, j int) bool {
+		a, b := viewer.imageFiles[i], viewer.imageFiles[j]
+		if a.DirPath != b.DirPath {
+			return a.DirPath < b.DirPath
+		}
+		return filepath.Base(a.Path) < filepath.Base(b.Path)
+	})
+	for i := range viewer.imageFiles {
+		viewer.imageFiles[i].order = i
 	}
 }
 
