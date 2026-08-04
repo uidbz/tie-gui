@@ -53,6 +53,9 @@ func main() {
 	tieClient := client.NewTieClient(tieConfig)
 
 	viewer := gallery.NewViewer(myApp, myWindow, config, func(t *gallery.Tile) {
+		if t.Info.InputIsVideo {
+			return // video playback not yet supported in tieview
+		}
 		t.Viewer.ChangeImage(t.Info)
 	})
 	viewer.Thumbnailer = &filehostThumbnailer{tie: tieClient, tileWidth: int(config.General.TileWidth)}

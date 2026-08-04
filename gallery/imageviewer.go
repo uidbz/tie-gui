@@ -506,6 +506,14 @@ type Openable interface {
 	Open()
 }
 
+// VideoFile is an optional CustomReader interface. When a reader implements
+// it and returns true, the gallery shows a video-placeholder thumbnail and
+// the tile click handler is expected to open a video player instead of
+// trying to decode the content as an image.
+type VideoFile interface {
+	IsVideo() bool
+}
+
 func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
@@ -518,6 +526,9 @@ func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 		info.Path = r.Path()
 		if o, ok := r.(Openable); ok {
 			info.OnOpen = o.Open
+		}
+		if vf, ok := r.(VideoFile); ok && vf.IsVideo() {
+			info.InputIsVideo = true
 		}
 		imageFiles = append(imageFiles, info)
 	}

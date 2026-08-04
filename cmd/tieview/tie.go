@@ -62,7 +62,11 @@ type tieReader struct {
 	// thumbHash is the content hash of the filehost-cached thumbnail, learned
 	// from the query's expanded attributes or after uploadTieThumbnail.
 	thumbHash string
+	isVideo   bool
 }
+
+// IsVideo implements gallery.VideoFile so ReadCustom can set InputIsVideo.
+func (t *tieReader) IsVideo() bool { return t.isVideo }
 
 func (t *tieReader) Path() string {
 	return t.hash
@@ -115,9 +119,10 @@ func (t *tieDirReader) Open() {
 type tieRowKind int
 
 const (
-	tieRowSkip tieRowKind = iota // hidden (audio, video, plain dirs, ...)
-	tieRowFile                   // a viewable image
-	tieRowDir                    // a browsable tagged image directory
+	tieRowSkip  tieRowKind = iota // hidden (audio, plain dirs, ...)
+	tieRowFile                    // a viewable image
+	tieRowDir                     // a browsable tagged image directory
+	tieRowVideo                   // a playable video file
 )
 
 // classifyTieRow reports how a tag-query row should appear. The gallery
@@ -133,8 +138,12 @@ func classifyTieRow(row client.Row) tieRowKind {
 	if slices.Contains(types, client.TieImageFile.String()) {
 		return tieRowFile
 	}
-	if strings.HasPrefix(client.RowFirst(row, client.TieMediaType.String()), "image/") {
+	mediaType := client.RowFirst(row, client.TieMediaType.String())
+	if strings.HasPrefix(mediaType, "image/") {
 		return tieRowFile
+	}
+	if strings.HasPrefix(mediaType, "video/") {
+		return tieRowVideo
 	}
 	return tieRowSkip
 }
@@ -170,13 +179,15 @@ func readFromTie(viewer *gallery.Viewer, tc *client.TieClient, include, exclude 
 		host := tieFileHost(tc)
 		readers := make([]gallery.CustomReader, 0, len(rows))
 		for _, row := range rows {
-			switch classifyTieRow(row) {
-			case tieRowFile:
-				readers = append(readers, &tieReader{host: host, hash: row.Key, thumbHash: client.RowFirst(row, "thumbnail")})
-			case tieRowDir:
-				uid := client.DirUID(row.Key)
-				readers = append(readers, &tieDirReader{uid: uid, open: func() { browseDir(uid) }})
-			}
+		switch classifyTieRow(row) {
+		case tieRowFile:
+			readers = append(readers, &tieReader{host: host, hash: row.Key, thumbHash: client.RowFirst(row, "thumbnail")})
+		case tieRowDir:
+			uid := client.DirUID(row.Key)
+			readers = append(readers, &tieDirReader{uid: uid, open: func() { browseDir(uid) }})
+		case tieRowVideo:
+			readers = append(readers, &tieReader{host: host, hash: row.Key, isVideo: true})
+		}
 		}
 		return readers
 	})
@@ -202,6 +213,10 @@ func (t *filehostThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeek
 	tr, ok := info.CustomReader.(*tieReader)
 	if !ok {
 		return nil, errors.New("tie image without tie reader: " + info.Path)
+	}
+	if tr.isVideo {
+		// Video thumbnails are handled upstream (InputIsVideo → loading placeholder).
+		return nil, errors.New("video thumbnail not available")
 	}
 	if rs, ok := t.thumbnailReader(tr); ok {
 		info.ThumbnailIsScaled = true
