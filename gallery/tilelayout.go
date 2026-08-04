@@ -358,13 +358,10 @@ func (layout *TileLayout) imageLoader() {
 }
 
 func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
-	// Video files: extract a frame thumbnail for local files; fall back to
-	// the loading placeholder for network-backed (CustomReader) entries.
+	// Video files: extract a frame thumbnail for both local and
+	// network-backed entries (the reader is seekable in both cases).
 	if context.InputIsVideo {
-		if !context.InputIsReader {
-			return layout.videoThumbnail(context)
-		}
-		return bytes.NewReader(loading), nil
+		return layout.videoThumbnail(context)
 	}
 
 	// Directory tiles: generate a 2×2 composite of up to 4 preview images.
@@ -482,21 +479,29 @@ func (layout *TileLayout) makeDirectoryComposite(paths []string) []byte {
 }
 
 // videoThumbnail generates (or retrieves from disk cache) a thumbnail for a
-// local video file. It extracts the first decodable frame using ffmpeg, scales
-// it to 2×tileWidth wide, and overlays a circular play icon in the top-left
-// corner. On any failure it falls back to the loading placeholder.
+// video entry (local file or network-backed CustomReader). It extracts a frame
+// using ffmpeg, scales it to 2×tileWidth wide, and overlays a circular play
+// icon in the top-left corner. On any failure it falls back to the loading
+// placeholder.
 func (layout *TileLayout) videoThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
 	tileW := int(layout.config.General.TileWidth)
 
 	// Check disk cache before running ffmpeg.
 	cachePath := layout.videoThumbnailCachePath(context.Path)
-	if data, err := os.ReadFile(cachePath); err == nil {
+	if data, err := os.ReadFile(cachePath); err == nil && !layout.viewer.refreshThumbs {
 		context.ThumbnailIsScaled = true
 		return bytes.NewReader(data), nil
 	}
 
-	// Extract a frame; fall back to loading placeholder if ffmpeg is absent.
-	frame := extractVideoFrame(context.Path)
+	// Extract a frame from local file or network-backed reader.
+	var frame image.Image
+	if context.InputIsReader {
+		if r, err := context.GetReader(); err == nil {
+			frame = extractVideoFrameFromReader(r)
+		}
+	} else {
+		frame = extractVideoFrame(context.Path)
+	}
 	if frame == nil {
 		return bytes.NewReader(loading), nil
 	}
@@ -540,11 +545,11 @@ func (layout *TileLayout) videoThumbnailCachePath(videoPath string) string {
 	return filepath.Join(dir, hash)
 }
 
-// extractVideoFrame runs ffmpeg to extract one frame from the video at
-// approximately the 1-second mark, returning it as an image.Image. Returns
-// nil if ffmpeg is not available or the extraction fails.
+// extractVideoFrame runs ffmpeg to extract one frame from the video file at
+// approximately the 1-second mark (input seeking, which is fast for local
+// files). Falls back to frame 0 for very short videos. Returns nil if ffmpeg
+// is unavailable or extraction fails.
 func extractVideoFrame(videoPath string) image.Image {
-	// Try at 1 second first; if the video is very short, retry at 0.
 	for _, ss := range []string{"00:00:01", "00:00:00"} {
 		cmd := exec.Command("ffmpeg",
 			"-ss", ss,
@@ -553,6 +558,37 @@ func extractVideoFrame(videoPath string) image.Image {
 			"-f", "image2pipe",
 			"-vcodec", "png",
 			"-")
+		cmd.Stderr = io.Discard
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+		img, _, err := image.Decode(&stdout)
+		if err == nil {
+			return img
+		}
+	}
+	return nil
+}
+
+// extractVideoFrameFromReader pipes r into ffmpeg via stdin and extracts one
+// frame. It uses output seeking (-ss after -i) so ffmpeg decodes-and-discards
+// to reach the target timestamp — this works even for pipe/non-seekable
+// streams. Falls back to frame 0 for very short videos.
+func extractVideoFrameFromReader(r io.ReadSeeker) image.Image {
+	attempts := [][]string{
+		// output seek to 1 s
+		{"-i", "pipe:0", "-ss", "00:00:01", "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-"},
+		// frame 0 fallback
+		{"-i", "pipe:0", "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-"},
+	}
+	for _, args := range attempts {
+		if _, err := r.Seek(0, io.SeekStart); err != nil {
+			break // reader not seekable; try once without re-seeking
+		}
+		cmd := exec.Command("ffmpeg", args...)
+		cmd.Stdin = r
 		cmd.Stderr = io.Discard
 		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
