@@ -20,6 +20,7 @@ Quit = ['Q', 'Escape']
 ScrollDown = ['Down', 'J']
 ScrollUp = ['Up', 'K']
 PathLevelUp = ['BackSpace']
+ToggleFilenames = ['N']
 
 [General]
 ThumbnailDir = ''

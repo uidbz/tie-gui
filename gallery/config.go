@@ -50,10 +50,11 @@ type ImageConfig struct {
 }
 
 type GalleryConfig struct {
-	Quit        []fyne.KeyName
-	ScrollDown  []fyne.KeyName
-	ScrollUp    []fyne.KeyName
-	PathLevelUp []fyne.KeyName
+	Quit            []fyne.KeyName
+	ScrollDown      []fyne.KeyName
+	ScrollUp        []fyne.KeyName
+	PathLevelUp     []fyne.KeyName
+	ToggleFilenames []fyne.KeyName
 }
 
 // LoadConfig returns the bundled default config overlaid with the user's

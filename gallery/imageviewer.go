@@ -405,16 +405,24 @@ func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 		case x.IsDir():
 			subDirAbsPath := filepath.Join(absolutePath, x.Name())
 			subDir, _ := os.ReadDir(subDirAbsPath)
+			var previews []string
 			for _, y := range subDir {
-				subFilePath := filepath.Join(subDirAbsPath, y.Name())
-				if !y.IsDir() && IsImageFromPath(subFilePath) {
-					info := NewImageInfo(i, subFilePath)
-					info.InputIsDir = true
-					info.DirPath = subDirAbsPath
-					viewer.imageFiles = append(viewer.imageFiles, info)
-					i++
-					break
+				if y.IsDir() || len(previews) >= 4 {
+					continue
 				}
+				subFilePath := filepath.Join(subDirAbsPath, y.Name())
+				if IsImageFromPath(subFilePath) {
+					previews = append(previews, subFilePath)
+				}
+			}
+			if len(previews) > 0 {
+				info := NewImageInfo(i, previews[0])
+				info.InputIsDir = true
+				info.DirPath = subDirAbsPath
+				info.PreviewPaths = previews
+				info.DisplayName = x.Name()
+				viewer.imageFiles = append(viewer.imageFiles, info)
+				i++
 			}
 
 		case IsArchiveFromPath(fullPath):
@@ -439,6 +447,7 @@ func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 					info.archiveName = filepath.Base(fullPath)
 					info.InputIsArchive = true
 					info.ShowArchive = true
+					info.DisplayName = filepath.Base(fullPath)
 					viewer.imageFiles = append(viewer.imageFiles, info)
 					i++
 					return fs.SkipDir
@@ -450,6 +459,7 @@ func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 			info := NewImageInfo(i, fullPath)
 			info.InputIsVideo = true
 			info.DirPath = absolutePath
+			info.DisplayName = x.Name()
 			viewer.imageFiles = append(viewer.imageFiles, info)
 			i++
 
@@ -457,11 +467,13 @@ func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
 			if selected != nil && selected.Path == fullPath {
 				selected.order = i
 				selected.DirPath = absolutePath
+				selected.DisplayName = x.Name()
 				viewer.currentIndex = i
 				viewer.imageFiles = append(viewer.imageFiles, selected)
 			} else {
 				info := NewImageInfo(i, fullPath)
 				info.DirPath = absolutePath
+				info.DisplayName = x.Name()
 				viewer.imageFiles = append(viewer.imageFiles, info)
 			}
 			i++

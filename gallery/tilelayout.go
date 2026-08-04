@@ -2,6 +2,8 @@ package gallery
 
 import (
 	"errors"
+	"image"
+	"image/color"
 	"image/jpeg"
 	"os"
 	"path/filepath"
@@ -22,10 +24,16 @@ import (
 
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/disintegration/imaging"
 )
 
 //go:embed loading.png
 var loading []byte
+
+// labelHeight is the fixed pixel height reserved below each tile for the name
+// label when filenames are shown.
+const labelHeight = float32(22)
 
 // Thumbnailer supplies scaled thumbnails for gallery items. When the viewer's
 // Thumbnailer field is nil, thumbnails are generated from the image content
@@ -50,6 +58,7 @@ type TileLayout struct {
 	currentlyLoading sync.WaitGroup
 	cachedTiles      map[string]*Tile
 	cacheLock        sync.Mutex
+	showLabels       bool
 }
 
 type Tile struct {
@@ -61,14 +70,21 @@ type Tile struct {
 	Viewer    *Viewer
 	Info      *ImageInfo
 	tabFn     func(t *Tile)
+	nameLabel *widget.Label
+	layout    *TileLayout // reference for showLabels state
 }
 
 type ImageInfo struct {
-	Path              string
-	FullPath          string // Used to get path of zipFile
+	Path        string
+	FullPath    string // Used to get path of zipFile
 	// DirPath is the primary sort key: the directory or container that this
 	// entry logically belongs to (subdir path, archive path, or parent dir).
-	DirPath           string
+	DirPath     string
+	// DisplayName is the text shown below the tile (dirname for dirs, filename otherwise).
+	DisplayName string
+	// PreviewPaths holds up to 4 absolute image paths used to generate the
+	// directory composite thumbnail.
+	PreviewPaths      []string
 	ShowArchive       bool
 	CustomReader      CustomReader
 	OnTapped          func()
@@ -126,6 +142,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *View
 		app:          app,
 		viewer:       viewer,
 		cachedTiles:  make(map[string]*Tile),
+		showLabels:   true,
 	}
 
 	for i := 0; i < config.General.Workers; i++ {
@@ -178,6 +195,12 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 	tilesPerRow := int(containerSize.Width / tileWidth)
 	bottom := make([]float32, tilesPerRow+1)
 
+	// Extra height added below each tile image for the name label.
+	extraH := float32(0)
+	if layout.showLabels {
+		extraH = labelHeight
+	}
+
 	peakLandscape := func(i int) bool {
 		if i < len(layout.tiles)-1 {
 			return layout.tiles[i+1].landscape
@@ -200,7 +223,7 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 			tile := layout.tiles[i]
 			newWidth := tileWidth
 			scale := newWidth / tile.width
-			newHeight := tile.height * scale
+			newHeight := tile.height*scale + extraH
 			// fmt.Println("Scale portrait:", scale)
 			top := bottom[j]
 
@@ -210,7 +233,7 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 				}
 				newWidth = newWidth*2 + gap
 				scale = newWidth / tile.width
-				newHeight = tile.height * scale
+				newHeight = tile.height*scale + extraH
 				// fmt.Println("Scale landscape:", scale)
 			}
 
@@ -231,6 +254,26 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 			i++
 		}
 	}
+}
+
+// ToggleLabels flips the filename label visibility for all current tiles and
+// refreshes the grid layout.
+func (layout *TileLayout) ToggleLabels() {
+	layout.showLabels = !layout.showLabels
+	for _, t := range layout.tiles {
+		if t.nameLabel == nil {
+			continue
+		}
+		if layout.showLabels {
+			t.nameLabel.Show()
+		} else {
+			t.nameLabel.Hide()
+		}
+		t.Refresh()
+	}
+	fyne.Do(func() {
+		layout.grid.Refresh()
+	})
 }
 
 func (layout *TileLayout) tileFromCache(path string) (*Tile, bool) {
@@ -316,6 +359,15 @@ func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error
 		return bytes.NewReader(loading), nil
 	}
 
+	// Directory tiles: generate a 2×2 composite of up to 4 preview images.
+	// The in-memory tile cache (cachedTiles) prevents repeated generation
+	// within a session, so we skip the disk cache here.
+	if len(context.PreviewPaths) > 0 {
+		data := layout.makeDirectoryComposite(context.PreviewPaths)
+		context.ThumbnailIsScaled = true
+		return bytes.NewReader(data), nil
+	}
+
 	// A custom Thumbnailer (e.g. one backed by network storage) takes
 	// precedence over the local thumbnail directory.
 	if layout.viewer.Thumbnailer != nil {
@@ -382,6 +434,45 @@ func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error
 	return context.GetReader()
 }
 
+// makeDirectoryComposite generates a 2×2 grid thumbnail from up to 4 image
+// paths. Each cell is tileWidth/2 × tileWidth/2; the composite is square.
+func (layout *TileLayout) makeDirectoryComposite(paths []string) []byte {
+	cellW := int(layout.config.General.TileWidth) / 2
+	size := cellW * 2
+
+	// Dark neutral background for unfilled cells.
+	composite := imaging.New(size, size, color.NRGBA{R: 45, G: 45, B: 45, A: 255})
+
+	positions := [4]image.Point{
+		{X: 0, Y: 0},
+		{X: cellW, Y: 0},
+		{X: 0, Y: cellW},
+		{X: cellW, Y: cellW},
+	}
+
+	for i, p := range paths {
+		if i >= 4 {
+			break
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		img, _, err := Decode(f)
+		f.Close()
+		if err != nil {
+			continue
+		}
+		// Center-crop each preview to a square cell.
+		cell := imaging.Fill(img, cellW, cellW, imaging.Center, imaging.Lanczos)
+		composite = imaging.Paste(composite, cell, positions[i])
+	}
+
+	buf := &bytes.Buffer{}
+	jpeg.Encode(buf, composite, &jpeg.Options{Quality: 85})
+	return buf.Bytes()
+}
+
 const (
 	lvlDeep  = 3
 	dirWidth = 2
@@ -391,6 +482,7 @@ const (
 func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, context *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
 	t := &Tile{
 		Viewer: layout.viewer,
+		layout: layout,
 	}
 	decoded, _, err := Decode(reader)
 	if err != nil {
@@ -412,6 +504,17 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, context *ImageInfo,
 	t.landscape = t.width > t.height
 	t.Content = img
 	t.tabFn = tabFn
+
+	// Create name label using the entry's display name.
+	if context.DisplayName != "" {
+		lbl := widget.NewLabel(context.DisplayName)
+		lbl.Alignment = fyne.TextAlignCenter
+		lbl.Truncation = fyne.TextTruncateEllipsis
+		if !layout.showLabels {
+			lbl.Hide()
+		}
+		t.nameLabel = lbl
+	}
 
 	t.ExtendBaseWidget(t)
 
@@ -452,8 +555,53 @@ func (layout *TileLayout) InitHotkeys() {
 			layout.viewer.ShowImageDir(filepath.Dir(layout.viewer.currentPath))
 		}})
 	}
+	for _, x := range bindings.ToggleFilenames {
+		add(Hotkey{x, func() {
+			layout.ToggleLabels()
+		}})
+	}
+}
+
+// TileRenderer renders the tile image with an optional name label below it.
+type TileRenderer struct {
+	tile *Tile
 }
 
 func (ta *Tile) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(ta.Content)
+	return &TileRenderer{tile: ta}
 }
+
+func (r *TileRenderer) Layout(size fyne.Size) {
+	if r.tile.nameLabel != nil && r.tile.nameLabel.Visible() {
+		lh := labelHeight
+		r.tile.Content.Resize(fyne.NewSize(size.Width, size.Height-lh))
+		r.tile.Content.Move(fyne.NewPos(0, 0))
+		r.tile.nameLabel.Resize(fyne.NewSize(size.Width, lh))
+		r.tile.nameLabel.Move(fyne.NewPos(0, size.Height-lh))
+	} else {
+		r.tile.Content.Resize(size)
+		r.tile.Content.Move(fyne.NewPos(0, 0))
+	}
+}
+
+func (r *TileRenderer) MinSize() fyne.Size {
+	return fyne.NewSize(50, 50)
+}
+
+func (r *TileRenderer) Refresh() {
+	r.tile.Content.Refresh()
+	if r.tile.nameLabel != nil {
+		r.tile.nameLabel.Refresh()
+	}
+}
+
+func (r *TileRenderer) Objects() []fyne.CanvasObject {
+	if r.tile.nameLabel != nil {
+		return []fyne.CanvasObject{r.tile.Content, r.tile.nameLabel}
+	}
+	return []fyne.CanvasObject{r.tile.Content}
+}
+
+func (r *TileRenderer) Destroy() {}
+
+
