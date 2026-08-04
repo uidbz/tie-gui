@@ -3,9 +3,11 @@ package main
 import (
 	_ "embed"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	// "fyne.io/fyne/v2/container"
 	// "fyne.io/fyne/v2/widget"
@@ -31,8 +33,8 @@ const (
 )
 
 func ParseInput(args []string) (absolutePath string, inputType int, err error) {
-	if len(os.Args) > 1 {
-		path := os.Args[1]
+	if len(args) > 0 {
+		path := args[0]
 		absolutePath, err = filepath.Abs(path)
 		fi, err := os.Stat(absolutePath)
 		if err != nil {
@@ -62,11 +64,20 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 func main() {
 	// defer profile.Start(profile.CPUProfile).Stop()
 	// defer profile.Start().Stop()
+	configPath := flag.String("config", "", "imgview config file to load (default: config.toml in user config dir)")
+	flag.StringVar(configPath, "c", "", "Shorthand for -config")
+	flag.Parse()
+
+	// Append .toml extension when the caller omitted it.
+	if *configPath != "" && !strings.HasSuffix(*configPath, ".toml") {
+		*configPath += ".toml"
+	}
+
 	myApp := app.NewWithID("sr.ht.uid.imgview")
 	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
 	myWindow := myApp.NewWindow("imgview")
 
-	config := gallery.LoadConfig(myWindow)
+	config := gallery.LoadConfig(myWindow, *configPath)
 
 	viewer := gallery.NewViewer(myApp, myWindow, config, func(t *gallery.Tile) {
 		switch true {
@@ -103,7 +114,7 @@ func main() {
 
 	var selected *gallery.ImageInfo
 	loadingImage := false
-	absolutePath, inputType, err := ParseInput(os.Args)
+	absolutePath, inputType, err := ParseInput(flag.Args())
 
 	switch inputType {
 	case inputError:

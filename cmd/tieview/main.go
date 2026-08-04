@@ -32,11 +32,16 @@ func main() {
 	flag.StringVar(&tieHostName, "host", "", "Fetch content from this filehost named in the tie config (default: \"fast\" when configured, else the first DefaultFileHosts entry)")
 	flag.Parse()
 
+	// Append .toml extension when the caller omitted it.
+	if *tieConfigName != "" && !strings.HasSuffix(*tieConfigName, ".toml") {
+		*tieConfigName += ".toml"
+	}
+
 	myApp := app.NewWithID("sr.ht.uid.imgview")
 	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
 	myWindow := myApp.NewWindow("imgview")
 
-	config := gallery.LoadConfig(myWindow)
+	config := gallery.LoadConfig(myWindow, "")
 
 	tieConfig := loadTieConfig(*tieConfigName)
 	if tieHostName != "" {

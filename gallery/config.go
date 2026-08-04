@@ -57,29 +57,38 @@ type GalleryConfig struct {
 	ToggleFilenames []fyne.KeyName
 }
 
-// LoadConfig returns the bundled default config overlaid with the user's
-// ~/.config/imgview/config.toml when present.
-func LoadConfig(window fyne.Window) (config Config) {
+// LoadConfig returns the bundled default config overlaid with an explicit
+// config file when configPath is non-empty, or with the user's
+// ~/.config/imgview/config.toml otherwise.
+func LoadConfig(window fyne.Window, configPath string) (config Config) {
 	if err := toml.Unmarshal(configData, &config); err != nil {
 		panic("Bundled config is not valid TOML: " + err.Error())
 	}
 	if config.General.ThumbnailDir == "" {
 		config.General.ThumbnailDir = filepath.Join(os.TempDir(), "imgview")
 	}
-	if dir, err := os.UserConfigDir(); err == nil {
-		imgviewConfig := filepath.Join(dir, "imgview", "config.toml")
-		if _, err2 := os.Stat(imgviewConfig); !os.IsNotExist(err2) {
-			configFile, errRead := os.ReadFile(imgviewConfig)
-			if errRead != nil {
-				dialog.ShowError(errors.New("Error reading config file: "+errRead.Error()), window)
-				window.ShowAndRun()
-			}
-			if err3 := toml.Unmarshal(configFile, &config); err3 != nil {
-				dialog.ShowError(errors.New("Config file error: "+err3.Error()+"\nin: "+imgviewConfig), window)
-				window.ShowAndRun()
-			}
+
+	var overlayPath string
+	if configPath != "" {
+		overlayPath = configPath
+	} else if dir, err := os.UserConfigDir(); err == nil {
+		candidate := filepath.Join(dir, "imgview", "config.toml")
+		if _, err2 := os.Stat(candidate); !os.IsNotExist(err2) {
+			overlayPath = candidate
 		}
 	}
+
+	if overlayPath != "" {
+		configFile, errRead := os.ReadFile(overlayPath)
+		if errRead != nil {
+			dialog.ShowError(errors.New("Error reading config file: "+errRead.Error()), window)
+			window.ShowAndRun()
+		} else if err3 := toml.Unmarshal(configFile, &config); err3 != nil {
+			dialog.ShowError(errors.New("Config file error: "+err3.Error()+"\nin: "+overlayPath), window)
+			window.ShowAndRun()
+		}
+	}
+
 	if config.General.ThumbnailDir == "" {
 		config.General.ThumbnailDir = filepath.Join(os.TempDir(), "imgview")
 	}
