@@ -545,62 +545,69 @@ func (layout *TileLayout) videoThumbnailCachePath(videoPath string) string {
 	return filepath.Join(dir, hash)
 }
 
-// extractVideoFrame runs ffmpeg to extract one frame from the video file at
-// approximately the 1-second mark (input seeking, which is fast for local
-// files). Falls back to frame 0 for very short videos. Returns nil if ffmpeg
-// is unavailable or extraction fails.
+// extractVideoFrame extracts a single JPEG frame from videoPath using ffmpeg.
+// It writes to a temp file so that (a) ffmpeg can use fast input seeking,
+// (b) the output uses the JPEG decoder already registered via image/jpeg,
+// and (c) ffmpeg exit-code quirks don't mask a successful write.
+// Returns nil if ffmpeg is unavailable or extraction fails.
 func extractVideoFrame(videoPath string) image.Image {
-	for _, ss := range []string{"00:00:01", "00:00:00"} {
-		cmd := exec.Command("ffmpeg",
+	tmpOut, err := os.CreateTemp("", "imgview-thumb-*.jpg")
+	if err != nil {
+		return nil
+	}
+	tmpOutPath := tmpOut.Name()
+	tmpOut.Close()
+	defer os.Remove(tmpOutPath)
+
+	// Try at 1 s first; fall back to frame 0 for very short clips.
+	for _, ss := range []string{"1", "0"} {
+		cmd := exec.Command("ffmpeg", "-y",
 			"-ss", ss,
 			"-i", videoPath,
 			"-vframes", "1",
-			"-f", "image2pipe",
-			"-vcodec", "png",
-			"-")
+			"-q:v", "2",
+			tmpOutPath)
 		cmd.Stderr = io.Discard
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		if err := cmd.Run(); err != nil {
+		_ = cmd.Run() // some ffmpeg versions exit non-zero even on success; check the file
+
+		fi, err2 := os.Stat(tmpOutPath)
+		if err2 != nil || fi.Size() == 0 {
 			continue
 		}
-		img, _, err := image.Decode(&stdout)
-		if err == nil {
+		f, err2 := os.Open(tmpOutPath)
+		if err2 != nil {
+			continue
+		}
+		img, _, err2 := image.Decode(f)
+		f.Close()
+		if err2 == nil {
 			return img
 		}
 	}
 	return nil
 }
 
-// extractVideoFrameFromReader pipes r into ffmpeg via stdin and extracts one
-// frame. It uses output seeking (-ss after -i) so ffmpeg decodes-and-discards
-// to reach the target timestamp — this works even for pipe/non-seekable
-// streams. Falls back to frame 0 for very short videos.
+// extractVideoFrameFromReader writes r to a temporary file then delegates to
+// extractVideoFrame. Giving ffmpeg a real file allows input seeking and proper
+// container detection, avoiding the limitations of stdin pipes.
 func extractVideoFrameFromReader(r io.ReadSeeker) image.Image {
-	attempts := [][]string{
-		// output seek to 1 s
-		{"-i", "pipe:0", "-ss", "00:00:01", "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-"},
-		// frame 0 fallback
-		{"-i", "pipe:0", "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-"},
+	tmpIn, err := os.CreateTemp("", "imgview-vid-*")
+	if err != nil {
+		return nil
 	}
-	for _, args := range attempts {
-		if _, err := r.Seek(0, io.SeekStart); err != nil {
-			break // reader not seekable; try once without re-seeking
-		}
-		cmd := exec.Command("ffmpeg", args...)
-		cmd.Stdin = r
-		cmd.Stderr = io.Discard
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		if err := cmd.Run(); err != nil {
-			continue
-		}
-		img, _, err := image.Decode(&stdout)
-		if err == nil {
-			return img
-		}
+	tmpInPath := tmpIn.Name()
+	defer os.Remove(tmpInPath)
+
+	var copyErr error
+	if _, err2 := r.Seek(0, io.SeekStart); err2 == nil {
+		_, copyErr = io.Copy(tmpIn, r)
 	}
-	return nil
+	tmpIn.Close()
+	if copyErr != nil {
+		return nil
+	}
+
+	return extractVideoFrame(tmpInPath)
 }
 
 // drawVideoPlayIcon overlays a semi-transparent circular play button at
