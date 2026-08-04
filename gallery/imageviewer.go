@@ -362,6 +362,10 @@ func (viewer *Viewer) InitHotkeys() {
 }
 
 func (viewer *Viewer) ChangeImage(info *ImageInfo) {
+	if info.OnOpen != nil {
+		info.OnOpen()
+		return
+	}
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
 	viewer.CurrentImageView = img
@@ -459,6 +463,13 @@ type CustomReader interface {
 	Path() string // Used for caching and identification
 }
 
+// Openable is an optional CustomReader behavior for entries that are not
+// viewable images (e.g. a directory): Open replaces the default image
+// display when the entry is opened.
+type Openable interface {
+	Open()
+}
+
 func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
@@ -469,6 +480,9 @@ func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 	for i, r := range readers {
 		info := NewImageInfoCustomReader(i, r)
 		info.Path = r.Path()
+		if o, ok := r.(Openable); ok {
+			info.OnOpen = o.Open
+		}
 		imageFiles = append(imageFiles, info)
 	}
 	viewer.imageFiles = imageFiles

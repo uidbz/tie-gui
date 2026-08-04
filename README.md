@@ -39,13 +39,16 @@ go install git.sr.ht/~uid/imgview/cmd/tieview
 ## Repository layout
 * `gallery/` - the generic fyne image-viewing/gallery component shared by both apps (no tie dependency)
 * `cmd/imgview/` - the local-files image viewer (dirs and archives)
-* `cmd/tieview/` - the [tie](https://git.sr.ht/~uid/tie)-backed image viewer (tag queries, filehost-cached thumbnails)
+* `cmd/tieview/` - the [tie](https://git.sr.ht/~uid/tie)-backed image viewer (tag queries and virtual-filesystem navigation, filehost-cached thumbnails)
 * `tagselection/` - the tag picker widget used by tieview
 
 ## Run
 ~~~sh
 imgview /path/to/img/or/dir/or/archive
 tieview -tag favorite
+# tieview flags:
+#   -c/-config other.toml   tie config file (a name searched in tie's config dirs, or a file path)
+#   -host default           fetch content from this filehost named in the tie config
 ~~~
 
 ## Default Key Bindings

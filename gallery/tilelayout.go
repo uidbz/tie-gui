@@ -71,6 +71,11 @@ type ImageInfo struct {
 	OnTapped          func()
 	OnDoubleTapped    func()
 	OnTappedSecondary func()
+	// OnOpen, when non-nil, replaces the default image display when the
+	// entry is opened (tile tap, next/prev navigation) — e.g. to browse
+	// into a directory the entry represents. Wired automatically from
+	// CustomReader when it implements Openable.
+	OnOpen func()
 
 	archiveName       string
 	archiveFile       fs.FS

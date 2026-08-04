@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
 	"image/color"
 	"io"
 	"os"
@@ -135,6 +136,12 @@ func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Windo
 	}
 	if err := iv.LoadImage(); err != nil {
 		fmt.Println("Error:", err)
+		// A failed decode leaves fyneImage nil and the renderer's Layout
+		// would panic on fyneImage.Resize; show the loading placeholder
+		// instead so the view stays usable.
+		if img, _, perr := Decode(bytes.NewReader(loading)); perr == nil {
+			iv.setImage(img)
+		}
 	}
 	iv.refreshBilinear.Stop()
 	// go func() {
@@ -198,13 +205,18 @@ func (iv *ImageView) LoadImage() error {
 		return err2
 	}
 	iv.format = format
+	iv.setImage(img)
+
+	return nil
+}
+
+// setImage replaces the displayed image and records its dimensions.
+func (iv *ImageView) setImage(img image.Image) {
 	iv.fyneImage = canvas.NewImageFromImage(img)
 	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
 	iv.fyneImage.FillMode = canvas.ImageFillContain
 	iv.imgWidth = img.Bounds().Max.X
 	iv.imgHeight = img.Bounds().Max.Y
-
-	return nil
 }
 
 func (iv *ImageView) Resize(size fyne.Size) {
@@ -376,5 +388,8 @@ func (ren *ImageViewRenderer) MinSize() fyne.Size {
 
 func (ren *ImageViewRenderer) Layout(s fyne.Size) {
 	fmt.Printf("DEBUG renderer.Layout s=%v widget=%v pos=%v\n", s, ren.imageView.Size(), ren.imageView.Position())
+	if ren.imageView.fyneImage == nil {
+		return
+	}
 	ren.imageView.fyneImage.Resize(s)
 }

@@ -202,6 +202,7 @@ type TagSelection struct {
 	tags              *trie.Trie
 	selectedList      *AutoExpandingList
 	favoriteList      *AutoExpandingList
+	listLabel         *widget.Label
 	content           fyne.CanvasObject
 	search            *SearchItem
 	window            fyne.Window
@@ -285,10 +286,10 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 		clear(i)
 	}
 
-	lblFavorites := widget.NewLabel("Favorites")
-	lblFavorites.TextStyle.Bold = true
+	ts.listLabel = widget.NewLabel("Favorites")
+	ts.listLabel.TextStyle.Bold = true
 	ts.search = NewSearchItem(ts)
-	ts.content = container.NewVBox(ts.selectedList, canvas.NewLine(theme.ForegroundColor()), lblFavorites, ts.favoriteList)
+	ts.content = container.NewVBox(ts.selectedList, canvas.NewLine(theme.ForegroundColor()), ts.listLabel, ts.favoriteList)
 
 	ts.ExtendBaseWidget(ts)
 
@@ -325,6 +326,12 @@ func (ts *TagSelection) ClearAllTags() {
 
 func (ts *TagSelection) AddFavorite(tag string) {
 	ts.favorite = append(ts.favorite, NewTagItemData(tag))
+}
+
+// SetListLabel changes the bold label above the quick-pick tag list
+// ("Favorites" by default).
+func (ts *TagSelection) SetListLabel(text string) {
+	ts.listLabel.SetText(text)
 }
 
 func (ts *TagSelection) AddSelected(tid *TagItemData) {

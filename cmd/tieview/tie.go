@@ -8,6 +8,8 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 
 	"git.sr.ht/~uid/tie/client"
 	"git.sr.ht/~uid/tie/io/getlib"
@@ -28,9 +30,18 @@ func httpClientForHost(host client.FileHost) *http.Client {
 	}
 }
 
-// tieFileHost resolves the filehost used to fetch tie content: the "fast"
-// host when configured, otherwise the first configured default host.
+// tieHostName names the filehost to fetch content from, set by the -host
+// flag. Empty means the default resolution in tieFileHost.
+var tieHostName string
+
+// tieFileHost resolves the filehost used to fetch tie content: the host
+// named by -host when given, the "fast" host when configured, otherwise the
+// first configured default host.
 func tieFileHost(tc *client.TieClient) client.FileHost {
+	if tieHostName != "" {
+		// Validated against the config at startup, so this always hits.
+		return tc.Config.FileHosts[tieHostName]
+	}
 	if host, ok := tc.Config.FileHosts["fast"]; ok {
 		return host
 	}
@@ -79,10 +90,60 @@ func (t *tieReader) GetReader() (io.ReadSeeker, error) {
 	return t.seeker, err
 }
 
+// tieDirReader is the gallery entry for a tagged tie directory (tie-type
+// image-dir). It is not image content — GetReader always fails; opening the
+// entry browses the directory instead (Openable), and its thumbnail is a
+// folder icon.
+type tieDirReader struct {
+	uid  client.DirUID
+	open func()
+}
+
+func (t *tieDirReader) Path() string {
+	return string(t.uid)
+}
+
+func (t *tieDirReader) GetReader() (io.ReadSeeker, error) {
+	return nil, errors.New("tie directory is not image content: " + string(t.uid))
+}
+
+func (t *tieDirReader) Open() {
+	t.open()
+}
+
+// tieRowKind is how a tag-query row appears in the gallery.
+type tieRowKind int
+
+const (
+	tieRowSkip tieRowKind = iota // hidden (audio, video, plain dirs, ...)
+	tieRowFile                   // a viewable image
+	tieRowDir                    // a browsable tagged image directory
+)
+
+// classifyTieRow reports how a tag-query row should appear. The gallery
+// shows only image-file and image-dir entries. The raw expanded attributes
+// are checked (not client.File.TieType, which collapses multi-valued
+// tie-types to unknown-file); the media type is the fallback discriminator
+// for image files without a clean tie-type (see isImageFile).
+func classifyTieRow(row client.Row) tieRowKind {
+	types := client.RowValues(row, client.TieTypeProperty.String())
+	if slices.Contains(types, client.TieImageDir.String()) {
+		return tieRowDir
+	}
+	if slices.Contains(types, client.TieImageFile.String()) {
+		return tieRowFile
+	}
+	if strings.HasPrefix(client.RowFirst(row, client.TieMediaType.String()), "image/") {
+		return tieRowFile
+	}
+	return tieRowSkip
+}
+
 // readFromTie queries tie for images carrying all of the include tags and
 // none of the exclude tags, and replaces the viewer's gallery with the
-// results.
-func readFromTie(viewer *gallery.Viewer, tc *client.TieClient, include, exclude []string, filter string) {
+// results. Tagged image directories in the results become browsable
+// entries: opening one calls browseDir with the directory's UID.
+func readFromTie(viewer *gallery.Viewer, tc *client.TieClient, include, exclude []string, filter string, browseDir func(client.DirUID)) {
 	if len(include) == 0 {
 		return
 	}
@@ -109,7 +170,13 @@ func readFromTie(viewer *gallery.Viewer, tc *client.TieClient, include, exclude 
 		host := tieFileHost(tc)
 		readers := make([]gallery.CustomReader, 0, len(rows))
 		for _, row := range rows {
-			readers = append(readers, &tieReader{host: host, hash: row.Key, thumbHash: client.RowFirst(row, "thumbnail")})
+			switch classifyTieRow(row) {
+			case tieRowFile:
+				readers = append(readers, &tieReader{host: host, hash: row.Key, thumbHash: client.RowFirst(row, "thumbnail")})
+			case tieRowDir:
+				uid := client.DirUID(row.Key)
+				readers = append(readers, &tieDirReader{uid: uid, open: func() { browseDir(uid) }})
+			}
 		}
 		return readers
 	})
@@ -126,6 +193,12 @@ type filehostThumbnailer struct {
 }
 
 func (t *filehostThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker, error) {
+	if _, ok := info.CustomReader.(*tieDirReader); ok {
+		// Directories have no image content; a folder icon marks the tile
+		// clearly as a directory.
+		info.ThumbnailIsScaled = true
+		return folderIcon(t.tileWidth * 2), nil
+	}
 	tr, ok := info.CustomReader.(*tieReader)
 	if !ok {
 		return nil, errors.New("tie image without tie reader: " + info.Path)

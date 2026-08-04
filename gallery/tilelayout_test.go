@@ -1,8 +1,10 @@
 package gallery
 
 import (
+	"bytes"
 	"image"
 	"image/color"
+	"io"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -51,4 +53,23 @@ func TestLayoutToleratesTileObjectMismatch(t *testing.T) {
 	// Empty grid.
 	layout.tiles = nil
 	layout.Layout(nil, size)
+}
+
+type errReader struct{}
+
+func (errReader) GetReader() (io.ReadSeeker, error) {
+	return bytes.NewReader([]byte("this is not an image")), nil
+}
+func (errReader) Path() string { return "err" }
+
+// NewImageView on an undecodable image must fall back to the placeholder so
+// fyneImage is never nil (regression: renderer Layout panicked on
+// fyneImage.Resize after a failed decode).
+func TestNewImageViewBadImage(t *testing.T) {
+	info := NewImageInfoCustomReader(0, errReader{})
+	iv := NewImageView(info, fyne.NewSize(100, 100), true, nil, nil)
+	if iv.fyneImage == nil {
+		t.Fatal("fyneImage is nil after failed decode")
+	}
+	iv.CreateRenderer().(*ImageViewRenderer).Layout(fyne.NewSize(100, 100))
 }
