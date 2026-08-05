@@ -11,7 +11,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	// "path/filepath"
@@ -30,6 +29,8 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/disintegration/imaging"
+
+	"git.sr.ht/~uid/imgview/mpvplayer"
 )
 
 //go:embed loading.png
@@ -493,14 +494,19 @@ func (layout *TileLayout) videoThumbnail(context *ImageInfo) (io.ReadSeeker, err
 		return bytes.NewReader(data), nil
 	}
 
-	// Extract a frame from local file or network-backed reader.
+	// Extract a frame using libmpv's software renderer.
+	// For network-backed entries that expose a stream URL, pass the URL
+	// directly so libmpv can stream without downloading first.
 	var frame image.Image
+	tileW2 := tileW * 2
 	if context.InputIsReader {
-		if r, err := context.GetReader(); err == nil {
-			frame = extractVideoFrameFromReader(r)
+		if vs, ok := context.CustomReader.(VideoStreamer); ok && vs.StreamURL() != "" {
+			frame = mpvplayer.ExtractFrame(vs.StreamURL(), tileW2, tileW2, 1.0)
+		} else if r, err := context.GetReader(); err == nil {
+			frame = mpvplayer.ExtractFrameFromReader(r, tileW2, tileW2, 1.0)
 		}
 	} else {
-		frame = extractVideoFrame(context.Path)
+		frame = mpvplayer.ExtractFrame(context.Path, tileW2, tileW2, 1.0)
 	}
 	if frame == nil {
 		return bytes.NewReader(loading), nil
@@ -545,70 +551,7 @@ func (layout *TileLayout) videoThumbnailCachePath(videoPath string) string {
 	return filepath.Join(dir, hash)
 }
 
-// extractVideoFrame extracts a single JPEG frame from videoPath using ffmpeg.
-// It writes to a temp file so that (a) ffmpeg can use fast input seeking,
-// (b) the output uses the JPEG decoder already registered via image/jpeg,
-// and (c) ffmpeg exit-code quirks don't mask a successful write.
-// Returns nil if ffmpeg is unavailable or extraction fails.
-func extractVideoFrame(videoPath string) image.Image {
-	tmpOut, err := os.CreateTemp("", "imgview-thumb-*.jpg")
-	if err != nil {
-		return nil
-	}
-	tmpOutPath := tmpOut.Name()
-	tmpOut.Close()
-	defer os.Remove(tmpOutPath)
 
-	// Try at 1 s first; fall back to frame 0 for very short clips.
-	for _, ss := range []string{"1", "0"} {
-		cmd := exec.Command("ffmpeg", "-y",
-			"-ss", ss,
-			"-i", videoPath,
-			"-vframes", "1",
-			"-q:v", "2",
-			tmpOutPath)
-		cmd.Stderr = io.Discard
-		_ = cmd.Run() // some ffmpeg versions exit non-zero even on success; check the file
-
-		fi, err2 := os.Stat(tmpOutPath)
-		if err2 != nil || fi.Size() == 0 {
-			continue
-		}
-		f, err2 := os.Open(tmpOutPath)
-		if err2 != nil {
-			continue
-		}
-		img, _, err2 := image.Decode(f)
-		f.Close()
-		if err2 == nil {
-			return img
-		}
-	}
-	return nil
-}
-
-// extractVideoFrameFromReader writes r to a temporary file then delegates to
-// extractVideoFrame. Giving ffmpeg a real file allows input seeking and proper
-// container detection, avoiding the limitations of stdin pipes.
-func extractVideoFrameFromReader(r io.ReadSeeker) image.Image {
-	tmpIn, err := os.CreateTemp("", "imgview-vid-*")
-	if err != nil {
-		return nil
-	}
-	tmpInPath := tmpIn.Name()
-	defer os.Remove(tmpInPath)
-
-	var copyErr error
-	if _, err2 := r.Seek(0, io.SeekStart); err2 == nil {
-		_, copyErr = io.Copy(tmpIn, r)
-	}
-	tmpIn.Close()
-	if copyErr != nil {
-		return nil
-	}
-
-	return extractVideoFrame(tmpInPath)
-}
 
 // drawVideoPlayIcon overlays a semi-transparent circular play button at
 // (x0, y0) with the given pixel size onto dst.

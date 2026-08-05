@@ -1,6 +1,6 @@
 //go:build (linux || freebsd || netbsd || openbsd) && !x11 && !wayland
 
-package main
+package mpvplayer
 
 import (
 	"unsafe"

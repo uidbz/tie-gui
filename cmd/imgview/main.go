@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 
 	"git.sr.ht/~uid/imgview/gallery"
+	"git.sr.ht/~uid/imgview/mpvplayer"
 	// "github.com/pkg/profile"
 )
 
@@ -87,14 +88,14 @@ func main() {
 			t.Viewer.ShowImageArchive(t.Info.FullPath)
 		case t.Info.InputIsVideo:
 			go func() {
-				player, err := newMPVPlayer(t.Info.Path)
+				player, err := mpvplayer.NewMPVPlayer(t.Info.Path)
 				if err != nil {
 					fmt.Println("Error starting video player:", err)
 					return
 				}
 				fyne.Do(func() {
 					videoWindow := myApp.NewWindow("Video: " + filepath.Base(t.Info.Path))
-					video := NewVideo(player)
+					video := mpvplayer.NewVideo(player)
 					videoWindow.SetCloseIntercept(func() {
 						video.Close()
 						videoWindow.Close()

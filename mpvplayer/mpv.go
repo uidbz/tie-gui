@@ -1,4 +1,4 @@
-package main
+package mpvplayer
 
 /*
 #cgo LDFLAGS: -lmpv
@@ -20,18 +20,13 @@ static void *get_proc_address_bridge(void *ctx, const char *name) {
 // Build the OpenGL init params param array. Cgo cannot take the address of a C
 // function from Go, so we assemble the struct here.
 //
-// disp_type selects the optional native-display param that lets mpv set up
-// zero-copy GPU decode->GL interop (VAAPI/dmabuf->EGLImage) instead of copying
-// decoded frames back through system memory: 1 = X11 (disp is a Display*),
-// 2 = Wayland (disp is a wl_display*), 0 = none. disp may be NULL.
+// disp_type selects the optional native-display param: 1 = X11, 2 = Wayland, 0 = none.
 static mpv_render_param *make_gl_init_params(void *proc_ctx, int disp_type, void *disp) {
     mpv_opengl_init_params *gl = calloc(1, sizeof(mpv_opengl_init_params));
     gl->get_proc_address = get_proc_address_bridge;
     gl->get_proc_address_ctx = proc_ctx;
 
-    // 3 base params + optional display + terminator.
     mpv_render_param *params = calloc(5, sizeof(mpv_render_param));
-
     params[0].type = MPV_RENDER_PARAM_API_TYPE;
     params[0].data = MPV_RENDER_API_TYPE_OPENGL;
     params[1].type = MPV_RENDER_PARAM_OPENGL_INIT_PARAMS;
@@ -63,10 +58,7 @@ static void free_gl_init_params(mpv_render_param *params) {
     free(params);
 }
 
-// Render the current frame into the given FBO. flip_y stays 0: Fyne samples this
-// FBO's colour texture with the same v=0-at-top convention it uses for uploaded
-// images (see rectCoords in the painter), so mpv's default (unflipped) output
-// already lands right-side up. Setting flip_y=1 renders the frame upside down.
+// Render the current frame into the given FBO.
 static int render_to_fbo(mpv_render_context *ctx, int fbo, int w, int h) {
     mpv_opengl_fbo target;
     target.fbo = fbo;
@@ -102,9 +94,9 @@ import (
 	"github.com/go-gl/glfw/v3.4/glfw"
 )
 
-// mpvPlayer drives a libmpv instance and renders its video into an OpenGL FBO
+// MPVPlayer drives a libmpv instance and renders its video into an OpenGL FBO
 // via the Render API. It implements canvas.GLVideoRenderer.
-type mpvPlayer struct {
+type MPVPlayer struct {
 	mpv    *C.mpv_handle
 	render *C.mpv_render_context
 
@@ -112,17 +104,18 @@ type mpvPlayer struct {
 	initErr  error
 
 	needsPaint atomic.Bool
-	onUpdate   func() // called (from any thread) when a new frame is ready
+	onUpdate   func()
 
-	self cgo.Handle // stable handle passed to C callbacks
+	self cgo.Handle
 	file string
 
-	stop     chan struct{} // closed to stop the event loop
+	stop     chan struct{}
 	stopOnce sync.Once
-	done     chan struct{} // closed when the event loop has exited
+	done     chan struct{}
 }
 
-func newMPVPlayer(file string) (*mpvPlayer, error) {
+// NewMPVPlayer creates a new libmpv player that will play file (path or URL).
+func NewMPVPlayer(file string) (*MPVPlayer, error) {
 	h := C.mpv_create()
 	if h == nil {
 		return nil, fmt.Errorf("mpv_create failed")
@@ -131,26 +124,16 @@ func newMPVPlayer(file string) (*mpvPlayer, error) {
 		C.mpv_terminate_destroy(h)
 		return nil, err
 	}
-	// Let mpv choose hardware decoding when available.
 	setOption(h, "hwdec", "auto-safe")
 	setOption(h, "vo", "libmpv")
 
-	p := &mpvPlayer{mpv: h, file: file, stop: make(chan struct{}), done: make(chan struct{})}
+	p := &MPVPlayer{mpv: h, file: file, stop: make(chan struct{}), done: make(chan struct{})}
 	p.self = cgo.NewHandle(p)
-
-	// Drain mpv's event queue continuously. This is mandatory: libmpv buffers
-	// events (including internal wakeups) in a fixed-size queue, and if the
-	// client never consumes them the queue fills up and mpv throttles/stalls
-	// playback - which shows up as "plays a few seconds, then pauses, then
-	// resumes". Consuming events keeps the pipeline flowing.
 	go p.eventLoop()
-
 	return p, nil
 }
 
-// eventLoop drains mpv's event queue until the player is closed. mpv_wait_event
-// must be called from a single thread; this goroutine owns that duty.
-func (p *mpvPlayer) eventLoop() {
+func (p *MPVPlayer) eventLoop() {
 	defer close(p.done)
 	for {
 		select {
@@ -158,28 +141,21 @@ func (p *mpvPlayer) eventLoop() {
 			return
 		default:
 		}
-		// Block up to 100ms waiting for the next event. Returning periodically
-		// lets us observe the stop signal even when no events arrive.
 		ev := C.mpv_wait_event(p.mpv, C.double(0.1))
 		if ev == nil {
 			continue
 		}
 		switch ev.event_id {
 		case C.MPV_EVENT_NONE:
-			// Timeout, nothing to do.
 		case C.MPV_EVENT_SHUTDOWN:
 			return
 		}
 	}
 }
 
-// SetOnUpdate registers a callback invoked whenever mpv signals a new frame.
-func (p *mpvPlayer) SetOnUpdate(fn func()) { p.onUpdate = fn }
+func (p *MPVPlayer) SetOnUpdate(fn func()) { p.onUpdate = fn }
 
-// ensureRender lazily creates the render context. It must run on the GL thread
-// with the context current, which is guaranteed because it is only called from
-// RenderInto (invoked by Fyne's painter during a paint pass).
-func (p *mpvPlayer) ensureRender() error {
+func (p *MPVPlayer) ensureRender() error {
 	p.initOnce.Do(func() {
 		handle := unsafe.Pointer(uintptr(p.self))
 		dispType, disp := nativeDisplay()
@@ -193,15 +169,12 @@ func (p *mpvPlayer) ensureRender() error {
 		}
 		p.render = rctx
 		C.set_update_callback(rctx, handle)
-
-		// Start playback now that the render context exists.
 		p.command("loadfile", p.file)
 	})
 	return p.initErr
 }
 
-// RenderInto implements canvas.GLVideoRenderer.
-func (p *mpvPlayer) RenderInto(fbo uint32, width, height int) {
+func (p *MPVPlayer) RenderInto(fbo uint32, width, height int) {
 	if err := p.ensureRender(); err != nil {
 		return
 	}
@@ -209,11 +182,9 @@ func (p *mpvPlayer) RenderInto(fbo uint32, width, height int) {
 	C.render_to_fbo(p.render, C.int(fbo), C.int(width), C.int(height))
 }
 
-// NeedsPaint implements canvas.GLVideoRenderer.
-func (p *mpvPlayer) NeedsPaint() bool { return p.needsPaint.Load() }
+func (p *MPVPlayer) NeedsPaint() bool { return p.needsPaint.Load() }
 
-// Aspect implements canvas.GLVideoRenderer, returning the display aspect ratio.
-func (p *mpvPlayer) Aspect() float32 {
+func (p *MPVPlayer) Aspect() float32 {
 	a, err := p.getPropertyDouble("video-params/aspect")
 	if err != nil || a <= 0 {
 		return 0
@@ -221,46 +192,35 @@ func (p *mpvPlayer) Aspect() float32 {
 	return float32(a)
 }
 
-// Play resumes playback.
-func (p *mpvPlayer) Play() { p.setPropertyFlag("pause", false) }
+func (p *MPVPlayer) Play()  { p.setPropertyFlag("pause", false) }
+func (p *MPVPlayer) Pause() { p.setPropertyFlag("pause", true) }
 
-// Pause halts playback, leaving the current frame shown.
-func (p *mpvPlayer) Pause() { p.setPropertyFlag("pause", true) }
-
-// TogglePause flips the paused state and returns the new paused value.
-func (p *mpvPlayer) TogglePause() bool {
+func (p *MPVPlayer) TogglePause() bool {
 	paused := !p.IsPaused()
 	p.setPropertyFlag("pause", paused)
 	return paused
 }
 
-// IsPaused reports whether playback is currently paused.
-func (p *mpvPlayer) IsPaused() bool {
+func (p *MPVPlayer) IsPaused() bool {
 	v, err := p.getPropertyFlag("pause")
 	return err == nil && v
 }
 
-// Position returns the current playback time in seconds.
-func (p *mpvPlayer) Position() float64 {
+func (p *MPVPlayer) Position() float64 {
 	v, _ := p.getPropertyDouble("time-pos")
 	return v
 }
 
-// Duration returns the total media length in seconds, or 0 if unknown.
-func (p *mpvPlayer) Duration() float64 {
+func (p *MPVPlayer) Duration() float64 {
 	v, _ := p.getPropertyDouble("duration")
 	return v
 }
 
-// SeekTo jumps to an absolute position in seconds.
-func (p *mpvPlayer) SeekTo(seconds float64) {
+func (p *MPVPlayer) SeekTo(seconds float64) {
 	p.command("seek", strconv.FormatFloat(seconds, 'f', 3, 64), "absolute")
 }
 
-// Close stops playback and releases all mpv resources. Safe to call once.
-func (p *mpvPlayer) Close() {
-	// Stop the event loop and wait for it to exit before destroying the handle,
-	// so it never calls mpv_wait_event on a freed handle.
+func (p *MPVPlayer) Close() {
 	if p.stop != nil {
 		p.stopOnce.Do(func() { close(p.stop) })
 		<-p.done
@@ -279,7 +239,7 @@ func (p *mpvPlayer) Close() {
 	}
 }
 
-func (p *mpvPlayer) getPropertyDouble(name string) (float64, error) {
+func (p *MPVPlayer) getPropertyDouble(name string) (float64, error) {
 	if p.mpv == nil {
 		return 0, fmt.Errorf("mpv closed")
 	}
@@ -292,7 +252,7 @@ func (p *mpvPlayer) getPropertyDouble(name string) (float64, error) {
 	return float64(val), nil
 }
 
-func (p *mpvPlayer) getPropertyFlag(name string) (bool, error) {
+func (p *MPVPlayer) getPropertyFlag(name string) (bool, error) {
 	if p.mpv == nil {
 		return false, fmt.Errorf("mpv closed")
 	}
@@ -305,7 +265,7 @@ func (p *mpvPlayer) getPropertyFlag(name string) (bool, error) {
 	return val != 0, nil
 }
 
-func (p *mpvPlayer) setPropertyFlag(name string, value bool) {
+func (p *MPVPlayer) setPropertyFlag(name string, value bool) {
 	if p.mpv == nil {
 		return
 	}
@@ -318,7 +278,7 @@ func (p *mpvPlayer) setPropertyFlag(name string, value bool) {
 	C.mpv_set_property(p.mpv, cn, C.MPV_FORMAT_FLAG, unsafe.Pointer(&val))
 }
 
-func (p *mpvPlayer) command(args ...string) {
+func (p *MPVPlayer) command(args ...string) {
 	cargs := make([]*C.char, len(args)+1)
 	for i, a := range args {
 		cargs[i] = C.CString(a)
@@ -330,6 +290,8 @@ func (p *mpvPlayer) command(args ...string) {
 	}
 }
 
+// setOption and checkMPV are package-level helpers used by both the player
+// and the screenshot code.
 func setOption(h *C.mpv_handle, name, value string) {
 	cn := C.CString(name)
 	cv := C.CString(value)
@@ -345,6 +307,19 @@ func checkMPV(status C.int) error {
 	return fmt.Errorf("mpv error: %s", C.GoString(C.mpv_error_string(status)))
 }
 
+// mpvCommand is a package-level command helper used by screenshot.go.
+func mpvCommand(h *C.mpv_handle, args ...string) {
+	cargs := make([]*C.char, len(args)+1)
+	for i, a := range args {
+		cargs[i] = C.CString(a)
+	}
+	cargs[len(args)] = nil
+	C.mpv_command(h, &cargs[0])
+	for i := range args {
+		C.free(unsafe.Pointer(cargs[i]))
+	}
+}
+
 //export goGetProcAddress
 func goGetProcAddress(ctx unsafe.Pointer, name *C.char) unsafe.Pointer {
 	return unsafe.Pointer(glfw.GetProcAddress(C.GoString(name)))
@@ -352,7 +327,7 @@ func goGetProcAddress(ctx unsafe.Pointer, name *C.char) unsafe.Pointer {
 
 //export goRenderUpdate
 func goRenderUpdate(ctx unsafe.Pointer) {
-	p := cgo.Handle(uintptr(ctx)).Value().(*mpvPlayer)
+	p := cgo.Handle(uintptr(ctx)).Value().(*MPVPlayer)
 	p.needsPaint.Store(true)
 	if p.onUpdate != nil {
 		p.onUpdate()

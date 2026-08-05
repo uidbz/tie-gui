@@ -1,6 +1,6 @@
 //go:build !linux && !freebsd && !netbsd && !openbsd
 
-package main
+package mpvplayer
 
 import "unsafe"
 

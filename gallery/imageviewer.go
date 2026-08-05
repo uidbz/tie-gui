@@ -521,6 +521,14 @@ type VideoFile interface {
 	IsVideo() bool
 }
 
+// VideoStreamer is an optional CustomReader interface for video entries that
+// can be played or thumbnailed directly from an HTTP URL (no download
+// required). When implemented, GetThumbnail passes StreamURL to the libmpv
+// extractor instead of reading the full content through GetReader.
+type VideoStreamer interface {
+	StreamURL() string
+}
+
 func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()

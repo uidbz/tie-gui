@@ -4,7 +4,9 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -16,6 +18,7 @@ import (
 	"git.sr.ht/~uid/tie/client"
 
 	"git.sr.ht/~uid/imgview/gallery"
+	"git.sr.ht/~uid/imgview/mpvplayer"
 	"git.sr.ht/~uid/imgview/tagselection"
 	// "github.com/pkg/profile"
 )
@@ -54,7 +57,8 @@ func main() {
 
 	viewer := gallery.NewViewer(myApp, myWindow, config, func(t *gallery.Tile) {
 		if t.Info.InputIsVideo {
-			return // video playback not yet supported in tieview
+			go openTieVideo(myApp, t.Info)
+			return
 		}
 		t.Viewer.ChangeImage(t.Info)
 	})
@@ -160,4 +164,59 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieCl
 	}
 
 	return ts
+}
+
+// openTieVideo opens a libmpv video player window for a tie video entry.
+// It streams directly from the filehost URL when available; otherwise it
+// falls through to downloading the content to a temporary file.
+func openTieVideo(a fyne.App, info *gallery.ImageInfo) {
+	var src string
+	var tmpFile string
+
+	if vs, ok := info.CustomReader.(gallery.VideoStreamer); ok {
+		src = vs.StreamURL()
+	}
+	if src == "" {
+		// Fallback: download the blob to a temp file.
+		r, err := info.CustomReader.GetReader()
+		if err != nil {
+			fmt.Println("Error reading video:", err)
+			return
+		}
+		tmp, err := os.CreateTemp("", "imgview-tie-vid-*")
+		if err != nil {
+			return
+		}
+		if _, err2 := r.Seek(0, io.SeekStart); err2 == nil {
+			_, _ = io.Copy(tmp, r)
+		}
+		tmp.Close()
+		src = tmp.Name()
+		tmpFile = tmp.Name()
+	}
+
+	player, err := mpvplayer.NewMPVPlayer(src)
+	if err != nil {
+		fmt.Println("Error starting video player:", err)
+		if tmpFile != "" {
+			os.Remove(tmpFile)
+		}
+		return
+	}
+
+	fyne.Do(func() {
+		title := "Video: " + filepath.Base(info.Path)
+		w := a.NewWindow(title)
+		v := mpvplayer.NewVideo(player)
+		w.SetCloseIntercept(func() {
+			v.Close()
+			w.Close()
+			if tmpFile != "" {
+				os.Remove(tmpFile)
+			}
+		})
+		w.SetContent(v)
+		w.Resize(fyne.NewSize(800, 520))
+		w.Show()
+	})
 }

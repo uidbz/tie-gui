@@ -68,6 +68,16 @@ type tieReader struct {
 // IsVideo implements gallery.VideoFile so ReadCustom can set InputIsVideo.
 func (t *tieReader) IsVideo() bool { return t.isVideo }
 
+// StreamURL implements gallery.VideoStreamer. It returns the direct HTTP URL
+// for this entry so libmpv can stream without downloading the blob first.
+// The tie filehost URL scheme is: baseURL + "/" + contentHash.
+func (t *tieReader) StreamURL() string {
+	if t.host.URL == "" {
+		return ""
+	}
+	return t.host.URL + "/" + t.hash
+}
+
 func (t *tieReader) Path() string {
 	return t.hash
 }
