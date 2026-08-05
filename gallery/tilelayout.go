@@ -657,6 +657,12 @@ func (t *Tile) Tapped(_ *fyne.PointEvent) {
 	t.tabFn(t)
 }
 
+func (t *Tile) TappedSecondary(_ *fyne.PointEvent) {
+	if t.Viewer != nil && t.Viewer.OnTileSecondaryTapped != nil {
+		t.Viewer.OnTileSecondaryTapped(t)
+	}
+}
+
 func (layout *TileLayout) InitHotkeys() {
 	layout.hotkeys = []Hotkey{}
 	bindings := layout.config.Gallery

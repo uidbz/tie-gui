@@ -54,6 +54,10 @@ type Viewer struct {
 	OnDoubleTapped    func()
 	OnTappedSecondary func()
 	OnImageChange     func(info *ImageInfo)
+	// OnTileSecondaryTapped is called when a gallery tile receives a secondary
+	// tap (right-click). Set by the caller to implement context actions such as
+	// de-import. Receives the full Tile so the caller can inspect Info.
+	OnTileSecondaryTapped func(*Tile)
 
 	currentPage  int
 	maxPages     int
@@ -163,6 +167,20 @@ func (viewer *Viewer) LoadGallery() {
 
 func (viewer *Viewer) CurrentImageInfo() *ImageInfo {
 	return viewer.CurrentImageView.info
+}
+
+// RemoveItem removes info from the viewer's image list and fixes the order
+// indices of remaining items. Call ChangeGallery afterwards to refresh the UI.
+func (viewer *Viewer) RemoveItem(info *ImageInfo) {
+	for i, item := range viewer.imageFiles {
+		if item == info {
+			viewer.imageFiles = append(viewer.imageFiles[:i], viewer.imageFiles[i+1:]...)
+			for j := i; j < len(viewer.imageFiles); j++ {
+				viewer.imageFiles[j].order = j
+			}
+			return
+		}
+	}
 }
 
 func (viewer *Viewer) ChangeGallery() {

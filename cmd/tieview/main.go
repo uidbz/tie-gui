@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 
 	"git.sr.ht/~uid/conf"
 	"git.sr.ht/~uid/tie/client"
@@ -69,6 +70,47 @@ func main() {
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
+
+	// Right-click on a gallery tile shows a de-import confirmation dialog.
+	viewer.OnTileSecondaryTapped = func(t *gallery.Tile) {
+		if t.Info.CustomReader == nil {
+			return
+		}
+		var kind, label string
+		switch r := t.Info.CustomReader.(type) {
+		case *tieReader:
+			kind = "file"
+			label = r.hash[:16] + "…"
+		case *tieDirReader:
+			kind = "directory"
+			label = string(r.uid)[:16] + "…"
+		default:
+			return
+		}
+		msg := fmt.Sprintf("Remove all metadata and tags exclusively used by this %s?\n\n%s\n\nThis cannot be undone.", kind, label)
+		dialog.ShowConfirm("De-import "+kind, msg, func(confirmed bool) {
+			if !confirmed {
+				return
+			}
+			go func() {
+				var err error
+				switch r := t.Info.CustomReader.(type) {
+				case *tieReader:
+					err = deimportFile(tieClient, r.hash)
+				case *tieDirReader:
+					err = deimportDir(tieClient, r.uid)
+				}
+				fyne.Do(func() {
+					if err != nil {
+						dialog.ShowError(fmt.Errorf("de-import failed: %w", err), myWindow)
+						return
+					}
+					viewer.RemoveItem(t.Info)
+					viewer.ChangeGallery()
+				})
+			}()
+		}, myWindow)
+	}
 
 	readFromTie(viewer, tieClient, []string{*tieTag}, nil, "tag", browseDir)
 	// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
