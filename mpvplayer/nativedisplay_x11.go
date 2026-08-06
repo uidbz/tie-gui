@@ -1,4 +1,4 @@
-//go:build (linux || freebsd || netbsd || openbsd) && x11
+//go:build (linux || freebsd || netbsd || openbsd) && x11 && !nompv && !android
 
 package mpvplayer
 

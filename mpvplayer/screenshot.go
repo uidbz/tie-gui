@@ -1,3 +1,5 @@
+//go:build !nompv && !android
+
 package mpvplayer
 
 /*

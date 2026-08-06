@@ -1,4 +1,4 @@
-//go:build (linux || freebsd || netbsd || openbsd) && wayland
+//go:build (linux || freebsd || netbsd || openbsd) && wayland && !nompv && !android
 
 package mpvplayer
 
