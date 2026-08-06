@@ -69,4 +69,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace fyne.io/fyne/v2 => /go/src/github.com/uidbz/fyne-mpv-video/fyne
+replace fyne.io/fyne/v2 => ./third_party/fyne
