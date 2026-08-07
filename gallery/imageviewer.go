@@ -47,6 +47,8 @@ type Viewer struct {
 	galleryLoaded    bool
 	config           Config
 	bottomBar        *fyne.Container
+	sidebarStored    fyne.CanvasObject // saved sidebar when hidden by the toggle
+	sidebarToggle    *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
 	refreshThumbs    bool
 
 	tileOnclick       func(*Tile)
@@ -125,6 +127,20 @@ func (viewer *Viewer) Init() {
 	viewer.InitHotkeys()
 }
 
+// ToggleSidebar hides the sidebar when it is visible, and restores it when
+// it is hidden. It rebuilds the gallery layout immediately so the change
+// takes effect without a restart.
+func (viewer *Viewer) ToggleSidebar() {
+	if viewer.Sidebar != nil {
+		viewer.sidebarStored = viewer.Sidebar
+		viewer.Sidebar = nil
+	} else {
+		viewer.Sidebar = viewer.sidebarStored
+	}
+	viewer.CreateView()
+	viewer.window.SetContent(viewer.Content)
+}
+
 func (viewer *Viewer) CreateView() {
 	var mainPage fyne.CanvasObject
 	if viewer.scroll == nil {
@@ -137,7 +153,30 @@ func (viewer *Viewer) CreateView() {
 	} else {
 		mainPage = viewer.scroll
 	}
-	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, viewer.bottomBar, nil, nil, mainPage)}
+
+	// Lazily create the sidebar toggle button the first time a sidebar is
+	// encountered. Update its label to reflect the current visibility state.
+	hasSidebar := viewer.Sidebar != nil || viewer.sidebarStored != nil
+	if hasSidebar && viewer.sidebarToggle == nil {
+		viewer.sidebarToggle = widget.NewButton("◀", viewer.ToggleSidebar)
+	}
+	if viewer.sidebarToggle != nil {
+		if viewer.Sidebar != nil {
+			viewer.sidebarToggle.SetText("◀")
+		} else {
+			viewer.sidebarToggle.SetText("▶")
+		}
+	}
+
+	// Compose the bottom bar: toggle on the left edge, pagination filling the
+	// rest. The toggle is placed outside bottomBar.Objects so the existing
+	// Objects[:2] (Prev/Next) trimming in LoadGallery is unaffected.
+	var bottom fyne.CanvasObject = viewer.bottomBar
+	if viewer.sidebarToggle != nil && viewer.bottomBar != nil {
+		bottom = container.NewBorder(nil, nil, viewer.sidebarToggle, nil, viewer.bottomBar)
+	}
+
+	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, bottom, nil, nil, mainPage)}
 }
 
 func (viewer *Viewer) LoadGallery() {
