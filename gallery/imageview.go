@@ -337,8 +337,10 @@ func (iv *ImageView) panBounds() (minX, maxX, minY, maxY float32) {
 }
 
 func (iv *ImageView) draggedMobile(drag *fyne.DragEvent) {
-	// Suppress panning/paging while a two-finger pinch is active.
-	if len(iv.touches) >= 2 || iv.pinchDist > 0 {
+	// Suppress panning/paging while an active two-finger pinch is in progress.
+	// Do not check len(touches) — stale map entries after a pinch ends must
+	// not block panning on the surviving finger.
+	if iv.pinchDist > 0 {
 		return
 	}
 	if !iv.dragStart {
@@ -415,6 +417,10 @@ func (iv *ImageView) TouchUp(e *mobile.TouchEvent) {
 	delete(iv.touches, e.ID)
 	if len(iv.touches) < 2 {
 		iv.pinchDist = 0
+		// Clear all remaining entries. The surviving finger is tracked by
+		// Dragged for panning; a stale map entry here would let TouchMoved
+		// mistake it for a second active touch and re-run pinch/resize logic.
+		iv.touches = make(map[int]fyne.Position)
 	}
 	// A pinch mutates iv.size/iv.pos via direct Resize/Move (no Refresh, to
 	// stay smooth). When it ends, sync the layout state and update the title
