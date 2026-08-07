@@ -86,6 +86,16 @@ func (viewer *Viewer) KeyPress(key *fyne.KeyEvent) {
 			x.Function()
 		}
 	}
+	// On mobile the image view is not focused (to suppress the soft keyboard),
+	// so image-viewer hotkeys (including the Back key) never reach TypedKey.
+	// Handle them here instead.
+	if fyne.CurrentDevice().IsMobile() {
+		for _, x := range viewer.hotkeys {
+			if key.Name == x.Name {
+				x.Function()
+			}
+		}
+	}
 }
 
 func (viewer *Viewer) ShowImageDir(path string) {
