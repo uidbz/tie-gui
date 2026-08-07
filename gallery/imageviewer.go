@@ -336,15 +336,22 @@ func (viewer *Viewer) InitHotkeys() {
 			viewer.CurrentImageView.OriginalSize()
 		}})
 	}
+	showGallery := func() {
+		if !viewer.galleryLoaded {
+			viewer.LoadGallery()
+		}
+		viewer.CreateView()
+		viewer.window.SetTitle("imgview")
+		viewer.window.SetContent(viewer.Content)
+	}
 	for _, x := range bindings.ShowGallery {
-		add(Hotkey{x, func() {
-			if !viewer.galleryLoaded {
-				viewer.LoadGallery()
-			}
-			viewer.CreateView()
-			viewer.window.SetTitle("imgview")
-			viewer.window.SetContent(viewer.Content)
-		}})
+		add(Hotkey{x, showGallery})
+	}
+	// On mobile the Android/iOS back button sends key name "Back" to the
+	// focused widget (ImageView). Map it to the same show-gallery action so
+	// the user can return to the grid without a keyboard.
+	if fyne.CurrentDevice().IsMobile() {
+		add(Hotkey{"Back", showGallery})
 	}
 	for _, x := range bindings.Quit {
 		add(Hotkey{x, func() {

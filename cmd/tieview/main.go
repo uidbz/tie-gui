@@ -48,6 +48,7 @@ func main() {
 	config := gallery.LoadConfig(myWindow, "")
 
 	tieConfig := loadTieConfig(*tieConfigName)
+	applyTiePrefs(myApp, &tieConfig)
 	if tieHostName != "" {
 		if _, ok := tieConfig.FileHosts[tieHostName]; !ok {
 			fmt.Fprintf(os.Stderr, "No filehost %q in the tie config. Configured filehosts: %s\n", tieHostName, strings.Join(fileHostNames(tieConfig), ", "))
@@ -66,7 +67,7 @@ func main() {
 	viewer.Thumbnailer = &filehostThumbnailer{tie: tieClient, tileWidth: int(config.General.TileWidth)}
 	fsTree := newTieFSTree(viewer, tieClient)
 	browseDir := func(uid client.DirUID) { fsTree.showDirUID(uid, "") }
-	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir)
+	viewer.Sidebar = makeSidebar(myApp, myWindow, viewer, tieClient, fsTree, browseDir)
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
@@ -165,10 +166,11 @@ func fileHostNames(c client.Config) []string {
 
 // makeSidebar builds the navigation sidebar: the first tab browses images
 // by tag, the second navigates the tie virtual filesystem.
-func makeSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID)) *container.AppTabs {
+func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID)) *container.AppTabs {
 	return container.NewAppTabs(
 		container.NewTabItem("Tags", makeTagSidebar(window, viewer, tc, browseDir)),
 		container.NewTabItem("Files", fsTree.tree),
+		makeSettingsTab(a, tc),
 	)
 }
 
