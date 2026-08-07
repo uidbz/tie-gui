@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/driver/mobile"
 	"fyne.io/fyne/v2/widget"
 	"github.com/h2non/filetype"
 
@@ -48,6 +50,21 @@ type ImageView struct {
 	w                 fyne.Window
 	container         *fyne.Container
 	changeFn          func()
+
+	// nextFn/prevFn page to the adjacent image; wired by Viewer.ChangeImage so
+	// a mobile swipe/flick can navigate the same way the keyboard hotkeys do.
+	nextFn func()
+	prevFn func()
+
+	// Mobile gesture state (touch only; desktop uses Dragged/Scrolled above).
+	// touches holds the live position of each active finger keyed by its
+	// TouchEvent.ID; pinchDist/pinchZoom capture the baseline at pinch start;
+	// swipeAccum accumulates horizontal drag past the pan border to trigger
+	// paging. See TouchDown/TouchMoved/DragEnd.
+	touches    map[int]fyne.Position
+	pinchDist  float32
+	pinchZoom  float32
+	swipeAccum float32
 }
 
 type Hotkey struct {
@@ -63,7 +80,6 @@ func (d *ImageLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 func (d *ImageLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size) {
 	for _, o := range objects {
 		iv := o.(*ImageView)
-		fmt.Printf("DEBUG ImageLayout.Layout containerSize=%v iv.size=%v fillWindow=%v\n", containerSize, iv.size, iv.fillWindow)
 		if iv.fillWindow {
 			iv.pos = fyne.NewPos(0, 0)
 			iv.size = containerSize
@@ -134,6 +150,7 @@ func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Windo
 		size:            size,
 		newSize:         true,
 		refreshBilinear: time.NewTimer(100 * time.Millisecond),
+		touches:         make(map[int]fyne.Position),
 	}
 	if err := iv.LoadImage(); err != nil {
 		fmt.Println("Error:", err)
@@ -206,9 +223,36 @@ func (iv *ImageView) LoadImage() error {
 		return err2
 	}
 	iv.format = format
-	iv.setImage(img)
+	iv.setImage(iv.downscaleForMobile(img))
 
 	return nil
+}
+
+// downscaleForMobile shrinks a decoded image on mobile so the GPU texture that
+// gets re-uploaded on every pinch frame stays small. Full-resolution phone
+// photos (12MP+) are ~48MB of RGBA; re-uploading that each frame makes pinch
+// zoom choppy. We cap the longest edge at 2x the screen's longest edge, which
+// leaves headroom for zooming in while keeping the texture a few MB. Desktop
+// (and any non-decoded case) is left untouched.
+func (iv *ImageView) downscaleForMobile(img image.Image) image.Image {
+	if !fyne.CurrentDevice().IsMobile() {
+		return img
+	}
+	screen := fyne.Max(iv.size.Width, iv.size.Height)
+	if screen <= 0 {
+		return img
+	}
+	maxEdge := int(screen * 2)
+	b := img.Bounds()
+	longest := b.Dx()
+	if b.Dy() > longest {
+		longest = b.Dy()
+	}
+	if longest <= maxEdge {
+		return img
+	}
+	// imaging.Fit scales to fit within maxEdge x maxEdge, preserving aspect ratio.
+	return imaging.Fit(img, maxEdge, maxEdge, imaging.Linear)
 }
 
 // setImage replaces the displayed image and records its dimensions.
@@ -221,12 +265,15 @@ func (iv *ImageView) setImage(img image.Image) {
 }
 
 func (iv *ImageView) Resize(size fyne.Size) {
-	fmt.Printf("DEBUG ImageView.Resize %v\n", size)
 	iv.BaseWidget.Resize(size)
 }
 
 func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 	if !iv.info.IsDraggable {
+		return
+	}
+	if fyne.CurrentDevice().IsMobile() {
+		iv.draggedMobile(drag)
 		return
 	}
 	if !iv.dragStart {
@@ -243,9 +290,250 @@ func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 }
 
 func (iv *ImageView) DragEnd() {
+	if fyne.CurrentDevice().IsMobile() {
+		iv.dragEndMobile()
+		return
+	}
 	iv.dragStart = false
 	// iv.fyneImage.ScaleMode = canvas.ImageScaleSmooth
 	// iv.fyneImage.Refresh()
+}
+
+// --- mobile gestures (touch only) -------------------------------------------
+//
+// On touch we mimic a phone gallery: a one-finger drag pans within the image
+// borders; dragging past a border accumulates "overscroll" that pages to the
+// next/previous image on release (a fast flick pages too, thanks to Fyne's
+// post-release drag momentum). Two fingers pinch-zoom toward their midpoint.
+// Desktop keeps its original free-drag + scroll-wheel zoom above.
+
+// containerSize is the space the image is laid out within (the viewport).
+func (iv *ImageView) containerSize() fyne.Size {
+	if iv.container != nil {
+		return iv.container.Size()
+	}
+	return iv.size
+}
+
+// panBounds returns the inclusive min/max top-left position that keeps the
+// widget covering the viewport on each axis. When the widget is smaller than
+// the viewport on an axis, min==max==the centered position (no panning).
+func (iv *ImageView) panBounds() (minX, maxX, minY, maxY float32) {
+	c := iv.containerSize()
+	s := iv.size
+	if s.Width <= c.Width {
+		x := (c.Width - s.Width) / 2
+		minX, maxX = x, x
+	} else {
+		minX, maxX = c.Width-s.Width, 0
+	}
+	if s.Height <= c.Height {
+		y := (c.Height - s.Height) / 2
+		minY, maxY = y, y
+	} else {
+		minY, maxY = c.Height-s.Height, 0
+	}
+	return
+}
+
+func (iv *ImageView) draggedMobile(drag *fyne.DragEvent) {
+	// Suppress panning/paging while a two-finger pinch is active.
+	if len(iv.touches) >= 2 || iv.pinchDist > 0 {
+		return
+	}
+	if !iv.dragStart {
+		iv.newSize = false
+		iv.dragStart = true
+		iv.fillWindow = false
+		iv.swipeAccum = 0
+	}
+
+	minX, maxX, minY, maxY := iv.panBounds()
+
+	// Horizontal: pan within bounds, spill the remainder into overscroll.
+	newX := iv.pos.X + drag.Dragged.DX
+	switch {
+	case newX > maxX:
+		iv.pos.X = maxX
+		iv.swipeAccum += newX - maxX
+	case newX < minX:
+		iv.pos.X = minX
+		iv.swipeAccum += newX - minX
+	default:
+		iv.pos.X = newX
+		iv.swipeAccum = 0 // reversing toward center clears any page charge
+	}
+
+	// Vertical: pan only, clamped.
+	iv.pos.Y = clampF(iv.pos.Y+drag.Dragged.DY, minY, maxY)
+
+	iv.Move(iv.pos)
+}
+
+func (iv *ImageView) dragEndMobile() {
+	iv.dragStart = false
+
+	// Page when the overscroll past a border exceeds the threshold. When the
+	// image fits (no pan room), any horizontal drag becomes overscroll, so a
+	// plain swipe pages. When zoomed in the finger starts at the border, so
+	// require a larger throw before flipping.
+	c := iv.containerSize()
+	threshold := c.Width * 0.2
+	if threshold < 40 {
+		threshold = 40
+	}
+	if _, maxX, _, _ := iv.panBounds(); maxX > 0 || iv.pos.X < 0 {
+		// zoomed in (panning possible on X) — demand a firmer throw
+		threshold = c.Width * 0.4
+	}
+
+	acc := iv.swipeAccum
+	iv.swipeAccum = 0
+	switch {
+	case acc <= -threshold: // dragged left past the edge -> next
+		if iv.nextFn != nil {
+			iv.nextFn()
+		}
+	case acc >= threshold: // dragged right past the edge -> previous
+		if iv.prevFn != nil {
+			iv.prevFn()
+		}
+	}
+}
+
+func (iv *ImageView) TouchDown(e *mobile.TouchEvent) {
+	iv.touches[e.ID] = iv.pos.Add(e.Position) // store in container coords
+	if len(iv.touches) == 2 {
+		iv.pinchDist = iv.touchDistance()
+		iv.pinchZoom = iv.zoomFactor()
+		iv.swipeAccum = 0
+	}
+}
+
+func (iv *ImageView) TouchUp(e *mobile.TouchEvent) {
+	wasPinching := iv.pinchDist > 0
+	delete(iv.touches, e.ID)
+	if len(iv.touches) < 2 {
+		iv.pinchDist = 0
+	}
+	// A pinch mutates iv.size/iv.pos via direct Resize/Move (no Refresh, to
+	// stay smooth). When it ends, sync the layout state and update the title
+	// once so downstream (zoom %, high-quality raster) reflects the final zoom.
+	if wasPinching && iv.pinchDist == 0 {
+		iv.newSize = true
+		iv.changeFn()
+		iv.container.Refresh()
+	}
+}
+
+func (iv *ImageView) TouchCancel(e *mobile.TouchEvent) {
+	iv.TouchUp(e)
+}
+
+func (iv *ImageView) TouchMoved(e *mobile.TouchEvent) {
+	if _, ok := iv.touches[e.ID]; !ok {
+		return
+	}
+	iv.touches[e.ID] = iv.pos.Add(e.Position)
+	if iv.pinchDist <= 0 || len(iv.touches) < 2 {
+		return
+	}
+	dist := iv.touchDistance()
+	if dist <= 0 {
+		return
+	}
+
+	// Focal-point zoom: keep the image content under the pinch midpoint fixed
+	// as we scale (mirrors the scroll-toward-cursor math in Scrolled).
+	focal := iv.touchMidpoint()
+	oldSize := iv.size
+	fx := (focal.X - iv.pos.X) / oldSize.Width
+	fy := (focal.Y - iv.pos.Y) / oldSize.Height
+
+	iv.fillWindow = false
+	z := clampF(iv.pinchZoom*(dist/iv.pinchDist), 0.1, 40)
+	base := iv.baseSize()
+	newSize := fyne.NewSize(base.Width*z, base.Height*z)
+
+	iv.pos = fyne.NewPos(focal.X-fx*newSize.Width, focal.Y-fy*newSize.Height)
+	iv.size = newSize
+	iv.newSize = false
+
+	// Re-clamp pan to the new bounds (recenters when the image fits).
+	minX, maxX, minY, maxY := iv.panBounds()
+	iv.pos.X = clampF(iv.pos.X, minX, maxX)
+	iv.pos.Y = clampF(iv.pos.Y, minY, maxY)
+
+	// Resize/move the widget directly instead of container.Refresh(): a full
+	// Refresh cascades into canvas.Image.Refresh(), which re-rasterizes the
+	// source bitmap every frame and makes the pinch choppy. Resize only
+	// relayouts and lets the GPU scale the existing texture. The title/refresh
+	// is synced once when the pinch ends (TouchUp).
+	iv.Resize(newSize)
+	iv.Move(iv.pos)
+}
+
+// zoomFactor is the current size relative to the fit-to-viewport base size.
+func (iv *ImageView) zoomFactor() float32 {
+	base := iv.baseSize()
+	if base.Width == 0 {
+		return 1
+	}
+	return iv.size.Width / base.Width
+}
+
+// baseSize is the widget size at zoom 1: the image scaled to fit the viewport
+// (ImageFillContain), preserving aspect ratio.
+func (iv *ImageView) baseSize() fyne.Size {
+	c := iv.containerSize()
+	if iv.imgWidth == 0 || iv.imgHeight == 0 {
+		return c
+	}
+	iw, ih := float32(iv.imgWidth), float32(iv.imgHeight)
+	scale := c.Width / iw
+	if s := c.Height / ih; s < scale {
+		scale = s
+	}
+	return fyne.NewSize(iw*scale, ih*scale)
+}
+
+func (iv *ImageView) firstTwoTouches() []fyne.Position {
+	pts := make([]fyne.Position, 0, 2)
+	for _, p := range iv.touches {
+		pts = append(pts, p)
+		if len(pts) == 2 {
+			break
+		}
+	}
+	return pts
+}
+
+func (iv *ImageView) touchDistance() float32 {
+	pts := iv.firstTwoTouches()
+	if len(pts) < 2 {
+		return 0
+	}
+	dx := float64(pts[0].X - pts[1].X)
+	dy := float64(pts[0].Y - pts[1].Y)
+	return float32(math.Hypot(dx, dy))
+}
+
+func (iv *ImageView) touchMidpoint() fyne.Position {
+	pts := iv.firstTwoTouches()
+	if len(pts) < 2 {
+		return fyne.Position{}
+	}
+	return fyne.NewPos((pts[0].X+pts[1].X)/2, (pts[0].Y+pts[1].Y)/2)
+}
+
+func clampF(v, lo, hi float32) float32 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
@@ -399,7 +687,6 @@ func (ren *ImageViewRenderer) MinSize() fyne.Size {
 }
 
 func (ren *ImageViewRenderer) Layout(s fyne.Size) {
-	fmt.Printf("DEBUG renderer.Layout s=%v widget=%v pos=%v\n", s, ren.imageView.Size(), ren.imageView.Position())
 	if ren.imageView.fyneImage == nil {
 		return
 	}

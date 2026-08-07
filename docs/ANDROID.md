@@ -39,6 +39,68 @@ git submodule update --init          # fetch the fyne fork (third_party/fyne)
 RELEASE=1 ./build-android.sh         # signed release build
 ```
 
+## Touch gestures & mobile UX
+
+On mobile imgview behaves like a phone photo gallery. All of the touch code is
+gated behind `fyne.CurrentDevice().IsMobile()`, so the desktop experience
+(free-drag pan, scroll-wheel zoom, keyboard navigation) is completely unchanged.
+
+### Gestures
+
+- **Swipe left / right** — page to the next / previous image.
+- **Pinch** — zoom toward the midpoint between the two fingers (focal-point
+  zoom, the same idea as desktop scroll-zoom-toward-cursor).
+- **Drag while zoomed in** — pan the image, clamped so it can't be pulled past
+  its own edges.
+- **Drag past the edge (or a fast flick)** — once the image is at a border, the
+  extra drag "overscrolls" and pages to the next/previous image.
+
+These live on `ImageView` in `gallery/imageview.go`:
+
+- `ImageView` implements `mobile.Touchable` (`TouchDown`/`TouchUp`/
+  `TouchCancel`) and `mobile.Movable` (`TouchMoved`). It tracks each finger by
+  its `TouchEvent.ID` in the `touches` map, so a two-finger pinch can be
+  distinguished from a one-finger drag.
+- `Dragged`/`DragEnd` branch to `draggedMobile`/`dragEndMobile` on mobile.
+  `panBounds` computes the clamp; horizontal drag past a bound accumulates into
+  `swipeAccum`, and `dragEndMobile` pages when that exceeds a threshold (20% of
+  width when the image fits, 40% when zoomed in — a firmer throw so panning
+  doesn't accidentally flip). Fast flicks page for free via Fyne's post-release
+  drag momentum.
+- Paging is wired by `Viewer.ChangeImage`, which sets `img.nextFn`/`img.prevFn`
+  to `ChangeImage(NextImage()/PrevImage())` — the same navigation the keyboard
+  hotkeys use.
+
+### Performance notes
+
+Pinch zoom resizes the image widget every frame. Two things keep it smooth:
+
+- **Direct resize, not `Refresh`.** During a live pinch, `TouchMoved` calls
+  `iv.Resize`/`iv.Move` directly rather than `container.Refresh()`. A full
+  refresh cascades into `canvas.Image.Refresh()` and frees/re-uploads the GL
+  texture every frame. The high-quality state (zoom-% title, texture) is synced
+  once when the pinch ends in `TouchUp`.
+- **Downscale on load (`downscaleForMobile`).** Full-resolution phone photos are
+  12MP+ (~48MB of RGBA); re-uploading that texture per frame is the dominant
+  cost. On mobile the decoded image is scaled so its longest edge is ≤ 2× the
+  screen's longest edge — a few MB, with headroom to stay sharp when zooming in.
+  The GPU (`ImageScaleFastest`) handles the actual zoom scaling. Desktop keeps
+  full resolution.
+
+### Loading images — the folder picker
+
+Mobile apps get no command-line arguments and no accessible working directory,
+so imgview starts with an empty gallery. When that happens (`cmd/imgview/main.go`
+detects `IsMobile() && viewer.ImageCount() == 0`), it shows a **Select folder**
+button that opens the Android document chooser (`dialog.ShowFolderOpen`).
+
+Picked images come back as `content://` URIs, not filesystem paths, so they are
+loaded through the gallery's existing `CustomReader` pipeline: `uriReader`
+(in `cmd/imgview/main.go`) wraps a `fyne.URI`, reading it once into memory
+because `GetReader` must return a seekable stream and content URIs aren't
+re-openable like `os` files. `readersFromFolder` lists the folder, filters by
+image extension, and sorts by name.
+
 ## Full path — video on Android
 
 Getting real libmpv playback on Android is substantial work in three areas:

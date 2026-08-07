@@ -169,6 +169,11 @@ func (viewer *Viewer) CurrentImageInfo() *ImageInfo {
 	return viewer.CurrentImageView.info
 }
 
+// ImageCount reports how many images the viewer currently holds.
+func (viewer *Viewer) ImageCount() int {
+	return len(viewer.imageFiles)
+}
+
 // RemoveItem removes info from the viewer's image list and fixes the order
 // indices of remaining items. Call ChangeGallery afterwards to refresh the UI.
 func (viewer *Viewer) RemoveItem(info *ImageInfo) {
@@ -400,6 +405,8 @@ func (viewer *Viewer) ChangeImage(info *ImageInfo) {
 	img.fillWindow = true
 	img.container = viewer.Content
 	img.hotkeys = viewer.hotkeys
+	img.nextFn = func() { viewer.ChangeImage(viewer.NextImage()) }
+	img.prevFn = func() { viewer.ChangeImage(viewer.PrevImage()) }
 	viewer.CurrentImage.Objects = []fyne.CanvasObject{img}
 	if info.order != -1 {
 		viewer.currentIndex = info.order
