@@ -101,6 +101,12 @@ type ImageInfo struct {
 	// CustomReader when it implements Openable.
 	OnOpen func()
 
+	// Width and Height are the pixel dimensions of the original image. When
+	// non-zero they are used for the placeholder tile's aspect ratio before
+	// the thumbnail blob has been fetched, preventing layout reflow.
+	Width  int
+	Height int
+
 	archiveName       string
 	archiveFile       fs.FS
 	order             int
@@ -194,70 +200,97 @@ func (layout *TileLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(w, layout.minHeight)
 }
 
+// Layout implements a justified row layout: tiles are grouped into rows and
+// scaled so each row fills the full container width with no horizontal gaps.
+// Every tile in a row shares the same height, determined by the combined aspect
+// ratios of its members. This eliminates most whitespace and naturally handles
+// portrait and landscape images without special-casing either orientation.
+//
+// The target row height is TileWidth from the config (default 300 px). Rows
+// accumulate tiles until the computed row height drops to that target, at which
+// point the row is finalised. The last partial row is capped at the target
+// height so a single straggler image does not stretch to fill the window.
 func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size) {
-	tileWidth := layout.config.General.TileWidth
 	gap := layout.config.General.TileGap
-	tilesPerRow := int(containerSize.Width / tileWidth)
-	bottom := make([]float32, tilesPerRow+1)
+	targetH := layout.config.General.TileWidth
 
-	// Extra height added below each tile image for the name label.
+	// Extra height below each tile image for the optional filename label.
 	extraH := float32(0)
 	if layout.showLabels {
 		extraH = labelHeight
 	}
 
-	peakLandscape := func(i int) bool {
-		if i < len(layout.tiles)-1 {
-			return layout.tiles[i+1].landscape
-		}
-		return false
-	}
-	if containerSize.Width < tileWidth+gap {
-		return
-	}
 	// layout.tiles is reset and refilled by PlaceTiles independently of the
 	// grid's objects; only lay out the indices that exist in both.
 	n := len(objects)
 	if len(layout.tiles) < n {
 		n = len(layout.tiles)
 	}
-	for i := 0; i < n; {
-		prevLeft := float32(int(containerSize.Width)%int(tileWidth)) / 3
-		for j := 0; j < tilesPerRow && i < n; j++ {
-			o := objects[i]
+	if n == 0 || containerSize.Width < targetH {
+		return
+	}
+
+	currentY := float32(0)
+	i := 0
+
+	for i < n {
+		rowStart := i
+		sumAspect := float32(0)
+
+		// Accumulate tiles into the current row until the row height falls to
+		// targetH. Each iteration we add one tile and check whether the row is
+		// "full" (its height would be ≤ targetH). We break as soon as that
+		// threshold is crossed, locking in the row boundary.
+		for i < n {
 			tile := layout.tiles[i]
-			newWidth := tileWidth
-			scale := newWidth / tile.width
-			newHeight := tile.height*scale + extraH
-			// fmt.Println("Scale portrait:", scale)
-			top := bottom[j]
-
-			if tile.landscape {
-				if j < len(bottom) && top < bottom[j+1] { // Avoid overlapping next img in above row
-					top = bottom[j+1]
-				}
-				newWidth = newWidth*2 + gap
-				scale = newWidth / tile.width
-				newHeight = tile.height*scale + extraH
-				// fmt.Println("Scale landscape:", scale)
+			aspect := tile.width / tile.height
+			if aspect <= 0 {
+				aspect = 1.0 // safety: avoid division by zero for malformed tiles
 			}
-
-			o.Resize(fyne.NewSize(newWidth, newHeight))
-			o.Move(fyne.NewPos(prevLeft, top))
-
-			bottom[j] = top + newHeight + gap
-			if tile.landscape && j < len(bottom) {
-				j++
-				bottom[j] = bottom[j-1]
-			}
-			prevLeft = prevLeft + newWidth + gap
-			layout.minHeight = bottom[j]
-
-			if tilesPerRow-j == 2 && peakLandscape(i) {
-				j++
-			}
+			sumAspect += aspect
 			i++
+
+			numGaps := float32(i - rowStart - 1)
+			availW := containerSize.Width - numGaps*gap
+			rowH := availW / sumAspect
+			if rowH <= targetH {
+				break
+			}
 		}
+
+		// Compute the actual row height from the finalised aspect-ratio sum.
+		rowCount := i - rowStart
+		numGaps := float32(rowCount - 1)
+		availW := containerSize.Width - numGaps*gap
+		rowH := availW / sumAspect
+
+		// Last (possibly incomplete) row: cap height so a handful of tall
+		// images do not blow up to an enormous size.
+		if i == n && rowH > targetH {
+			rowH = targetH
+		}
+
+		// Place every tile in the row at its justified width and shared height.
+		x := float32(0)
+		for k := rowStart; k < i; k++ {
+			tile := layout.tiles[k]
+			aspect := tile.width / tile.height
+			if aspect <= 0 {
+				aspect = 1.0
+			}
+			tileW := aspect * rowH
+			objects[k].Resize(fyne.NewSize(tileW, rowH+extraH))
+			objects[k].Move(fyne.NewPos(x, currentY))
+			x += tileW + gap
+		}
+
+		currentY += rowH + extraH + gap
+	}
+
+	if currentY > gap {
+		layout.minHeight = currentY - gap
+	} else {
+		layout.minHeight = currentY
 	}
 }
 
@@ -631,8 +664,15 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, context *ImageInfo,
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
 	t.Info = context
-	t.width = float32(img.Image.Bounds().Max.X)
-	t.height = float32(img.Image.Bounds().Max.Y)
+	if context.Width > 0 && context.Height > 0 {
+		// Use pre-stored original dimensions so placeholder tiles already
+		// carry the correct aspect ratio, avoiding layout reflow on load.
+		t.width = float32(context.Width)
+		t.height = float32(context.Height)
+	} else {
+		t.width = float32(img.Image.Bounds().Max.X)
+		t.height = float32(img.Image.Bounds().Max.Y)
+	}
 	t.landscape = t.width > t.height
 	t.Content = img
 	t.tabFn = tabFn

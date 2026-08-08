@@ -610,6 +610,15 @@ type VideoStreamer interface {
 	StreamURL() string
 }
 
+// DimensionProvider is an optional CustomReader behavior for entries whose
+// original pixel dimensions are known before the thumbnail blob is fetched.
+// ReadCustom uses these to pre-populate ImageInfo.Width and ImageInfo.Height,
+// so placeholder tiles carry the correct aspect ratio from the first layout
+// pass and no reflow occurs as thumbnails arrive.
+type DimensionProvider interface {
+	Dimensions() (width, height int)
+}
+
 func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
@@ -625,6 +634,9 @@ func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 		}
 		if vf, ok := r.(VideoFile); ok && vf.IsVideo() {
 			info.InputIsVideo = true
+		}
+		if dp, ok := r.(DimensionProvider); ok {
+			info.Width, info.Height = dp.Dimensions()
 		}
 		imageFiles = append(imageFiles, info)
 	}

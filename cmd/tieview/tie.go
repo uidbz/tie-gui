@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"git.sr.ht/~uid/tie/client"
@@ -62,7 +63,36 @@ type tieReader struct {
 	// thumbHash is the content hash of the filehost-cached thumbnail, learned
 	// from the query's expanded attributes or after uploadTieThumbnail.
 	thumbHash string
-	isVideo   bool
+	// dimensions is the original image size as "WxH", pre-populated from the
+	// query's expanded attributes so placeholder tiles have the correct aspect
+	// ratio before the thumbnail blob is fetched.
+	dimensions string
+	isVideo    bool
+}
+
+// Dimensions implements gallery.DimensionProvider. It parses the "WxH" string
+// stored in tie metadata and returns the original image pixel dimensions.
+// Returns (0, 0) when no dimensions have been stored yet.
+func (t *tieReader) Dimensions() (int, int) {
+	w, h, ok := parseDimensions(t.dimensions)
+	if !ok {
+		return 0, 0
+	}
+	return w, h
+}
+
+// parseDimensions parses a "WxH" string into width and height integers.
+func parseDimensions(s string) (w, h int, ok bool) {
+	parts := strings.SplitN(s, "x", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	w, err1 := strconv.Atoi(parts[0])
+	h, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || w <= 0 || h <= 0 {
+		return 0, 0, false
+	}
+	return w, h, true
 }
 
 // IsVideo implements gallery.VideoFile so ReadCustom can set InputIsVideo.
@@ -191,7 +221,12 @@ func readFromTie(viewer *gallery.Viewer, tc *client.TieClient, include, exclude 
 		for _, row := range rows {
 		switch classifyTieRow(row) {
 		case tieRowFile:
-			readers = append(readers, &tieReader{host: host, hash: row.Key, thumbHash: client.RowFirst(row, "thumbnail")})
+			readers = append(readers, &tieReader{
+				host:       host,
+				hash:       row.Key,
+				thumbHash:  client.RowFirst(row, "thumbnail"),
+				dimensions: client.RowFirst(row, "dimensions"),
+			})
 		case tieRowDir:
 			uid := client.DirUID(row.Key)
 			readers = append(readers, &tieDirReader{uid: uid, open: func() { browseDir(uid) }})
@@ -241,13 +276,19 @@ func (t *filehostThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeek
 	if err != nil {
 		return nil, err
 	}
+	origW := decoded.Bounds().Max.X
+	origH := decoded.Bounds().Max.Y
 	scaled := gallery.ScaleImage(decoded, t.tileWidth*2)
 	decoded = nil
 	buf := &bytes.Buffer{}
 	if err := jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90}); err != nil {
 		return nil, err
 	}
-	t.upload(tr, buf.Bytes())
+	t.upload(tr, buf.Bytes(), origW, origH)
+	// Make dimensions available for the current session without waiting for
+	// the next query to return them.
+	info.Width = origW
+	info.Height = origH
 	info.ThumbnailIsScaled = true
 
 	return bytes.NewReader(buf.Bytes()), nil
@@ -288,9 +329,10 @@ func (t *filehostThumbnailer) thumbnailReader(tr *tieReader) (rs io.ReadSeeker, 
 }
 
 // upload stores jpegBytes on the filehost and records the
-// (tr.hash, "thumbnail", thumbHash) mapping. Failures are logged; the
-// generated thumbnail remains usable, just uncached.
-func (t *filehostThumbnailer) upload(tr *tieReader, jpegBytes []byte) {
+// (tr.hash, "thumbnail", thumbHash) and (tr.hash, "dimensions", "WxH")
+// mappings. Failures are logged; the generated thumbnail remains usable,
+// just uncached.
+func (t *filehostThumbnailer) upload(tr *tieReader, jpegBytes []byte, origW, origH int) {
 	host := tieFileHost(t.tie)
 	if host.URL == "" {
 		return
@@ -310,11 +352,17 @@ func (t *filehostThumbnailer) upload(tr *tieReader, jpegBytes []byte) {
 		fmt.Println("Error uploading thumbnail: checksum mismatch")
 		return
 	}
-	// Set (not Add) keeps the relation single-valued, so a regenerated
-	// thumbnail replaces one whose blob was reaped from the filehost.
+	// Set (not Add) keeps relations single-valued, so regenerated values
+	// replace ones whose blobs were reaped from the filehost.
 	if err := t.tie.Set(tr.hash, "thumbnail", []string{thumbHash}); err != nil {
 		fmt.Println("Error saving thumbnail mapping:", err)
 		return
 	}
+	dims := fmt.Sprintf("%dx%d", origW, origH)
+	if err := t.tie.Set(tr.hash, "dimensions", []string{dims}); err != nil {
+		fmt.Println("Error saving dimensions:", err)
+		return
+	}
 	tr.thumbHash = thumbHash
+	tr.dimensions = dims
 }

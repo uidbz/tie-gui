@@ -2,9 +2,7 @@
 
 Website: https://imgview.app
 
-The gallery positions the images with consideration to landscape or portrait orientation.  
-I like it. I think it gives a good overview of the pictures.  
-Next step will be to do something with the background/white space.  
+The gallery uses a justified row layout: images are grouped into rows and scaled so each row fills the full window width with no gaps. Portrait and landscape images naturally share a row at the same height, sized by their aspect ratio. The tile size is controlled by `TileWidth` in the config (default 300 px — the target row height).
 
 It can read most common archive formats - such as zip, rar, tar, cbr, etc.
 

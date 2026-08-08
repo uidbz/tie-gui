@@ -139,6 +139,19 @@ Later views follow the mapping and fetch the thumbnail blob from the filehost;
 the mapping is trusted once written. The local `ThumbnailDir` setting only
 applies to non-tie (local disk) images.
 
+## Image dimensions stored in tie metadata
+
+When imgview generates a thumbnail it now also records the original image's
+pixel dimensions as a `(imageHash, "dimensions", "WxH")` triple (e.g.
+`"3840x2160"`). This is fetched alongside the thumbnail hash in the initial
+query expand (`Expand: true`), so placeholder tiles in the gallery have the
+correct aspect ratio from the very first layout pass — no reflow as thumbnails
+load over the network.
+
+Dimensions are content-addressed: if an image changes its hash changes, so the
+stored value can never go stale. The relation is written with `Set` (not `Add`)
+so re-generated thumbnails atomically replace old values.
+
 ## Building
 
 Build with the `migrated_fynedo` tag to assert the fyne.Do threading model
