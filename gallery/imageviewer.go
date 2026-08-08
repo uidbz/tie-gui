@@ -386,6 +386,10 @@ func (viewer *Viewer) InitHotkeys() {
 		}})
 	}
 	showGallery := func() {
+		if fyne.CurrentDevice().IsMobile() && viewer.isFullscreen {
+			viewer.isFullscreen = false
+			viewer.window.SetFullScreen(false)
+		}
 		if !viewer.galleryLoaded {
 			viewer.LoadGallery()
 		}
@@ -469,6 +473,10 @@ func (viewer *Viewer) ChangeImage(info *ImageInfo) {
 	}
 	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
 	viewer.Content.Refresh()
+	if fyne.CurrentDevice().IsMobile() && !viewer.isFullscreen {
+		viewer.isFullscreen = true
+		viewer.window.SetFullScreen(true)
+	}
 	if viewer.OnImageChange != nil {
 		viewer.OnImageChange(info)
 	}

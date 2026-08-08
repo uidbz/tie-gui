@@ -171,10 +171,11 @@ func fileHostNames(c client.Config) []string {
 // makeSidebar builds the navigation sidebar: the first tab browses images
 // by tag, the second navigates the tie virtual filesystem.
 func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID)) *container.AppTabs {
+	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir)
 	return container.NewAppTabs(
-		container.NewTabItem("Tags", makeTagSidebar(window, viewer, tc, browseDir)),
+		container.NewTabItem("Tags", tagWidget),
 		container.NewTabItem("Files", fsTree.tree),
-		makeSettingsTab(a, tc),
+		makeSettingsTab(a, tc, reloadTags),
 	)
 }
 
@@ -183,44 +184,62 @@ func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *cli
 // When tags are selected the list is narrowed to tags that co-occur with the
 // current selection (faceted refinement via CoTagsForQueryExcludingInput).
 // Clearing the selection restores the original full list.
-func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, browseDir func(client.DirUID)) *tagselection.TagSelection {
+//
+// It returns the widget and a reloadTags function. reloadTags clears the
+// current selection and tag lists and re-fetches tags from the (possibly
+// reconfigured) live client — call it after switching profiles.
+func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, browseDir func(client.DirUID)) (*tagselection.TagSelection, func()) {
 	ts := tagselection.NewTagSelection(window)
 
-	// allTags and allFavorites hold the full unfiltered lists from the
-	// initial tc.Get("tags") call. Written once on the UI goroutine;
-	// subsequently read only on the UI goroutine (inside fyne.Do).
+	// allTags and allFavorites hold the full unfiltered lists from the most
+	// recent tag fetch. All reads and writes happen on the UI goroutine
+	// (inside fyne.Do), so no mutex is needed.
 	var allTags []string
 	var allFavorites []string
 	var allFavoritesLabel string
 
-	go func() {
-		row, err := tc.Get("tags")
-		if err != nil {
-			fmt.Println("Error getting tags:", err)
-			return
-		}
+	// reloadTags clears the widget state and re-fetches tags from tc.
+	// Safe to call at any time; the network fetch runs in a goroutine.
+	reloadTags := func() {
 		fyne.Do(func() {
-			allTags = client.RowValues(row, "all")
-			for _, tag := range allTags {
-				ts.AddTag(tag)
+			ts.ClearSelected()
+			ts.ClearAllTags()
+			ts.ClearFavorites()
+			allTags = nil
+			allFavorites = nil
+			allFavoritesLabel = ""
+			ts.SetListLabel("Loading…")
+		})
+		go func() {
+			row, err := tc.Get("tags")
+			if err != nil {
+				fmt.Println("Error getting tags:", err)
+				fyne.Do(func() { ts.SetListLabel("Error loading tags") })
+				return
 			}
-			allFavorites = client.RowValues(row, "favorite")
-			if len(allFavorites) == 0 {
-				// No favorites configured: list every tag so the sidebar
-				// isn't empty until something is typed in the search box.
-				allFavorites = allTags
-				allFavoritesLabel = "All tags"
-			} else {
-				allFavoritesLabel = "Favorites"
-			}
+			fyne.Do(func() {
+				allTags = client.RowValues(row, "all")
+				for _, tag := range allTags {
+					ts.AddTag(tag)
+				}
+				allFavorites = client.RowValues(row, "favorite")
+				if len(allFavorites) == 0 {
+					// No favorites configured: list every tag so the sidebar
+					// isn't empty until something is typed in the search box.
+					allFavorites = allTags
+					allFavoritesLabel = "All tags"
+				} else {
+					allFavoritesLabel = "Favorites"
+				}
 			ts.SetListLabel(allFavoritesLabel)
-			for _, tag := range allFavorites {
-				ts.AddFavorite(tag)
-			}
+			ts.SetFavorites(allFavorites)
 		})
 	}()
+}
 
-	ts.OnSelectedChanged = func() {
+reloadTags() // initial load
+
+ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
 		readFromTie(viewer, tc, in, ex, "tag", browseDir)
 		viewer.ChangeGallery()
@@ -237,11 +256,8 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieCl
 					for _, tag := range allTags {
 						ts.AddTag(tag)
 					}
-					ts.ClearFavorites()
-					for _, tag := range allFavorites {
-						ts.AddFavorite(tag)
-					}
 					ts.SetListLabel(allFavoritesLabel)
+					ts.SetFavorites(allFavorites)
 				})
 				return
 			}
@@ -255,20 +271,17 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieCl
 				for _, tag := range coTags {
 					ts.AddTag(tag)
 				}
-				ts.ClearFavorites()
-				for _, tag := range coTags {
-					ts.AddFavorite(tag)
-				}
 				if len(coTags) > 0 {
 					ts.SetListLabel("Related tags")
 				} else {
 					ts.SetListLabel("No related tags")
 				}
+				ts.SetFavorites(coTags)
 			})
 		}()
 	}
 
-	return ts
+	return ts, reloadTags
 }
 
 // openTieVideo opens a libmpv video player window for a tie video entry.

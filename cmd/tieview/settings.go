@@ -161,8 +161,9 @@ func applyTiePrefs(a fyne.App, cfg *client.Config) {
 // A dropdown at the top selects the active profile; "+" / "-" buttons add and
 // delete profiles. Clicking Apply saves the current form values under the
 // profile name shown in the form, applies them to the live client immediately,
-// and persists them to Preferences.
-func makeSettingsTab(a fyne.App, tc *client.TieClient) *container.TabItem {
+// persists them to Preferences, and calls onApply (if non-nil) so callers can
+// react — e.g. to reload the tag list from the newly active server.
+func makeSettingsTab(a fyne.App, tc *client.TieClient, onApply func()) *container.TabItem {
 	p := a.Preferences()
 
 	// Load saved profiles, creating a default one from the live client if none
@@ -322,6 +323,10 @@ func makeSettingsTab(a fyne.App, tc *client.TieClient) *container.TabItem {
 		// Apply to live client immediately.
 		applyProfileToConfig(pr, &tc.Config)
 		*tc = *client.NewTieClient(tc.Config)
+
+		if onApply != nil {
+			onApply()
+		}
 
 		status.SetText("Saved.")
 	})

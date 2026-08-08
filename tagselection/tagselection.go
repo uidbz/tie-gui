@@ -462,6 +462,23 @@ func (ts *TagSelection) ClearFavorites() {
 	ts.favoriteList.Refresh()
 }
 
+// SetFavorites replaces the quick-pick tag list with tags and refreshes once.
+// Prefer this over ClearFavorites + AddFavorite loops: a single Refresh call
+// avoids showing an empty list between the clear and the re-population.
+func (ts *TagSelection) SetFavorites(tags []string) {
+	ts.favorite = ts.favorite[:0]
+	for _, tag := range tags {
+		ts.favorite = append(ts.favorite, NewTagItemData(tag))
+	}
+	ts.favoriteList.Refresh()
+}
+
+// ClearSelected removes all currently selected tags and refreshes the list.
+func (ts *TagSelection) ClearSelected() {
+	ts.selected = ts.selected[:0]
+	ts.selectedList.Refresh()
+}
+
 // SetListLabel changes the bold label above the quick-pick tag list
 // ("Favorites" by default).
 func (ts *TagSelection) SetListLabel(text string) {
