@@ -116,6 +116,13 @@ func makeSettingsTab(a fyne.App, tc *client.TieClient) *container.TabItem {
 		tc.Config.FileHosts[name] = client.FileHost{URL: url, Insecure: insecure}
 		tc.Config.DefaultFileHosts = prependUnique(name, tc.Config.DefaultFileHosts)
 
+		// Rebuild the underlying webservice connection so that a changed
+		// daemon URL or TLS setting takes effect without a restart.
+		// Overwriting the struct in place propagates the new ws.Client to
+		// all existing *TieClient pointers without requiring a new method
+		// on the tie module.
+		*tc = *client.NewTieClient(tc.Config)
+
 		status.SetText("Saved.")
 	})
 

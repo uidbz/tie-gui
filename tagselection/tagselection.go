@@ -456,6 +456,12 @@ func (ts *TagSelection) AddFavorite(tag string) {
 	ts.favorite = append(ts.favorite, NewTagItemData(tag))
 }
 
+// ClearFavorites empties the quick-pick tag list and refreshes it.
+func (ts *TagSelection) ClearFavorites() {
+	ts.favorite = ts.favorite[:0]
+	ts.favoriteList.Refresh()
+}
+
 // SetListLabel changes the bold label above the quick-pick tag list
 // ("Favorites" by default).
 func (ts *TagSelection) SetListLabel(text string) {

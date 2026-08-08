@@ -180,8 +180,19 @@ func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *cli
 
 // makeTagSidebar builds the tag sidebar: it lists the tags registered under
 // the "tags" key and re-queries the gallery whenever the selection changes.
+// When tags are selected the list is narrowed to tags that co-occur with the
+// current selection (faceted refinement via CoTagsForQueryExcludingInput).
+// Clearing the selection restores the original full list.
 func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, browseDir func(client.DirUID)) *tagselection.TagSelection {
 	ts := tagselection.NewTagSelection(window)
+
+	// allTags and allFavorites hold the full unfiltered lists from the
+	// initial tc.Get("tags") call. Written once on the UI goroutine;
+	// subsequently read only on the UI goroutine (inside fyne.Do).
+	var allTags []string
+	var allFavorites []string
+	var allFavoritesLabel string
+
 	go func() {
 		row, err := tc.Get("tags")
 		if err != nil {
@@ -189,26 +200,72 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieCl
 			return
 		}
 		fyne.Do(func() {
-			all := client.RowValues(row, "all")
-			for _, tag := range all {
+			allTags = client.RowValues(row, "all")
+			for _, tag := range allTags {
 				ts.AddTag(tag)
 			}
-			favorites := client.RowValues(row, "favorite")
-			if len(favorites) == 0 {
+			allFavorites = client.RowValues(row, "favorite")
+			if len(allFavorites) == 0 {
 				// No favorites configured: list every tag so the sidebar
 				// isn't empty until something is typed in the search box.
-				favorites = all
-				ts.SetListLabel("All tags")
+				allFavorites = allTags
+				allFavoritesLabel = "All tags"
+			} else {
+				allFavoritesLabel = "Favorites"
 			}
-			for _, tag := range favorites {
+			ts.SetListLabel(allFavoritesLabel)
+			for _, tag := range allFavorites {
 				ts.AddFavorite(tag)
 			}
 		})
 	}()
+
 	ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
 		readFromTie(viewer, tc, in, ex, "tag", browseDir)
 		viewer.ChangeGallery()
+
+		// Refresh the tag list in the background. Copies of in/ex are
+		// passed so the goroutine is safe from later UI changes.
+		inSnap := append([]string(nil), in...)
+		exSnap := append([]string(nil), ex...)
+		go func() {
+			if len(inSnap) == 0 && len(exSnap) == 0 {
+				// Nothing selected: restore the original full list.
+				fyne.Do(func() {
+					ts.ClearAllTags()
+					for _, tag := range allTags {
+						ts.AddTag(tag)
+					}
+					ts.ClearFavorites()
+					for _, tag := range allFavorites {
+						ts.AddFavorite(tag)
+					}
+					ts.SetListLabel(allFavoritesLabel)
+				})
+				return
+			}
+			coTags, err := tc.CoTagsForQueryExcludingInput(inSnap, exSnap, "")
+			if err != nil {
+				fmt.Println("Error getting co-tags:", err)
+				return
+			}
+			fyne.Do(func() {
+				ts.ClearAllTags()
+				for _, tag := range coTags {
+					ts.AddTag(tag)
+				}
+				ts.ClearFavorites()
+				for _, tag := range coTags {
+					ts.AddFavorite(tag)
+				}
+				if len(coTags) > 0 {
+					ts.SetListLabel("Related tags")
+				} else {
+					ts.SetListLabel("No related tags")
+				}
+			})
+		}()
 	}
 
 	return ts

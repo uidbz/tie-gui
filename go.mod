@@ -70,3 +70,5 @@ require (
 )
 
 replace fyne.io/fyne/v2 => ./third_party/fyne
+
+replace git.sr.ht/~uid/tie => ../tie
