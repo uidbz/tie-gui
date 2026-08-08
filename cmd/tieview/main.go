@@ -57,6 +57,13 @@ func main() {
 	}
 	tieClient := client.NewTieClient(tieConfig)
 
+	tagger := newImageTagger(myWindow, tieClient)
+	// taggerOverlay is a persistent border container that anchors the tag
+	// panel to the bottom of the image view. It is added to viewer.Content
+	// whenever a single image is displayed, so the panel can be shown/hidden
+	// by toggling tagger.Panel without rebuilding the content stack.
+	taggerOverlay := container.NewBorder(nil, tagger.Panel, nil, nil)
+
 	viewer := gallery.NewViewer(myApp, myWindow, config, func(t *gallery.Tile) {
 		if t.Info.InputIsVideo {
 			go openTieVideo(myApp, t.Info)
@@ -65,9 +72,14 @@ func main() {
 		t.Viewer.ChangeImage(t.Info)
 	})
 	viewer.Thumbnailer = &filehostThumbnailer{tie: tieClient, tileWidth: int(config.General.TileWidth)}
+	// A single tap on the image opens/closes the tag panel.
+	viewer.OnTapped = func() {
+		tagger.Toggle(tagger.hash)
+		viewer.Content.Refresh()
+	}
 	fsTree := newTieFSTree(viewer, tieClient)
 	browseDir := func(uid client.DirUID) { fsTree.showDirUID(uid, "") }
-	viewer.Sidebar = makeSidebar(myApp, myWindow, viewer, tieClient, fsTree, browseDir)
+	viewer.Sidebar = makeSidebar(myApp, myWindow, viewer, tieClient, fsTree, browseDir, tagger)
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
@@ -122,6 +134,17 @@ func main() {
 		if !fyne.CurrentDevice().IsMobile() {
 			myWindow.Canvas().Focus(viewer.CurrentImageView)
 		}
+		// Overlay the tag panel on top of the image view. ChangeImage already
+		// set Content.Objects to [CurrentImage]; append the taggerOverlay so
+		// the panel can be toggled without rebuilding the content stack.
+		viewer.Content.Objects = append(viewer.Content.Objects, taggerOverlay)
+		viewer.Content.Refresh()
+		// Track which image is displayed so Toggle opens the correct panel.
+		if tr, ok := info.CustomReader.(*tieReader); ok {
+			tagger.SetCurrentHash(tr.hash)
+		} else {
+			tagger.SetCurrentHash("")
+		}
 	}
 
 	myWindow.SetContent(viewer.Content)
@@ -170,8 +193,8 @@ func fileHostNames(c client.Config) []string {
 
 // makeSidebar builds the navigation sidebar: the first tab browses images
 // by tag, the second navigates the tie virtual filesystem.
-func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID)) *container.AppTabs {
-	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir)
+func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger) *container.AppTabs {
+	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir, tagger)
 	return container.NewAppTabs(
 		container.NewTabItem("Tags", tagWidget),
 		container.NewTabItem("Files", fsTree.tree),
@@ -188,7 +211,11 @@ func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *cli
 // It returns the widget and a reloadTags function. reloadTags clears the
 // current selection and tag lists and re-fetches tags from the (possibly
 // reconfigured) live client — call it after switching profiles.
-func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, browseDir func(client.DirUID)) (*tagselection.TagSelection, func()) {
+//
+// tagger, when non-nil, receives the full tag list via SetAllTags whenever
+// the tag list is (re-)loaded. This keeps the image-tagger search trie in
+// sync with the sidebar's tag list without a separate network request.
+func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, browseDir func(client.DirUID), tagger *imageTagger) (*tagselection.TagSelection, func()) {
 	ts := tagselection.NewTagSelection(window)
 
 	// allTags and allFavorites hold the full unfiltered lists from the most
@@ -222,17 +249,20 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieCl
 				for _, tag := range allTags {
 					ts.AddTag(tag)
 				}
-				allFavorites = client.RowValues(row, "favorite")
-				if len(allFavorites) == 0 {
-					// No favorites configured: list every tag so the sidebar
-					// isn't empty until something is typed in the search box.
-					allFavorites = allTags
-					allFavoritesLabel = "All tags"
-				} else {
-					allFavoritesLabel = "Favorites"
-				}
+			allFavorites = client.RowValues(row, "favorite")
+			if len(allFavorites) == 0 {
+				// No favorites configured: list every tag so the sidebar
+				// isn't empty until something is typed in the search box.
+				allFavorites = allTags
+				allFavoritesLabel = "All tags"
+			} else {
+				allFavoritesLabel = "Favorites"
+			}
 			ts.SetListLabel(allFavoritesLabel)
 			ts.SetFavorites(allFavorites)
+			if tagger != nil {
+				tagger.SetAllTags(allTags)
+			}
 		})
 	}()
 }

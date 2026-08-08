@@ -485,6 +485,18 @@ func (ts *TagSelection) SetListLabel(text string) {
 	ts.listLabel.SetText(text)
 }
 
+// SetFavoriteMaxRows caps the visible row count of the quick-pick list.
+// 0 = uncapped (default). Must be called before SetFavorites to take effect.
+func (ts *TagSelection) SetFavoriteMaxRows(n int) {
+	ts.favoriteList.maxRows = n
+}
+
+// SetSelectedMaxRows caps the visible row count of the selected-tag list.
+// 0 = uncapped (default).
+func (ts *TagSelection) SetSelectedMaxRows(n int) {
+	ts.selectedList.maxRows = n
+}
+
 func (ts *TagSelection) AddSelected(tid *TagItemData) {
 	for _, x := range ts.selected {
 		if tid.text == x.text {

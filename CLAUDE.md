@@ -199,6 +199,10 @@ then adding items without another `Refresh` leaves the list visually blank.
 selected tags, clears the trie, clears favorites, then re-runs the
 `tc.Get("tags")` fetch. Called as the `onApply` callback from `makeSettingsTab`.
 
+`makeTagSidebar` also receives a `*imageTagger`. Whenever the tag list is
+(re-)fetched, `tagger.SetAllTags(allTags)` is called so the image tagger's
+search trie stays in sync with the sidebar's list without a second network request.
+
 ---
 
 ## Settings profiles (`cmd/tieview/settings.go`)
@@ -240,11 +244,69 @@ module changes. `onApply()` is then called (→ `reloadTags`).
 | `AddSelected(*TagItemData)` | Move tag to selected set; fires `OnSelectedChanged` |
 | `SelectedTags() ([]string, []string)` | Returns (included, excluded) tag slices |
 | `SetListLabel(string)` | Change the bold label above the quick-pick list |
+| `SetFavoriteMaxRows(n)` | Cap visible rows in the quick-pick list (0 = uncapped) |
+| `SetSelectedMaxRows(n)` | Cap visible rows in the selected-tag list (0 = uncapped) |
 | `OnSelectedChanged func()` | Callback fired on any selection change |
 
 **Critical:** `ClearFavorites()` calls `Refresh`. If you then call `AddFavorite`
 in a loop without a final `Refresh`, the list stays visually blank. Always use
 `SetFavorites` when replacing the list contents.
+
+---
+
+## Image tagger (`cmd/tieview/imagetagger.go`)
+
+`imageTagger` is a floating panel that overlays the single-image view and
+lets the user add and remove tags for the displayed image.
+
+**Interaction:** A single tap on the image calls `viewer.OnTapped`, which
+calls `tagger.Toggle(hash)`. The panel slides in from the bottom; a second
+tap closes it. Navigating to a different image while the panel is open
+resets it to the new image's tags automatically.
+
+**Panel contents:** a standard `TagSelection` widget reused with different
+semantics from the sidebar:
+- The **selected** list = tags currently applied to the image in tie.
+  Clicking a tag removes it.
+- The **search box + favorites** list = all known tags available to add.
+  Clicking a tag adds it.
+- The include/exclude checkbox has no meaning in this context (it is
+  present because the widget is shared); toggling it fires
+  `OnSelectedChanged` but the diff against `appliedTags` will be empty,
+  so no tie write occurs.
+
+**Persistence:** `syncTags(newTags)` diffs `newTags` against the
+`appliedTags` snapshot and calls `tc.Add` / `tc.Delete` in a goroutine.
+Newly added tags are also registered via `tc.Add("tags","all",tag)` so
+they appear in the sidebar and future tagger sessions.
+
+**Layout wiring:** `viewer.OnImageChange` appends a persistent
+`taggerOverlay = container.NewBorder(nil, tagger.Panel, nil, nil)` to
+`viewer.Content.Objects` each time a single image is displayed.
+`tagger.Panel` starts hidden; showing/hiding it via `Show()`/`Hide()`
+controls visibility without rebuilding the content stack.
+
+```
+viewer.Content (Stack)
+  ├── viewer.CurrentImage      ← ImageLayout container with ImageView
+  └── taggerOverlay            ← Border container (transparent when panel hidden)
+        └── tagger.Panel       ← Stack(bg rect, padded VBox(header, TagSelection))
+```
+
+**Tag list sync:** `makeTagSidebar` calls `tagger.SetAllTags(allTags)` after
+every `tc.Get("tags")` fetch (startup and profile switch), keeping the
+tagger's search trie up to date without a separate network request.
+
+**Key methods:**
+
+| Method | What |
+|--------|------|
+| `newImageTagger(window, tc)` | Create; Panel is hidden; call `SetAllTags` to populate trie |
+| `SetAllTags([]string)` | Replace search trie + favorites list |
+| `Toggle(hash)` | Open panel for hash, or close if already open for that hash |
+| `ShowForImage(hash)` | Open panel; fetches current tags from tie if hash changed |
+| `HidePanel()` | Hide panel without clearing state |
+| `SetCurrentHash(hash)` | Track current image hash; if panel is open, switches it |
 
 ---
 
