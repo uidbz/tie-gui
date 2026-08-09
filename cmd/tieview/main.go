@@ -77,6 +77,13 @@ func main() {
 		tagger.Toggle(tagger.hash)
 		viewer.Content.Refresh()
 	}
+	// Restore keyboard focus to the image view when the panel is closed so
+	// that hotkeys (next/prev, zoom, etc.) keep working on desktop.
+	tagger.OnHide = func() {
+		if !fyne.CurrentDevice().IsMobile() {
+			myWindow.Canvas().Focus(viewer.CurrentImageView)
+		}
+	}
 	fsTree := newTieFSTree(viewer, tieClient)
 	browseDir := func(uid client.DirUID) { fsTree.showDirUID(uid, "") }
 	viewer.Sidebar = makeSidebar(myApp, myWindow, viewer, tieClient, fsTree, browseDir, tagger)

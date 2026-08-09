@@ -182,7 +182,21 @@ func NewSearchItem(ts *TagSelection) *SearchItem {
 		}
 	}
 	txtSearch.onEnter = func() {
-		selectAt(si.focusIndex)
+		if si.focusIndex >= 0 {
+			selectAt(si.focusIndex)
+			return
+		}
+		// No result row highlighted: if the caller supports free-form tag
+		// creation and the entry is non-empty, forward the raw text.
+		q := strings.TrimSpace(txtSearch.Text)
+		if q != "" && ts.OnNewTag != nil {
+			ts.OnNewTag(q)
+			clearing = true
+			si.entry.Clear()
+			hide()
+			ts.window.Canvas().Focus(si.entry)
+			ts.Refresh()
+		}
 	}
 	txtSearch.onSpace = func() bool {
 		if si.resultList.Hidden || si.focusIndex < 0 {
@@ -317,7 +331,12 @@ type TagSelection struct {
 	selected          []*TagItemData
 	favorite          []*TagItemData
 	OnSelectedChanged func()
-	tags              *trie.Trie
+	// OnNewTag, when non-nil, is called when the user presses Enter in the
+	// search box with a non-empty query but no result row highlighted. This
+	// allows callers to create a brand-new tag that is not yet in the trie.
+	// The sidebar leaves this nil; the image tagger sets it.
+	OnNewTag func(tag string)
+	tags     *trie.Trie
 	selectedList      *AutoExpandingList
 	favoriteList      *AutoExpandingList
 	listLabel         *widget.Label

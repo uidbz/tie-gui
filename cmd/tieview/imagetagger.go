@@ -21,7 +21,8 @@ import (
 // A single tap on the image opens or closes the panel. The panel contains
 // the full TagSelection widget: the "selected" list shows tags currently
 // applied to the image (click a tag to remove it), the search box and
-// favorites list let the user pick tags to add.
+// favorites list let the user pick tags to add. Typing a new tag name and
+// pressing Enter creates the tag even if it does not yet exist in tie.
 //
 // Tag mutations are persisted to tie immediately: additions via tc.Add and
 // removals via tc.Delete, with the global "tags"/"all" index kept in sync.
@@ -32,6 +33,10 @@ type imageTagger struct {
 
 	ts    *tagselection.TagSelection
 	Panel fyne.CanvasObject // embed into viewer.Content as a stack overlay layer
+
+	// OnHide, when non-nil, is called after the panel becomes hidden.
+	// Use it to restore keyboard focus to the image view on desktop.
+	OnHide func()
 }
 
 // newImageTagger creates an imageTagger. Call SetAllTags after the tag list
@@ -56,6 +61,15 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 		all = append(all, included...)
 		all = append(all, excluded...)
 		it.syncTags(all)
+	}
+
+	// OnNewTag lets the user type a brand-new tag name that is not yet in the
+	// trie and press Enter to apply it. We add it to the trie and the
+	// favorites list so it becomes searchable, then add it to the selected
+	// list, which triggers OnSelectedChanged → syncTags → tc.Add.
+	it.ts.OnNewTag = func(tag string) {
+		it.ts.AddTag(tag)
+		it.ts.AddSelected(tagselection.NewTagItemData(tag))
 	}
 
 	closeBtn := widget.NewButton("✕", func() { it.HidePanel() })
@@ -102,6 +116,9 @@ func (it *imageTagger) ShowForImage(hash string) {
 func (it *imageTagger) HidePanel() {
 	it.Panel.Hide()
 	canvas.Refresh(it.Panel)
+	if it.OnHide != nil {
+		it.OnHide()
+	}
 }
 
 // Toggle opens the panel when hidden or closes it when visible.

@@ -247,6 +247,7 @@ module changes. `onApply()` is then called (→ `reloadTags`).
 | `SetFavoriteMaxRows(n)` | Cap visible rows in the quick-pick list (0 = uncapped) |
 | `SetSelectedMaxRows(n)` | Cap visible rows in the selected-tag list (0 = uncapped) |
 | `OnSelectedChanged func()` | Callback fired on any selection change |
+| `OnNewTag func(tag string)` | Called when user presses Enter with typed text but no row highlighted; nil in sidebar, set by image tagger |
 
 **Critical:** `ClearFavorites()` calls `Refresh`. If you then call `AddFavorite`
 in a loop without a final `Refresh`, the list stays visually blank. Always use
@@ -269,7 +270,8 @@ semantics from the sidebar:
 - The **selected** list = tags currently applied to the image in tie.
   Clicking a tag removes it.
 - The **search box + favorites** list = all known tags available to add.
-  Clicking a tag adds it.
+  Clicking a tag adds it. Typing a name that does not exist yet and
+  pressing Enter creates the tag via `OnNewTag` (see below).
 - The include/exclude checkbox has no meaning in this context (it is
   present because the widget is shared); toggling it fires
   `OnSelectedChanged` but the diff against `appliedTags` will be empty,
@@ -305,8 +307,9 @@ tagger's search trie up to date without a separate network request.
 | `SetAllTags([]string)` | Replace search trie + favorites list |
 | `Toggle(hash)` | Open panel for hash, or close if already open for that hash |
 | `ShowForImage(hash)` | Open panel; fetches current tags from tie if hash changed |
-| `HidePanel()` | Hide panel without clearing state |
+| `HidePanel()` | Hide panel without clearing state; fires `OnHide` |
 | `SetCurrentHash(hash)` | Track current image hash; if panel is open, switches it |
+| `OnHide func()` | Called after the panel hides; used to restore keyboard focus on desktop |
 
 ---
 
