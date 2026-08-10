@@ -250,12 +250,49 @@ func (si *SearchItem) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(si.content)
 }
 
+// starTap is a lightweight tappable ☆/★ label that does NOT implement
+// Focusable. Using widget.Button for the star caused it to steal keyboard
+// focus from the search entry on click, which fired onFocusLost → hide()
+// and collapsed the search dropdown before OnSelected could fire.
+type starTap struct {
+	widget.BaseWidget
+	label *canvas.Text
+	onTap func()
+}
+
+func newStarTap(onTap func()) *starTap {
+	st := &starTap{onTap: onTap}
+	st.label = canvas.NewText("☆", theme.ForegroundColor())
+	st.label.TextSize = theme.TextSize()
+	st.ExtendBaseWidget(st)
+	return st
+}
+
+func (st *starTap) SetText(t string) {
+	st.label.Text = t
+	st.label.Refresh()
+}
+
+func (st *starTap) Tapped(_ *fyne.PointEvent) {
+	if st.onTap != nil {
+		st.onTap()
+	}
+}
+
+func (st *starTap) MinSize() fyne.Size {
+	return fyne.NewSize(theme.TextSize()*2, theme.TextSize()*2)
+}
+
+func (st *starTap) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(st.label)
+}
+
 type TagItem struct {
 	widget.BaseWidget
 	label        *widget.Label
 	background   *canvas.Rectangle
 	includeCheck *widget.Check
-	starBtn      *widget.Button
+	starBtn      *starTap
 	content      fyne.CanvasObject
 	okColor      color.Color
 	data         *TagItemData
@@ -298,7 +335,7 @@ func NewTagItem(showInclude bool, showStar bool, ts *TagSelection) *TagItem {
 		}
 		right = ti.includeCheck
 	} else if showStar {
-		ti.starBtn = widget.NewButton("☆", func() {
+		ti.starBtn = newStarTap(func() {
 			if ti.data == nil || ti.ts.OnStar == nil {
 				return
 			}
@@ -310,7 +347,6 @@ func NewTagItem(showInclude bool, showStar bool, ts *TagSelection) *TagItem {
 			}
 			ti.ts.OnStar(ti.data.text, ti.data.starred)
 		})
-		ti.starBtn.Importance = widget.LowImportance
 		right = ti.starBtn
 	}
 
