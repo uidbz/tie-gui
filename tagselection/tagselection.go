@@ -212,9 +212,16 @@ func NewSearchItem(ts *TagSelection) *SearchItem {
 		hide()
 		ts.window.Canvas().Focus(txtSearch)
 	}
-	txtSearch.onFocusLost = func() {
-		hide() // focus went elsewhere (click outside) -> close
-	}
+	// onFocusLost is intentionally NOT wired to hide().
+	//
+	// When the user clicks a result row, Fyne fires MouseDown first, which
+	// transfers focus away from txtSearch (widget.List is Focusable), causing
+	// FocusLost. If hide() ran here it would call si.resultList.Hide() before
+	// MouseUp arrives. Hidden widgets don't receive events, so the tap on the
+	// list item — and therefore OnSelected — would never fire.
+	//
+	// The dropdown closes correctly via: Escape key, tag selection (selectAt
+	// calls hide()), and the search text being cleared (no results → Hide).
 	si.entry = txtSearch
 
 	si.searchList.OnSelected = func(i int) {
