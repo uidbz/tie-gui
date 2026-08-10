@@ -246,8 +246,11 @@ module changes. `onApply()` is then called (→ `reloadTags`).
 | `SetListLabel(string)` | Change the bold label above the quick-pick list |
 | `SetFavoriteMaxRows(n)` | Cap visible rows in the quick-pick list (0 = uncapped) |
 | `SetSelectedMaxRows(n)` | Cap visible rows in the selected-tag list (0 = uncapped) |
+| `SetStarred([]string)` | Replace the starred-tag set and refresh the quick-pick list |
 | `OnSelectedChanged func()` | Callback fired on any selection change |
 | `OnNewTag func(tag string)` | Called when user presses Enter with typed text but no row highlighted; nil in sidebar, set by image tagger |
+| `OnStar func(tag string, starred bool)` | Called when user clicks ☆/★ on a quick-pick item; nil in sidebar, set by image tagger |
+| `ShowStars bool` | When true, quick-pick items show a ☆/★ toggle button; must be set before first render |
 
 **Critical:** `ClearFavorites()` calls `Refresh`. If you then call `AddFavorite`
 in a loop without a final `Refresh`, the list stays visually blank. Always use
@@ -272,6 +275,10 @@ semantics from the sidebar:
 - The **search box + favorites** list = all known tags available to add.
   Clicking a tag adds it. Typing a name that does not exist yet and
   pressing Enter creates the tag via `OnNewTag` (see below).
+  Each tag has a ☆/★ button: clicking it toggles the tag in the tie
+  `("tags","favorite")` relation and updates `imageTagger.favoriteTags`.
+  The available-tags list is refreshed after `OnNewTag` so the new tag
+  appears immediately without a round-trip to tie.
 - The include/exclude checkbox has no meaning in this context (it is
   present because the widget is shared); toggling it fires
   `OnSelectedChanged` but the diff against `appliedTags` will be empty,
@@ -305,6 +312,7 @@ tagger's search trie up to date without a separate network request.
 |--------|------|
 | `newImageTagger(window, tc)` | Create; Panel is hidden; call `SetAllTags` to populate trie |
 | `SetAllTags([]string)` | Replace search trie + favorites list |
+| `SetFavoriteTags([]string)` | Replace the starred-tag set and refresh the ☆/★ buttons |
 | `Toggle(hash)` | Open panel for hash, or close if already open for that hash |
 | `ShowForImage(hash)` | Open panel; fetches current tags from tie if hash changed |
 | `HidePanel()` | Hide panel without clearing state; fires `OnHide` |
