@@ -85,6 +85,9 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	it.ts.OnNewTag = func(tag string) {
 		if !slices.Contains(it.allTags, tag) {
 			it.allTags = append(it.allTags, tag)
+			// Show the new tag in the list immediately (unstarred by default).
+			it.ts.SetFavorites(it.allTags)
+			it.ts.SetStarred(it.starredList())
 		}
 		it.ts.AddTag(tag)
 		it.ts.AddSelected(tagselection.NewTagItemData(tag))
@@ -96,11 +99,8 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	// appear there.
 	it.ts.OnStar = func(tag string, isStarred bool) {
 		it.favoriteTags[tag] = isStarred
-		sl := it.starredList()
-		// The favorites list shows only starred tags; rebuild it.
-		it.ts.SetFavorites(sl)
 		// Sync ☆/★ button state across the list and search dropdown.
-		it.ts.SetStarred(sl)
+		it.ts.SetStarred(it.starredList())
 		go func() {
 			if isStarred {
 				if _, err := it.tc.Add("tags", "favorite", tag); err != nil {
@@ -128,9 +128,8 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	return it
 }
 
-// SetAllTags replaces the search trie with the full tag list.
-// The favorites quick-pick list is not changed here; call SetFavoriteTags
-// to populate it with the starred subset.
+// SetAllTags replaces the search trie and the quick-pick list with the full
+// tag list. Star state (☆/★) is preserved from the current favoriteTags set.
 // Safe to call from the UI goroutine at any time (e.g. after a profile switch).
 func (it *imageTagger) SetAllTags(tags []string) {
 	it.allTags = append([]string(nil), tags...)
@@ -138,22 +137,19 @@ func (it *imageTagger) SetAllTags(tags []string) {
 	for _, tag := range tags {
 		it.ts.AddTag(tag)
 	}
-	// Keep the favorites list showing only the currently starred tags.
-	it.ts.SetFavorites(it.starredList())
+	// Show every tag so they are all browsable; ☆/★ indicates favorite status.
+	it.ts.SetFavorites(tags)
 	it.ts.SetStarred(it.starredList())
 }
 
-// SetFavoriteTags records which tags are currently starred (in the tie
-// "tags"/"favorite" relation), rebuilds the quick-pick list to show only
-// those tags, and refreshes the ☆/★ button state.
+// SetFavoriteTags records which tags are currently starred in the tie
+// ("tags","favorite") relation and refreshes the ☆/★ button state.
 // Called by makeTagSidebar after every tc.Get("tags") fetch.
 func (it *imageTagger) SetFavoriteTags(tags []string) {
 	it.favoriteTags = make(map[string]bool, len(tags))
 	for _, t := range tags {
 		it.favoriteTags[t] = true
 	}
-	// Quick-pick shows only starred tags.
-	it.ts.SetFavorites(tags)
 	it.ts.SetStarred(tags)
 }
 
