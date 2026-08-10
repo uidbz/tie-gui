@@ -100,14 +100,11 @@ func NewSearchItem(ts *TagSelection) *SearchItem {
 			return len(si.results)
 		},
 		func() fyne.CanvasObject {
-			// Mirror ShowStars so search results also carry a ☆/★ button
-			// when the caller (image tagger) uses the star feature.
-			return NewTagItem(false, ts.ShowStars, ts)
+			return NewTagItem(false, ts)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			ti := o.(*TagItem)
-			tag := si.results[i]
-			ti.SetData(&TagItemData{text: tag, include: true, starred: ts.starredSet[tag]})
+			ti.SetText(si.results[i])
 			ti.SetHighlighted(i == si.focusIndex)
 		})
 	si.searchList.maxRows = 8
@@ -255,32 +252,26 @@ type TagItem struct {
 	label        *widget.Label
 	background   *canvas.Rectangle
 	includeCheck *widget.Check
-	starBtn      *widget.Button
 	content      fyne.CanvasObject
 	okColor      color.Color
 	data         *TagItemData
-	ts           *TagSelection
-	settingData  bool // true while SetData runs; suppresses OnSelectedChanged
 }
 
 type TagItemData struct {
 	text    string
 	include bool
-	starred bool
 }
 
 func NewTagItemData(text string) *TagItemData {
-	return &TagItemData{text: text, include: true}
+	return &TagItemData{text, true}
 }
 
-func NewTagItem(showInclude bool, showStar bool, ts *TagSelection) *TagItem {
-	ti := &TagItem{ts: ts}
+func NewTagItem(showInclude bool, ts *TagSelection) *TagItem {
+	ti := &TagItem{}
 	ti.label = widget.NewLabel("")
 	ti.okColor = color.RGBA{85, 170, 127, 255}
 	ti.background = canvas.NewRectangle(ti.okColor)
 	ti.background.CornerRadius = 5
-
-	var right fyne.CanvasObject
 	if showInclude {
 		ti.includeCheck = widget.NewCheck("", nil)
 		ti.includeCheck.SetChecked(true)
@@ -291,35 +282,16 @@ func NewTagItem(showInclude bool, showStar bool, ts *TagSelection) *TagItem {
 			} else {
 				ti.background.FillColor = theme.ErrorColor()
 			}
-			ti.background.Refresh()
-			if !ti.settingData && ts.OnSelectedChanged != nil {
+			if ts.OnSelectedChanged != nil {
 				ts.OnSelectedChanged()
 			}
 		}
-		right = ti.includeCheck
-	} else if showStar {
-		ti.starBtn = widget.NewButton("☆", func() {
-			if ti.data == nil || ti.ts.OnStar == nil {
-				return
-			}
-			ti.data.starred = !ti.data.starred
-			if ti.data.starred {
-				ti.starBtn.SetText("★")
-			} else {
-				ti.starBtn.SetText("☆")
-			}
-			ti.ts.OnStar(ti.data.text, ti.data.starred)
-		})
-		ti.starBtn.Importance = widget.LowImportance
-		right = ti.starBtn
-	}
-
-	if right != nil {
-		ti.content = container.NewBorder(nil, nil, container.NewStack(ti.background, ti.label), right)
+		ti.content = container.NewBorder(nil, nil, container.NewStack(ti.background, ti.label), ti.includeCheck)
 	} else {
 		ti.content = container.NewBorder(nil, nil, container.NewStack(ti.background, ti.label), nil)
 	}
 	ti.ExtendBaseWidget(ti)
+
 	return ti
 }
 
@@ -328,22 +300,8 @@ func (ti *TagItem) Text() string {
 }
 
 func (ti *TagItem) SetData(tid *TagItemData) {
-	ti.settingData = true
-	defer func() { ti.settingData = false }()
 	ti.data = tid
 	ti.label.SetText(tid.text)
-	if ti.includeCheck != nil {
-		// Restore check and background to match data; the settingData flag
-		// prevents this from firing OnSelectedChanged spuriously.
-		ti.includeCheck.SetChecked(tid.include)
-	}
-	if ti.starBtn != nil {
-		if tid.starred {
-			ti.starBtn.SetText("★")
-		} else {
-			ti.starBtn.SetText("☆")
-		}
-	}
 }
 
 func (ti *TagItem) SetText(text string) {
@@ -378,16 +336,7 @@ type TagSelection struct {
 	// allows callers to create a brand-new tag that is not yet in the trie.
 	// The sidebar leaves this nil; the image tagger sets it.
 	OnNewTag func(tag string)
-	// OnStar, when non-nil, is called when the user clicks the ☆/★ button on
-	// a quick-pick tag item. starred is the new state after the toggle.
-	// The sidebar leaves this nil; the image tagger sets it.
-	OnStar func(tag string, starred bool)
-	// ShowStars controls whether the quick-pick (favorite) list items display
-	// a ☆/★ toggle button. Must be set before the widget is first rendered.
-	// The sidebar leaves this false; the image tagger sets it to true.
-	ShowStars  bool
-	starredSet map[string]bool // tags whose star button shows ★
-	tags       *trie.Trie
+	tags     *trie.Trie
 	selectedList      *AutoExpandingList
 	favoriteList      *AutoExpandingList
 	listLabel         *widget.Label
@@ -434,14 +383,10 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 			return len(ts.favorite)
 		},
 		func() fyne.CanvasObject {
-			// ShowStars is read at CreateItem time (lazy, when cells are first
-			// needed), so setting it before the widget is displayed is enough.
-			return NewTagItem(false, ts.ShowStars, ts)
+			return NewTagItem(false, ts)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
-			data := ts.favorite[i]
-			data.starred = ts.starredSet[data.text]
-			o.(*TagItem).SetData(data)
+			o.(*TagItem).SetData(ts.favorite[i])
 		})
 
 	ts.selectedList = NewAutoExpandingList(
@@ -449,7 +394,7 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 			return len(ts.selected)
 		},
 		func() fyne.CanvasObject {
-			return NewTagItem(true, false, ts)
+			return NewTagItem(true, ts)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			o.(*TagItem).SetData(ts.selected[i])
@@ -569,20 +514,6 @@ func (ts *TagSelection) SetFavoriteMaxRows(n int) {
 // 0 = uncapped (default).
 func (ts *TagSelection) SetSelectedMaxRows(n int) {
 	ts.selectedList.maxRows = n
-}
-
-// SetStarred replaces the set of starred tags and refreshes both the
-// quick-pick list and the search-result dropdown so ☆/★ buttons are
-// consistent everywhere. Only meaningful when ShowStars is true.
-func (ts *TagSelection) SetStarred(tags []string) {
-	ts.starredSet = make(map[string]bool, len(tags))
-	for _, t := range tags {
-		ts.starredSet[t] = true
-	}
-	ts.favoriteList.Refresh()
-	if ts.ShowStars && ts.search != nil {
-		ts.search.searchList.Refresh()
-	}
 }
 
 func (ts *TagSelection) AddSelected(tid *TagItemData) {

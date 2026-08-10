@@ -256,11 +256,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieCl
 				for _, tag := range allTags {
 					ts.AddTag(tag)
 				}
-			// Capture the actual tie favorites before the sidebar fallback
-			// so the tagger's ☆/★ state reflects the real relation, not the
-			// "show everything" substitute used when no favorites are configured.
-			actualFavorites := client.RowValues(row, "favorite")
-			allFavorites = actualFavorites
+			allFavorites = client.RowValues(row, "favorite")
 			if len(allFavorites) == 0 {
 				// No favorites configured: list every tag so the sidebar
 				// isn't empty until something is typed in the search box.
@@ -273,7 +269,6 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieCl
 			ts.SetFavorites(allFavorites)
 			if tagger != nil {
 				tagger.SetAllTags(allTags)
-				tagger.SetFavoriteTags(actualFavorites)
 			}
 		})
 	}()
