@@ -272,13 +272,14 @@ resets it to the new image's tags automatically.
 semantics from the sidebar:
 - The **selected** list = tags currently applied to the image in tie.
   Clicking a tag removes it.
-- The **search box + favorites** list = all known tags available to add.
-  Clicking a tag adds it. Typing a name that does not exist yet and
-  pressing Enter creates the tag via `OnNewTag` (see below).
-  Each tag has a ☆/★ button: clicking it toggles the tag in the tie
-  `("tags","favorite")` relation and updates `imageTagger.favoriteTags`.
-  The available-tags list is refreshed after `OnNewTag` so the new tag
-  appears immediately without a round-trip to tie.
+- The **favorites quick-pick list** = only the starred tags (those in the
+  tie `("tags","favorite")` relation). Each item has a ★ button; clicking
+  it unstars the tag and removes it from this list.
+- The **search box + dropdown** = full-text search across all known tags.
+  Search-result items also show a ☆/★ button so the user can star a tag
+  without leaving the search. Clicking a result (not the star) adds it to
+  the image. Typing a name that does not exist and pressing Enter creates
+  the tag via `OnNewTag` (see below).
 - The include/exclude checkbox has no meaning in this context (it is
   present because the widget is shared); toggling it fires
   `OnSelectedChanged` but the diff against `appliedTags` will be empty,

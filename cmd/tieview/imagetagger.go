@@ -59,7 +59,7 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	}
 	it.ts = tagselection.NewTagSelection(window)
 	it.ts.ShowStars = true // must be set before the widget is first rendered
-	it.ts.SetListLabel("Available tags")
+	it.ts.SetListLabel("Favorites")
 	// Cap the favorites list so the panel doesn't grow taller than the screen
 	// when there are many tags. The search box reaches all tags regardless.
 	it.ts.SetFavoriteMaxRows(8)
@@ -79,28 +79,30 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	}
 
 	// OnNewTag lets the user type a brand-new tag name that is not yet in the
-	// trie and press Enter to apply it. The new tag is added to the trie and
-	// the available-tags list so it becomes immediately searchable, then added
-	// to the selected list, which triggers OnSelectedChanged → syncTags → tc.Add.
+	// trie and press Enter to apply it. The new tag is added to the trie so
+	// it becomes immediately searchable (with ☆), then added to the selected
+	// list, which triggers OnSelectedChanged → syncTags → tc.Add.
 	it.ts.OnNewTag = func(tag string) {
 		if !slices.Contains(it.allTags, tag) {
 			it.allTags = append(it.allTags, tag)
 		}
 		it.ts.AddTag(tag)
-		// Refresh the available-tags list to include the new tag.
-		it.ts.SetFavorites(it.allTags)
-		it.ts.SetStarred(it.starredList())
 		it.ts.AddSelected(tagselection.NewTagItemData(tag))
 	}
 
 	// OnStar fires when the user clicks the ☆/★ button on a tag in the
-	// available list. Toggle the tie ("tags","favorite") relation accordingly.
-	it.ts.OnStar = func(tag string, starred bool) {
-		it.favoriteTags[tag] = starred
-		// Refresh star state so other visible cells stay consistent.
-		it.ts.SetStarred(it.starredList())
+	// quick-pick list or search results. Toggle the tie ("tags","favorite")
+	// relation and rebuild the favorites quick-pick list so only starred tags
+	// appear there.
+	it.ts.OnStar = func(tag string, isStarred bool) {
+		it.favoriteTags[tag] = isStarred
+		sl := it.starredList()
+		// The favorites list shows only starred tags; rebuild it.
+		it.ts.SetFavorites(sl)
+		// Sync ☆/★ button state across the list and search dropdown.
+		it.ts.SetStarred(sl)
 		go func() {
-			if starred {
+			if isStarred {
 				if _, err := it.tc.Add("tags", "favorite", tag); err != nil {
 					fmt.Println("imageTagger: error starring tag:", tag, err)
 				}
@@ -126,8 +128,9 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	return it
 }
 
-// SetAllTags replaces the search trie and the available-tags list with tags.
-// Also refreshes the star state so ☆/★ buttons are correct after a reload.
+// SetAllTags replaces the search trie with the full tag list.
+// The favorites quick-pick list is not changed here; call SetFavoriteTags
+// to populate it with the starred subset.
 // Safe to call from the UI goroutine at any time (e.g. after a profile switch).
 func (it *imageTagger) SetAllTags(tags []string) {
 	it.allTags = append([]string(nil), tags...)
@@ -135,18 +138,22 @@ func (it *imageTagger) SetAllTags(tags []string) {
 	for _, tag := range tags {
 		it.ts.AddTag(tag)
 	}
-	it.ts.SetFavorites(tags)
+	// Keep the favorites list showing only the currently starred tags.
+	it.ts.SetFavorites(it.starredList())
 	it.ts.SetStarred(it.starredList())
 }
 
 // SetFavoriteTags records which tags are currently starred (in the tie
-// "tags"/"favorite" relation) and refreshes the ☆/★ buttons.
+// "tags"/"favorite" relation), rebuilds the quick-pick list to show only
+// those tags, and refreshes the ☆/★ button state.
 // Called by makeTagSidebar after every tc.Get("tags") fetch.
 func (it *imageTagger) SetFavoriteTags(tags []string) {
 	it.favoriteTags = make(map[string]bool, len(tags))
 	for _, t := range tags {
 		it.favoriteTags[t] = true
 	}
+	// Quick-pick shows only starred tags.
+	it.ts.SetFavorites(tags)
 	it.ts.SetStarred(tags)
 }
 

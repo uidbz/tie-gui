@@ -100,11 +100,14 @@ func NewSearchItem(ts *TagSelection) *SearchItem {
 			return len(si.results)
 		},
 		func() fyne.CanvasObject {
-			return NewTagItem(false, false, ts)
+			// Mirror ShowStars so search results also carry a ☆/★ button
+			// when the caller (image tagger) uses the star feature.
+			return NewTagItem(false, ts.ShowStars, ts)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			ti := o.(*TagItem)
-			ti.SetText(si.results[i])
+			tag := si.results[i]
+			ti.SetData(&TagItemData{text: tag, include: true, starred: ts.starredSet[tag]})
 			ti.SetHighlighted(i == si.focusIndex)
 		})
 	si.searchList.maxRows = 8
@@ -568,15 +571,18 @@ func (ts *TagSelection) SetSelectedMaxRows(n int) {
 	ts.selectedList.maxRows = n
 }
 
-// SetStarred replaces the set of starred tags and refreshes the quick-pick
-// list so the ☆/★ buttons reflect the new state. Only meaningful when
-// ShowStars is true (image tagger context).
+// SetStarred replaces the set of starred tags and refreshes both the
+// quick-pick list and the search-result dropdown so ☆/★ buttons are
+// consistent everywhere. Only meaningful when ShowStars is true.
 func (ts *TagSelection) SetStarred(tags []string) {
 	ts.starredSet = make(map[string]bool, len(tags))
 	for _, t := range tags {
 		ts.starredSet[t] = true
 	}
 	ts.favoriteList.Refresh()
+	if ts.ShowStars && ts.search != nil {
+		ts.search.searchList.Refresh()
+	}
 }
 
 func (ts *TagSelection) AddSelected(tid *TagItemData) {
