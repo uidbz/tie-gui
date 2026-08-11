@@ -72,10 +72,17 @@ func main() {
 		t.Viewer.ChangeImage(t.Info)
 	})
 	viewer.Thumbnailer = &filehostThumbnailer{tie: tieClient, tileWidth: int(config.General.TileWidth)}
-	// A single tap on the image opens/closes the tag panel.
-	viewer.OnTapped = func() {
+	toggleTagger := func() {
 		tagger.Toggle(tagger.hash)
 		viewer.Content.Refresh()
+	}
+	if fyne.CurrentDevice().IsMobile() {
+		// On mobile a tap is used for other interactions (focus, navigation).
+		// Use a swipe-up gesture instead to open/close the tag panel.
+		viewer.OnSwipeUp = toggleTagger
+	} else {
+		// On desktop a single tap on the image opens/closes the tag panel.
+		viewer.OnTapped = toggleTagger
 	}
 	// Restore keyboard focus to the image view when the panel is closed so
 	// that hotkeys (next/prev, zoom, etc.) keep working on desktop.

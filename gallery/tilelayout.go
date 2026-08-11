@@ -95,6 +95,10 @@ type ImageInfo struct {
 	OnTapped          func()
 	OnDoubleTapped    func()
 	OnTappedSecondary func()
+	// OnSwipeUp, when non-nil, is called when the user performs an upward
+	// swipe gesture on the image view (mobile only). Used instead of OnTapped
+	// on mobile to avoid conflicts with normal image interaction.
+	OnSwipeUp func()
 	// OnOpen, when non-nil, replaces the default image display when the
 	// entry is opened (tile tap, next/prev navigation) — e.g. to browse
 	// into a directory the entry represents. Wired automatically from

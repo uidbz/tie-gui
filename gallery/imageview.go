@@ -60,11 +60,13 @@ type ImageView struct {
 	// touches holds the live position of each active finger keyed by its
 	// TouchEvent.ID; pinchDist/pinchZoom capture the baseline at pinch start;
 	// swipeAccum accumulates horizontal drag past the pan border to trigger
-	// paging. See TouchDown/TouchMoved/DragEnd.
-	touches    map[int]fyne.Position
-	pinchDist  float32
-	pinchZoom  float32
-	swipeAccum float32
+	// paging; swipeVertAccum accumulates upward drag past the top border to
+	// trigger OnSwipeUp. See TouchDown/TouchMoved/DragEnd.
+	touches        map[int]fyne.Position
+	pinchDist      float32
+	pinchZoom      float32
+	swipeAccum     float32
+	swipeVertAccum float32
 }
 
 type Hotkey struct {
@@ -348,6 +350,7 @@ func (iv *ImageView) draggedMobile(drag *fyne.DragEvent) {
 		iv.dragStart = true
 		iv.fillWindow = false
 		iv.swipeAccum = 0
+		iv.swipeVertAccum = 0
 	}
 
 	minX, maxX, minY, maxY := iv.panBounds()
@@ -366,8 +369,19 @@ func (iv *ImageView) draggedMobile(drag *fyne.DragEvent) {
 		iv.swipeAccum = 0 // reversing toward center clears any page charge
 	}
 
-	// Vertical: pan only, clamped.
-	iv.pos.Y = clampF(iv.pos.Y+drag.Dragged.DY, minY, maxY)
+	// Vertical: pan within bounds; spill upward remainder into swipeVertAccum
+	// so dragEndMobile can detect an intentional swipe-up gesture.
+	newY := iv.pos.Y + drag.Dragged.DY
+	switch {
+	case newY < minY:
+		iv.pos.Y = minY
+		iv.swipeVertAccum += newY - minY // negative: dragged past top edge
+	case newY > maxY:
+		iv.pos.Y = maxY
+	default:
+		iv.pos.Y = newY
+		iv.swipeVertAccum = 0 // reversed back toward center: clear the charge
+	}
 
 	iv.Move(iv.pos)
 }
@@ -375,22 +389,40 @@ func (iv *ImageView) draggedMobile(drag *fyne.DragEvent) {
 func (iv *ImageView) dragEndMobile() {
 	iv.dragStart = false
 
-	// Page when the overscroll past a border exceeds the threshold. When the
-	// image fits (no pan room), any horizontal drag becomes overscroll, so a
-	// plain swipe pages. When zoomed in the finger starts at the border, so
-	// require a larger throw before flipping.
 	c := iv.containerSize()
+
+	// Horizontal paging threshold. When zoomed in, demand a firmer throw.
 	threshold := c.Width * 0.2
 	if threshold < 40 {
 		threshold = 40
 	}
 	if _, maxX, _, _ := iv.panBounds(); maxX > 0 || iv.pos.X < 0 {
-		// zoomed in (panning possible on X) — demand a firmer throw
 		threshold = c.Width * 0.4
 	}
 
 	acc := iv.swipeAccum
 	iv.swipeAccum = 0
+	vertAcc := iv.swipeVertAccum
+	iv.swipeVertAccum = 0
+
+	// Upward swipe: fires OnSwipeUp when the gesture is predominantly vertical
+	// (more vertical overscroll than horizontal) and large enough. Checked
+	// before horizontal paging so a clean upward swipe does not also page.
+	vertThreshold := c.Height * 0.2
+	if vertThreshold < 40 {
+		vertThreshold = 40
+	}
+	absAcc := acc
+	if absAcc < 0 {
+		absAcc = -absAcc
+	}
+	if vertAcc <= -vertThreshold && -vertAcc > absAcc {
+		if iv.info.OnSwipeUp != nil {
+			iv.info.OnSwipeUp()
+		}
+		return
+	}
+
 	switch {
 	case acc <= -threshold: // dragged left past the edge -> next
 		if iv.nextFn != nil {

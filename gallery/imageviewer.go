@@ -55,7 +55,10 @@ type Viewer struct {
 	OnTapped          func()
 	OnDoubleTapped    func()
 	OnTappedSecondary func()
-	OnImageChange     func(info *ImageInfo)
+	// OnSwipeUp, when non-nil, is called when the user swipes upward on the
+	// image view. Preferred over OnTapped on mobile — set one or the other.
+	OnSwipeUp     func()
+	OnImageChange func(info *ImageInfo)
 	// OnTileSecondaryTapped is called when a gallery tile receives a secondary
 	// tap (right-click). Set by the caller to implement context actions such as
 	// de-import. Receives the full Tile so the caller can inspect Info.
@@ -272,6 +275,9 @@ func (viewer *Viewer) LoadImageToCache(info *ImageInfo) *ImageView {
 	if x, ok := viewer.cache[info.Path]; ok == false {
 		if viewer.OnTapped != nil {
 			info.OnTapped = viewer.OnTapped
+		}
+		if viewer.OnSwipeUp != nil {
+			info.OnSwipeUp = viewer.OnSwipeUp
 		}
 		if viewer.OnDoubleTapped != nil {
 			info.OnDoubleTapped = viewer.OnDoubleTapped
