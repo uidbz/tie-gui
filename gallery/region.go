@@ -22,9 +22,11 @@ const (
 type Region struct {
 	widget.BaseWidget
 
-	parent *ImageView
-	pos    fyne.Position
-	color  color.Color
+	parent    *ImageView
+	pos       fyne.Position
+	color     color.Color
+	startPos  fyne.Position // drag start position for calculating deltas
+	dragStart bool          // true while a drag is in progress
 }
 
 type RegionRenderer struct {
@@ -163,17 +165,14 @@ func (ren *RegionRenderer) Layout(s fyne.Size) {
 	ren.bottomMiddle.Move(fyne.NewPos(-halfSize+(s.Width/2), s.Height-halfSize))
 }
 
-var startPos fyne.Position
-var dragStart bool
-
 func (r *Region) Dragged(drag *fyne.DragEvent) {
-	if !dragStart {
-		startPos = drag.PointEvent.Position
-		dragStart = true
+	if !r.dragStart {
+		r.startPos = drag.PointEvent.Position
+		r.dragStart = true
 	}
 
-	// r.pos = drag.AbsolutePosition.Subtract(startPos)
-	pos := drag.AbsolutePosition.Subtract(startPos).Subtract(r.parent.Position())
+	// r.pos = drag.AbsolutePosition.Subtract(r.startPos)
+	pos := drag.AbsolutePosition.Subtract(r.startPos).Subtract(r.parent.Position())
 	if pos.X+r.Size().Width > r.parent.Size().Width {
 		pos.X = r.parent.Size().Width - r.Size().Width
 	}
@@ -193,5 +192,5 @@ func (r *Region) Dragged(drag *fyne.DragEvent) {
 }
 
 func (r *Region) DragEnd() {
-	dragStart = false
+	r.dragStart = false
 }
