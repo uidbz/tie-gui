@@ -495,13 +495,134 @@ All pass. No behavior changes.
 
 ---
 
-## 📋 Remaining Phases (Not Started)
+## ✅ Phase 6 — Library API Hardening (Complete)
 
-### Phase 6 — Library API Hardening
-- Document the `gallery` extension surface as the stable contract
-- Group `Gallery`'s exported API vs unexported wiring in struct
-- Consider merging `NewGallery` + `Init` into one constructor
-- Update CLAUDE.md to reflect renames and new file layout
+Completed in four incremental commits finalizing the "two apps, one library"
+vision. The gallery package now has a clearly documented stable extension API
+and organized struct layout.
+
+### 6.1 — Document extension interfaces
+
+**Commit:** `7c11190` — refactor(phase6): document gallery extension interfaces
+
+**Changes:**
+- Created `gallery/extension.go` as comprehensive documentation of the stable
+  extension contract
+- Documents core interface (`CustomReader`), optional behaviors (`Openable`,
+  `VideoFile`, `VideoStreamer`, `DimensionProvider`), `Thumbnailer`, and
+  callback extension points
+- Each interface includes: purpose, use cases, example implementations,
+  lifecycle notes, threading notes, cross-references to definitions
+- Stability guarantee section explains these interfaces are the stable contract
+
+**Rationale:** Applications (imgview, tieview) depend on these interfaces to
+customize gallery behavior. Documenting them as a stable API clarifies what's
+safe to depend on vs internal implementation details. This file serves as the
+authoritative extension guide for anyone implementing new content sources.
+
+### 6.2 — Reorganize Gallery struct
+
+**Commit:** `6ed93a5` — refactor(phase6): reorganize Gallery struct fields for clarity
+
+**Changes:**
+- Reorganized Gallery struct into three clearly separated sections:
+  1. **Extension API — Callbacks**: OnImageChange, OnTapped, OnDoubleTapped,
+     OnTappedSecondary, OnSwipeUp, OnTileSecondaryTapped (all documented inline)
+  2. **Extension API — Public Fields**: Content, CurrentImage, CurrentImageView,
+     CustomReaders, Thumbnailer, Sidebar (all documented inline)
+  3. **Internal Wiring — Do Not Access Directly**: all unexported fields
+- Added cross-reference to gallery/extension.go for full documentation
+
+**Rationale:** The callback section at the top highlights the extension points
+applications use to customize behavior. The public fields section shows what
+callers read/set. The "do not access" header on internal fields discourages
+coupling to implementation details. This organization makes the stable API
+surface obvious at a glance.
+
+### 6.3 — Document two-step construction
+
+**Commit:** `423d10b` — refactor(phase6): document two-step Gallery construction pattern
+
+**Changes:**
+- Added comprehensive documentation to `NewGallery` explaining why two-step
+  construction (NewGallery + Init) exists instead of one merged constructor
+- Rationale: applications need to customize Gallery (set Sidebar, Thumbnailer,
+  callbacks) between creation and initialization
+- Example usage added showing standard sequence
+- Added documentation to `Init()` with cross-reference to NewGallery
+
+**Rationale:** The two-step pattern was non-obvious. Documenting the rationale
+(applications set fields before Init, Init wires hotkeys that depend on config)
+clarifies the design. The alternative (giant parameter list or builder pattern)
+would be less idiomatic Go.
+
+### 6.4 — Update CLAUDE.md
+
+**Commit:** `78ebc0e` — refactor(phase6): update CLAUDE.md for Phases 1-6 changes
+
+**Changes:**
+- Updated repository layout table with all new files (apphelper.go,
+  videohelper.go, platform.go, extension.go) and renames (imageviewer.go →
+  gallery.go), annotated with phase numbers
+- Updated Key types section: Viewer → Gallery rename, fixed file references,
+  added Platform() accessor
+- Added three new sections:
+  - **Shared app helpers (Phase 4)**: documents all Phase 4 helpers
+  - **Platform abstraction (Phase 5)**: documents Platform struct and methods
+  - **Extension API (Phase 6)**: overview of extension.go and struct organization
+- Fixed Viewer → Gallery references throughout
+
+**Rationale:** CLAUDE.md is the LLM reference for the codebase. Updating it to
+reflect all Phase 1-6 changes ensures future LLM sessions understand the
+post-refactoring structure.
+
+### Phase 6 Summary
+
+**Lines changed:** ~350 additions (extension.go + struct reorganization + docs)  
+**Key wins:**
+- Stable extension API comprehensively documented (gallery/extension.go)
+- Gallery struct organized: callbacks, public fields, internal wiring
+- Two-step construction pattern rationale documented
+- CLAUDE.md updated as authoritative post-refactoring reference
+- "Two apps, one library" vision achieved with clear boundaries
+
+**Verification:**
+```sh
+go build ./cmd/imgview
+go build ./cmd/tieview
+go test ./...
+```
+
+All pass. No behavior changes.
+
+---
+
+## 🎉 Refactoring Complete
+
+All six phases complete:
+1. ✅ Phase 1 — Naming & File Structure (1 commit)
+2. ✅ Phase 2 — Tagging Refactor (4 commits)
+3. ✅ Phase 3 — Decouple Gallery Internals (4 commits)
+4. ✅ Phase 4 — Shared Bootstrap & De-dup Mains (5 commits)
+5. ✅ Phase 5 — Isolate Platform Seam (3 commits)
+6. ✅ Phase 6 — Library API Hardening (4 commits)
+
+**Total:** 21 refactoring commits + 6 documentation commits = **27 commits**
+
+**Project state:**
+- Clean separation: two apps, one library, clearly documented extension API
+- Naming consistent: Gallery (controller), ImageView (widget), ImageInfo (model)
+- File organization: each file has single responsibility
+- Platform seam: centralized mobile vs desktop behavior
+- No duplication: common bootstrap factored, extension interfaces documented
+- All builds pass, no behavior regressions
+
+**Remaining opportunities (out of scope for this refactoring):**
+- ImageView I/O coupling (loader interface) — deferred as medium complexity
+- TileLayout split (layout math + thumbnail loader) — deferred as large refactor
+
+The codebase is now in significantly better shape: maintainable, documented,
+and ready for future development.
 
 ---
 
