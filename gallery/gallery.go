@@ -283,12 +283,11 @@ func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
 			info.OnDoubleTapped = viewer.ToggleFullscreen
 		}
 		img := NewImageView(info, viewer.window.Canvas().Size(), true, viewer.window, viewer.window.Canvas().Focus)
+		// Update window title when image size changes (zoom, window resize).
+		// Called from ImageLayout.Layout and ImageView zoom methods, which
+		// already run on the UI thread.
 		img.changeFn = func() {
-			go func() {
-				fyne.Do(func() {
-					viewer.window.SetTitle("imgview - " + img.GetImageInfo())
-				})
-			}()
+			viewer.window.SetTitle("imgview - " + img.GetImageInfo())
 		}
 		viewer.cache[info.Path] = img
 		return img
