@@ -41,9 +41,9 @@ func main() {
 		*tieConfigName += ".toml"
 	}
 
-	myApp := app.NewWithID("sr.ht.uid.imgview")
+	myApp := app.NewWithID("sr.ht.uid.tieview")
 	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
-	myWindow := myApp.NewWindow("imgview")
+	myWindow := myApp.NewWindow("tieview")
 
 	config := gallery.LoadConfig(myWindow, "")
 
