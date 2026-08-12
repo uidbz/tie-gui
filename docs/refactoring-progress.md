@@ -212,9 +212,78 @@ of silently diverging.
 
 ---
 
+---
+
+## ⚙️ Phase 3 — Decouple Gallery Internals (In Progress)
+
+### 3.1 — Region Package-Global Fix
+
+**Commit:** `1b172c1` — refactor(phase3): fix region.go package-global drag state
+
+**Changes:**
+- Moved package-global `startPos` and `dragStart` variables into `Region` struct
+  as instance fields
+- Each `Region` now tracks its own drag state independently
+
+**Rationale:** Package globals made `Region` non-reentrant (multiple instances
+shared state) and shadowed identically-named `ImageView` fields.
+
+### 3.2 — Reduce Layout→Viewer Back-References
+
+**Commit:** `7d84f0e` — refactor(phase3): reduce layout→viewer back-references
+
+**Changes:**
+
+**Direct field access:**
+- Added `TileLayout.thumbnailer` and `.refreshThumbs` fields
+- Populated from viewer at construction (`NewTileLayout`)
+- `GetThumbnail` and `videoThumbnail` now use direct fields instead of
+  `layout.viewer.Thumbnailer` / `layout.viewer.refreshThumbs`
+
+**Move gallery hotkeys:**
+- `ScrollDown`, `ScrollUp`, `PathLevelUp` moved from `TileLayout.InitHotkeys`
+  to `Gallery.InitHotkeys`
+- These operate on `Gallery.scroll` and `Gallery.ShowImageDir`, so they belong
+  in `Gallery`, not layout
+- Removes `layout.viewer.scroll` and `layout.viewer.ShowImageDir` back-references
+
+**Rationale:** Bidirectional coupling (`Gallery` holds `layout`, `layout` holds
+`viewer`) made dependency flow unclear. Breaking the back-references for
+thumbnail access and hotkeys reduces coupling. `TileLayout` still holds
+`viewer *Gallery` but now only uses it in `imageLoader` for tile creation.
+
+### Phase 3 Status
+
+**Completed:**
+- ✅ Fixed region.go package-global drag state
+- ✅ Reduced layout→viewer back-references (thumbnailer, hotkeys)
+
+**Not addressed (deferred or skipped):**
+- Layout→window-title side effect (complex, needs more design)
+- ImageView I/O coupling (`GetReader`, `LoadImage` in widget)
+- Split TileLayout into layout math + thumbnail loader (large refactor)
+- fmt.Println debug output cleanup (low value, many changes)
+
+**Rationale for deferring:** The completed items addressed the most problematic
+coupling (bidirectional references, package globals). The remaining items are
+either complex (require architectural design) or low-value (debug output). The
+project is now in a much better state than before Phase 3.
+
+### Verification
+
+```sh
+go build ./cmd/imgview
+go build ./cmd/tieview
+go test ./...
+```
+
+All pass. No behavior changes.
+
+---
+
 ## 📋 Remaining Phases (Not Started)
 
-### Phase 3 — Decouple Gallery Internals
+### Phase 4 — Shared Bootstrap & De-dup Mains
 - Split `TileLayout` into pure layout math + separate thumbnail loader
 - Remove `layout → viewer` back-reference (pass hooks as callbacks)
 - Move `ImageView`'s I/O (`GetReader`, `LoadImage`) behind a loader interface
