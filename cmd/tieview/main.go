@@ -129,11 +129,20 @@ func main() {
 		}, myWindow)
 	}
 
-	// On mobile, load the default directory directly. On desktop, load images
-	// by tag (default "favorite") to populate the gallery with quick-access
-	// content instead of the full filesystem root.
+	// On mobile, load the default image directory (DCIM/Camera). On desktop,
+	// load images by tag (default "favorite") to populate the gallery with
+	// quick-access content.
 	if viewer.Platform().IsMobile() {
-		fsTree.showDir("/", "")
+		// Try /DCIM/Camera first (typical Android camera directory), then /DCIM,
+		// then fall back to root if neither exists.
+		dir := "/DCIM/Camera"
+		if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
+			dir = "/DCIM"
+			if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
+				dir = "/"
+			}
+		}
+		fsTree.showDir(dir, "")
 	} else {
 		readFromTie(viewer, tieClient, []string{*tieTag}, nil, "tag", browseDir)
 		// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
