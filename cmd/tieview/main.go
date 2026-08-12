@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 
@@ -41,9 +40,7 @@ func main() {
 		*tieConfigName += ".toml"
 	}
 
-	myApp := app.NewWithID("sr.ht.uid.tieview")
-	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
-	myWindow := myApp.NewWindow("tieview")
+	myApp, myWindow := gallery.NewApp("sr.ht.uid.tieview", "tieview", icon)
 
 	config := gallery.LoadConfig(myWindow, "")
 

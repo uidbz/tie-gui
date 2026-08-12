@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/storage"
@@ -130,9 +129,7 @@ func main() {
 		*configPath += ".toml"
 	}
 
-	myApp := app.NewWithID("sr.ht.uid.imgview")
-	myApp.SetIcon(fyne.NewStaticResource("icon", icon))
-	myWindow := myApp.NewWindow("imgview")
+	myApp, myWindow := gallery.NewApp("sr.ht.uid.imgview", "imgview", icon)
 
 	config := gallery.LoadConfig(myWindow, *configPath)
 
