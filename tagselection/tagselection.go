@@ -628,6 +628,27 @@ func (ts *TagSelection) SetStarred(tags []string) {
 	}
 }
 
+// SetFavoritesWithStars replaces both the quick-pick list and the starred set
+// in a single call, refreshing only once. Prefer this over calling SetFavorites
+// and SetStarred separately when the same tag list should be shown and starred.
+func (ts *TagSelection) SetFavoritesWithStars(tags []string) {
+	// Update favorite list
+	ts.favorite = ts.favorite[:0]
+	for _, tag := range tags {
+		ts.favorite = append(ts.favorite, NewTagItemData(tag))
+	}
+	// Update starred set
+	ts.starredSet = make(map[string]bool, len(tags))
+	for _, t := range tags {
+		ts.starredSet[t] = true
+	}
+	// Single refresh for both
+	ts.favoriteList.Refresh()
+	if ts.ShowStars && ts.search != nil {
+		ts.search.searchList.Refresh()
+	}
+}
+
 func (ts *TagSelection) AddSelected(tid *TagItemData) {
 	for _, x := range ts.selected {
 		if tid.text == x.text {

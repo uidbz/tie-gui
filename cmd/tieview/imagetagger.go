@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"slices"
+	"sort"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -100,8 +101,7 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 		it.favoriteTags[tag] = isStarred
 		sl := it.starredList()
 		// Rebuild the quick-pick list (starred tags only) and sync ☆/★ state.
-		it.ts.SetFavorites(sl)
-		it.ts.SetStarred(sl)
+		it.ts.SetFavoritesWithStars(sl)
 		go func() {
 			if isStarred {
 				if _, err := it.tc.Add("tags", "favorite", tag); err != nil {
@@ -139,8 +139,7 @@ func (it *imageTagger) SetAllTags(tags []string) {
 		it.ts.AddTag(tag)
 	}
 	// Quick-pick shows only starred tags; search reaches everything else.
-	it.ts.SetFavorites(it.starredList())
-	it.ts.SetStarred(it.starredList())
+	it.ts.SetFavoritesWithStars(it.starredList())
 }
 
 // SetFavoriteTags records which tags are currently starred in the tie
@@ -152,11 +151,11 @@ func (it *imageTagger) SetFavoriteTags(tags []string) {
 	for _, t := range tags {
 		it.favoriteTags[t] = true
 	}
-	it.ts.SetFavorites(tags)
-	it.ts.SetStarred(tags)
+	it.ts.SetFavoritesWithStars(tags)
 }
 
-// starredList returns the names of all currently starred tags.
+// starredList returns the names of all currently starred tags in
+// deterministic (alphabetical) order.
 func (it *imageTagger) starredList() []string {
 	starred := make([]string, 0, len(it.favoriteTags))
 	for t, v := range it.favoriteTags {
@@ -164,6 +163,7 @@ func (it *imageTagger) starredList() []string {
 			starred = append(starred, t)
 		}
 	}
+	sort.Strings(starred)
 	return starred
 }
 
