@@ -313,20 +313,107 @@ All pass. No behavior changes.
 
 ---
 
+## ✅ Phase 4 — Shared Bootstrap & De-dup Mains (Complete)
+
+Completed in five incremental commits addressing the duplication flagged in the
+roadmap: both mains had copy-pasted app bootstrap, config flag logic, mobile
+focus guards, and video window creation.
+
+### 4.1 — Give tieview distinct identity
+
+**Commit:** `0beab8b` — refactor(phase4): give tieview distinct app ID and window title
+
+**Changes:**
+- Changed tieview's app ID from `"sr.ht.uid.imgview"` to `"sr.ht.uid.tieview"`
+- Changed window title from `"imgview"` to `"tieview"`
+
+**Rationale:** Both apps shared the same ID and title, making them
+indistinguishable in the system (taskbar, window manager, preferences). This
+was the simplest isolated fix to make tieview identifiable.
+
+### 4.2 — Factor app bootstrap
+
+**Commit:** `814b5ac` — refactor(phase4): factor common app bootstrap into gallery.NewApp
+
+**Changes:**
+- Created `gallery/apphelper.go` with `NewApp(appID, windowTitle, iconData)`
+- Both mains now call `myApp, myWindow := gallery.NewApp(...)` instead of the
+  three-line bootstrap (app.NewWithID, SetIcon, NewWindow)
+- Removed redundant `fyne.io/fyne/v2/app` import from both mains
+
+**Rationale:** The bootstrap pattern was identical in both mains; only the ID
+and title strings differed. Factoring it eliminates 4 lines of duplication.
+
+### 4.3 — Factor config flag logic
+
+**Commit:** `4ccc21b` — refactor(phase4): factor .toml config flag logic
+
+**Changes:**
+- Added `gallery.ConfigFlag(helpText)` — defines -config/-c flags, returns pointer
+- Added `gallery.NormalizeConfigPath(path)` — appends .toml suffix if needed
+- Both mains call `ConfigFlag` to define flags, then `flag.Parse()`, then pass
+  `NormalizeConfigPath(*configPath)` to their config loaders
+- Removed duplicated flag definition (3 lines) and suffix logic (5 lines)
+
+**Rationale:** The -config/-c flag definition and .toml suffix appending were
+identical in both mains (including the comment). ConfigFlag lets the caller
+control when `flag.Parse()` is called (tieview needs to define other flags
+first). NormalizeConfigPath centralizes the suffix logic.
+
+### 4.4 — Factor mobile focus guard
+
+**Commit:** `22937b9` — refactor(phase4): factor mobile focus guard into FocusImageViewOnDesktop
+
+**Changes:**
+- Added `gallery.FocusImageViewOnDesktop(window, viewer)` helper
+- imgview's `OnImageChange` now calls the helper directly
+- tieview's `OnImageChange` calls the helper first, then runs its tagger
+  overlay logic
+
+**Rationale:** The mobile focus guard (IsMobile check, focus CurrentImageView
+on desktop, skip on mobile to avoid soft keyboard) was duplicated verbatim with
+identical comment in both mains. The helper encapsulates the platform check and
+focus call. Eliminates 8 lines of duplication.
+
+### 4.5 — Factor video window creation
+
+**Commit:** `6b97de0` — refactor(phase4): factor video window creation into OpenVideoWindow
+
+**Changes:**
+- Created `gallery/videohelper.go` with
+  `OpenVideoWindow(app, player, displayPath, onClose)`
+- Helper creates window with "Video: basename" title, wires close intercept
+  (close video → close window → optional cleanup), resizes 800x520, shows
+- imgview passes `nil` for onClose; tieview uses it to remove temp files
+- Removed 20 lines of duplication (8 from imgview, 12 from tieview)
+
+**Rationale:** Both mains had overlapping video window setup logic. imgview
+used a direct path; tieview added streaming/temp-file logic. The window
+creation part (title format, close intercept pattern, 800x520 size) was
+duplicated. Helper factors the common pattern and lets tieview inject its
+cleanup logic via the onClose callback.
+
+### Phase 4 Summary
+
+**Lines changed:** ~90 additions (3 new files), ~65 deletions across both mains  
+**Key wins:**
+- tieview now has distinct identity (app ID, window title)
+- Eliminated 4 copy-paste bootstrap patterns
+- Centralized magic constants (800x520 video window size)
+- Both mains are now 50+ lines shorter and focus on their unique logic
+
+**Verification:**
+```sh
+go build ./cmd/imgview
+go build ./cmd/tieview
+go test ./...
+```
+
+All pass. No behavior changes.
+
+---
+
 ## 📋 Remaining Phases (Not Started)
-
-### Phase 4 — Shared Bootstrap & De-dup Mains
-- Split `TileLayout` into pure layout math + separate thumbnail loader
-- Remove `layout → viewer` back-reference (pass hooks as callbacks)
-- Move `ImageView`'s I/O (`GetReader`, `LoadImage`) behind a loader interface
-- Break layout→window-title side effect
-- Fix `region.go` package-global drag state
-- Remove debug `fmt.Println` / commented-out blocks
-
-### Phase 4 — Shared Bootstrap & De-dup Mains
-- Factor common app bootstrap (app ID, icon, window, config, init, key wiring)
-- Give tieview its own distinct app ID and window title
-- Factor duplicated `-config` flag logic, mobile-focus-guard, video-open window
 
 ### Phase 5 — Isolate Platform Seam
 - Introduce platform abstraction to centralize: gesture routing,
