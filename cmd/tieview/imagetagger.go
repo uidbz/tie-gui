@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"slices"
-	"sort"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -39,10 +38,6 @@ type imageTagger struct {
 	// OnNewTag can append and refresh the available list without a round-trip.
 	allTags []string
 
-	// favoriteTags tracks which tags are starred (in the tie "tags"/"favorite"
-	// relation). Updated locally on every star toggle; persisted to tie.
-	favoriteTags map[string]bool
-
 	ts    *tagselection.TagSelection
 	Panel fyne.CanvasObject // embed into viewer.Content as a stack overlay layer
 
@@ -55,11 +50,12 @@ type imageTagger struct {
 // after the tag list has been fetched from tie to populate the panel.
 func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	it := &imageTagger{
-		tc:           tc,
-		favoriteTags: make(map[string]bool),
+		tc: tc,
 	}
 	it.ts = tagselection.NewTagSelection(window)
 	it.ts.ShowStars = true // must be set before the widget is first rendered
+	// ShowIncludeExclude defaults to false — applied tags have no include/exclude
+	// distinction, so the checkbox is hidden in the tagger context.
 	it.ts.SetListLabel("Favorites")
 	// Cap the favorites list so the panel doesn't grow taller than the screen
 	// when there are many tags. The search box reaches all tags regardless.
@@ -67,12 +63,11 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	// Cap the applied-tags list too.
 	it.ts.SetSelectedMaxRows(4)
 
-	// OnSelectedChanged fires when the selected list changes (add, remove, or
-	// include/exclude checkbox toggle). We use the union of included and
-	// excluded tags as the "applied" set: the checkbox has no meaningful
-	// distinction in the tagging context.
+	// OnSelectedChanged fires when the selected list changes (add or remove).
 	it.ts.OnSelectedChanged = func() {
 		included, excluded := it.ts.SelectedTags()
+		// In tagger mode there's no include/exclude checkbox (ShowIncludeExclude=false),
+		// but SelectedTags() still returns the split for API consistency. Union them.
 		all := make([]string, 0, len(included)+len(excluded))
 		all = append(all, included...)
 		all = append(all, excluded...)
@@ -94,23 +89,30 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	}
 
 	// OnStar fires when the user clicks the ☆/★ button on a tag in the
-	// quick-pick list or search results. Toggle the tie ("tags","favorite")
-	// relation and rebuild the favorites quick-pick list so only starred tags
-	// appear there.
+	// quick-pick list or search results. Update the starred set, persist to
+	// tie, and rebuild the quick-pick list so only starred tags appear there.
+	// On network failure, rolls back the optimistic UI update.
 	it.ts.OnStar = func(tag string, isStarred bool) {
-		it.favoriteTags[tag] = isStarred
-		sl := it.starredList()
-		// Rebuild the quick-pick list (starred tags only) and sync ☆/★ state.
-		it.ts.SetFavoritesWithStars(sl)
+		// Optimistically update UI
+		it.ts.ToggleStar(tag, isStarred)
+		it.ts.SetFavoritesWithStars(it.ts.StarredTags())
+
 		go func() {
+			var err error
 			if isStarred {
-				if _, err := it.tc.Add("tags", "favorite", tag); err != nil {
-					fmt.Println("imageTagger: error starring tag:", tag, err)
-				}
+				_, err = it.tc.Add("tags", "favorite", tag)
 			} else {
-				if _, err := it.tc.Delete("tags", "favorite", tag); err != nil {
-					fmt.Println("imageTagger: error unstarring tag:", tag, err)
-				}
+				_, err = it.tc.Delete("tags", "favorite", tag)
+			}
+			if err != nil {
+				// Roll back the optimistic update on the UI goroutine
+				fyne.Do(func() {
+					it.ts.ToggleStar(tag, !isStarred) // reverse the toggle
+					it.ts.SetFavoritesWithStars(it.ts.StarredTags())
+					// TODO: Show error dialog to user (requires window reference)
+					fmt.Printf("imageTagger: failed to %s tag %q: %v\n",
+						map[bool]string{true: "star", false: "unstar"}[isStarred], tag, err)
+				})
 			}
 		}()
 	}
@@ -139,7 +141,7 @@ func (it *imageTagger) SetAllTags(tags []string) {
 		it.ts.AddTag(tag)
 	}
 	// Quick-pick shows only starred tags; search reaches everything else.
-	it.ts.SetFavoritesWithStars(it.starredList())
+	it.ts.SetFavoritesWithStars(it.ts.StarredTags())
 }
 
 // SetFavoriteTags records which tags are currently starred in the tie
@@ -147,24 +149,7 @@ func (it *imageTagger) SetAllTags(tags []string) {
 // the ☆/★ button state in the search dropdown.
 // Called by makeTagSidebar after every tc.Get("tags") fetch.
 func (it *imageTagger) SetFavoriteTags(tags []string) {
-	it.favoriteTags = make(map[string]bool, len(tags))
-	for _, t := range tags {
-		it.favoriteTags[t] = true
-	}
 	it.ts.SetFavoritesWithStars(tags)
-}
-
-// starredList returns the names of all currently starred tags in
-// deterministic (alphabetical) order.
-func (it *imageTagger) starredList() []string {
-	starred := make([]string, 0, len(it.favoriteTags))
-	for t, v := range it.favoriteTags {
-		if v {
-			starred = append(starred, t)
-		}
-	}
-	sort.Strings(starred)
-	return starred
 }
 
 // ShowForImage opens the panel for the image with hash. If the panel was
@@ -273,21 +258,47 @@ func (it *imageTagger) syncTags(newTags []string) {
 	}
 
 	go func() {
+		var failed []string
 		for _, tag := range added {
 			if _, err := it.tc.Add(hash, "tag", tag); err != nil {
-				fmt.Println("imageTagger: error adding tag:", tag, err)
+				fmt.Printf("imageTagger: error adding tag %q: %v\n", tag, err)
+				failed = append(failed, tag)
 				continue
 			}
 			// Register in the global "tags"/"all" index so the tag shows up
 			// in the sidebar and future image-tagger sessions.
 			if _, err := it.tc.Add("tags", "all", tag); err != nil {
-				fmt.Println("imageTagger: error registering tag:", tag, err)
+				fmt.Printf("imageTagger: error registering tag %q: %v\n", tag, err)
 			}
 		}
 		for _, tag := range removed {
 			if _, err := it.tc.Delete(hash, "tag", tag); err != nil {
-				fmt.Println("imageTagger: error removing tag:", tag, err)
+				fmt.Printf("imageTagger: error removing tag %q: %v\n", tag, err)
+				failed = append(failed, tag)
 			}
+		}
+
+		// If any operations failed, re-fetch tags from tie to reconcile the UI.
+		if len(failed) > 0 {
+			row, err := it.tc.Get(hash)
+			if err != nil {
+				fmt.Printf("imageTagger: failed to reconcile after errors: %v\n", err)
+				return
+			}
+			trueTags := client.RowValues(row, "tag")
+			fyne.Do(func() {
+				if it.hash != hash {
+					return // stale: user navigated away
+				}
+				// Rebuild the selected list to match tie's ground truth.
+				it.ts.ClearSelected()
+				it.appliedTags = append([]string(nil), trueTags...)
+				for _, tag := range trueTags {
+					it.ts.AddSelected(tagselection.NewTagItemData(tag))
+				}
+				// TODO: Show error dialog to user (requires window reference)
+				fmt.Printf("imageTagger: reconciled after %d failed tag operations\n", len(failed))
+			})
 		}
 	}()
 }

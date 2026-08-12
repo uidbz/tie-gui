@@ -4,6 +4,7 @@ package tagselection
 import (
 	"image/color"
 	"slices"
+	"sort"
 	"strings"
 
 	"fyne.io/fyne/v2/theme"
@@ -428,8 +429,13 @@ type TagSelection struct {
 	// ShowStars controls whether the quick-pick (favorite) list items display
 	// a ☆/★ toggle button. Must be set before the widget is first rendered.
 	// The sidebar leaves this false; the image tagger sets it to true.
-	ShowStars  bool
-	starredSet map[string]bool // tags whose star button shows ★
+	ShowStars bool
+	// ShowIncludeExclude controls whether the selected-tag list items display
+	// an include/exclude checkbox. Must be set before the widget is first
+	// rendered. The sidebar sets this to true (for tag filtering); the image
+	// tagger leaves it false (applied tags have no include/exclude distinction).
+	ShowIncludeExclude bool
+	starredSet         map[string]bool // tags whose star button shows ★
 	tags       *trie.Trie
 	selectedList      *AutoExpandingList
 	favoriteList      *AutoExpandingList
@@ -492,7 +498,11 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 			return len(ts.selected)
 		},
 		func() fyne.CanvasObject {
-			return NewTagItem(true, false, ts)
+			// ShowIncludeExclude is read at CreateItem time (lazy), so setting
+			// it before the widget is displayed is enough. The sidebar uses
+			// true (filter with include/exclude); the tagger uses false
+			// (applied tags have no distinction).
+			return NewTagItem(ts.ShowIncludeExclude, false, ts)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			o.(*TagItem).SetData(ts.selected[i])
@@ -647,6 +657,32 @@ func (ts *TagSelection) SetFavoritesWithStars(tags []string) {
 	if ts.ShowStars && ts.search != nil {
 		ts.search.searchList.Refresh()
 	}
+}
+
+// ToggleStar updates the starred state for a tag and refreshes the UI.
+// Returns the new state (true if now starred, false if unstarred).
+func (ts *TagSelection) ToggleStar(tag string, starred bool) {
+	if ts.starredSet == nil {
+		ts.starredSet = make(map[string]bool)
+	}
+	ts.starredSet[tag] = starred
+	// Refresh both the quick-pick list and search results
+	ts.favoriteList.Refresh()
+	if ts.ShowStars && ts.search != nil {
+		ts.search.searchList.Refresh()
+	}
+}
+
+// StarredTags returns a sorted list of all currently starred tags.
+func (ts *TagSelection) StarredTags() []string {
+	starred := make([]string, 0, len(ts.starredSet))
+	for t, v := range ts.starredSet {
+		if v {
+			starred = append(starred, t)
+		}
+	}
+	sort.Strings(starred)
+	return starred
 }
 
 func (ts *TagSelection) AddSelected(tid *TagItemData) {

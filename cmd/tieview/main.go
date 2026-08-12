@@ -231,6 +231,8 @@ func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Gallery, tc *cl
 // sync with the sidebar's tag list without a separate network request.
 func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID), tagger *imageTagger) (*tagselection.TagSelection, func()) {
 	ts := tagselection.NewTagSelection(window)
+	// Sidebar uses include/exclude filtering, so show the checkbox.
+	ts.ShowIncludeExclude = true
 
 	// allTags and allFavorites hold the full unfiltered lists from the most
 	// recent tag fetch. All reads and writes happen on the UI goroutine
