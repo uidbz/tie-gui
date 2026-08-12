@@ -189,11 +189,7 @@ func main() {
 	}
 
 	viewer.OnImageChange = func(info *gallery.ImageInfo) {
-		// Focusing the image view drives keyboard navigation on desktop, but on
-		// mobile it summons the soft keyboard (the view is Focusable). Skip it.
-		if !fyne.CurrentDevice().IsMobile() {
-			myWindow.Canvas().Focus(viewer.CurrentImageView)
-		}
+		gallery.FocusImageViewOnDesktop(myWindow, viewer)
 	}
 
 	myWindow.SetContent(viewer.Content)

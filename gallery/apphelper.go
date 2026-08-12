@@ -35,3 +35,15 @@ func NormalizeConfigPath(path string) string {
 	}
 	return path
 }
+
+// FocusImageViewOnDesktop focuses the gallery's CurrentImageView on desktop
+// devices, but skips it on mobile (where focusing summons the soft keyboard).
+// This factors the mobile focus guard pattern duplicated in both mains.
+// Call this from OnImageChange handlers.
+func FocusImageViewOnDesktop(window fyne.Window, viewer *Gallery) {
+	// Focusing the image view drives keyboard navigation on desktop, but on
+	// mobile it summons the soft keyboard (the view is Focusable). Skip it.
+	if !fyne.CurrentDevice().IsMobile() {
+		window.Canvas().Focus(viewer.CurrentImageView)
+	}
+}

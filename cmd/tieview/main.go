@@ -134,11 +134,7 @@ func main() {
 	// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
 
 	viewer.OnImageChange = func(info *gallery.ImageInfo) {
-		// Focusing the image view drives keyboard navigation on desktop, but on
-		// mobile it summons the soft keyboard (the view is Focusable). Skip it.
-		if !fyne.CurrentDevice().IsMobile() {
-			myWindow.Canvas().Focus(viewer.CurrentImageView)
-		}
+		gallery.FocusImageViewOnDesktop(myWindow, viewer)
 		// Overlay the tag panel on top of the image view. ChangeImage already
 		// set Content.Objects to [CurrentImage]; append the taggerOverlay so
 		// the panel can be toggled without rebuilding the content stack.
