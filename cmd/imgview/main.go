@@ -141,15 +141,7 @@ func main() {
 					return
 				}
 				fyne.Do(func() {
-					videoWindow := myApp.NewWindow("Video: " + filepath.Base(t.Info.Path))
-					video := mpvplayer.NewVideo(player)
-					videoWindow.SetCloseIntercept(func() {
-						video.Close()
-						videoWindow.Close()
-					})
-					videoWindow.SetContent(video)
-					videoWindow.Resize(fyne.NewSize(800, 520))
-					videoWindow.Show()
+					gallery.OpenVideoWindow(myApp, player, t.Info.Path, nil)
 				})
 			}()
 		default:

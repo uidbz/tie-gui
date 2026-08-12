@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -361,18 +360,10 @@ func openTieVideo(a fyne.App, info *gallery.ImageInfo) {
 	}
 
 	fyne.Do(func() {
-		title := "Video: " + filepath.Base(info.Path)
-		w := a.NewWindow(title)
-		v := mpvplayer.NewVideo(player)
-		w.SetCloseIntercept(func() {
-			v.Close()
-			w.Close()
-			if tmpFile != "" {
-				os.Remove(tmpFile)
-			}
-		})
-		w.SetContent(v)
-		w.Resize(fyne.NewSize(800, 520))
-		w.Show()
+		var onClose func()
+		if tmpFile != "" {
+			onClose = func() { os.Remove(tmpFile) }
+		}
+		gallery.OpenVideoWindow(a, player, info.Path, onClose)
 	})
 }
