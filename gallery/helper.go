@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/disintegration/imaging"
+	"github.com/dsoprea/go-exif/v3"
 	"github.com/h2non/filetype"
-	"github.com/rwcarlsen/goexif/exif"
 )
 
 func ScaleImage(img image.Image, w int) (scaledImage image.Image) {
@@ -52,17 +52,28 @@ func Decode(reader io.ReadSeeker) (image.Image, string, error) {
 }
 
 func getOrientation(reader io.Reader) string {
-	x, err := exif.Decode(reader)
+	// Read data into buffer since dsoprea/go-exif needs byte slice
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return "1"
 	}
-	if x != nil {
-		orient, err := x.Get(exif.Orientation)
-		if err != nil {
-			return "1"
-		}
-		if orient != nil {
-			return orient.String()
+
+	// Search for and extract EXIF data
+	rawExif, err := exif.SearchAndExtractExif(data)
+	if err != nil {
+		return "1"
+	}
+
+	// Parse EXIF tags into flat list
+	entries, _, err := exif.GetFlatExifData(rawExif, nil)
+	if err != nil {
+		return "1"
+	}
+
+	// Find orientation tag (0x0112 in IFD0)
+	for _, entry := range entries {
+		if entry.TagName == "Orientation" {
+			return entry.FormattedFirst
 		}
 	}
 
