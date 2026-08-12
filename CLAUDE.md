@@ -7,6 +7,14 @@
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tieview/` | tie-network image viewer entry point |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
+| `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
+| `gallery/imageview.go` | Single-image display widget |
+| `gallery/imageinfo.go` | Per-item data model (extracted from tilelayout.go in Phase 1) |
+| `gallery/helper.go` | File-type detection utilities (extracted from imageview.go in Phase 1) |
+| `gallery/apphelper.go` | Shared app bootstrap helpers (Phase 4) |
+| `gallery/videohelper.go` | Video window creation helpers (Phase 4) |
+| `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) |
+| `gallery/extension.go` | Extension interface documentation (Phase 6) |
 | `tagselection/` | Tag-picker widget used by tieview sidebar |
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
 | `mpvplayer/` | libmpv video player window |
@@ -125,20 +133,22 @@ preventing layout reflow as thumbnails load.
 - `Content *canvas.Image` — the actual rendered image (`ScaleMode = Fastest`, `FillMode = Contain`)
 - `Info *ImageInfo` — metadata and reader
 
-### `gallery.ImageInfo` (`gallery/tilelayout.go`)
+### `gallery.ImageInfo` (`gallery/imageinfo.go`)
 - `Width, Height int` — pre-stored original dimensions (0 = unknown, use thumbnail dims)
 - `CustomReader CustomReader` — tie or archive reader
 - `OnOpen func()` — if non-nil, replaces default image display (used for directories)
 - `ThumbnailIsScaled bool` — set when thumbnail is already at tileWidth*2
 
-### `gallery.Viewer` (`gallery/imageviewer.go`)
+### `gallery.Gallery` (`gallery/gallery.go`)
+- Renamed from `Viewer` in Phase 1 refactoring
 - `imageFiles []*ImageInfo` — full list for the current gallery source
 - `currentPath string` — absolute path of the currently open directory
 - `isFullscreen bool` — tracks fullscreen state; toggled by `ToggleFullscreen()`
 - `Thumbnailer Thumbnailer` — if non-nil, used instead of local disk cache
 - `OnImageChange func(*ImageInfo)` — called after `ChangeImage`
+- `Platform() *Platform` — accessor for mobile vs desktop behavior (Phase 5)
 
-### Optional `CustomReader` interfaces (`gallery/imageviewer.go`)
+### Optional `CustomReader` interfaces (`gallery/gallery.go`)
 | Interface | Method | Purpose |
 |-----------|--------|---------|
 | `Openable` | `Open()` | Directory entries: replaces tap with navigation |
@@ -151,7 +161,7 @@ preventing layout reflow as thumbnails load.
 ## Navigation and fullscreen
 
 ### Android back button
-Handled in `Viewer.KeyPress` (window-level `SetOnTypedKey` handler). On mobile,
+Handled in `Gallery.KeyPress` (window-level `SetOnTypedKey` handler). On mobile,
 `Hotkey{"Back", showGallery}` is registered during `InitHotkeys`. `TypedKey`
 on `ImageView` is intentionally not wired on mobile (suppresses soft keyboard).
 
@@ -381,6 +391,64 @@ Config file locations: `~/.config/imgview/config.toml` (Linux),
   are only read/written inside `fyne.Do` blocks, so no mutex is needed.
 - Network calls (`tc.Get`, `tc.Query`, `CoTagsForQueryExcludingInput`,
   `getlib.ReadFile`) must run in goroutines, never on the UI goroutine.
+
+---
+
+## Shared app helpers (`gallery/apphelper.go`, Phase 4)
+
+Phase 4 refactoring factored common bootstrap code from both mains into shared
+helpers:
+
+- **`NewApp(appID, windowTitle, iconData)`** — creates Fyne app with ID, icon,
+  and window. Eliminates copy-pasted 3-line bootstrap.
+- **`ConfigFlag(helpText)`** — defines `-config`/`-c` flags and returns pointer.
+  Caller controls when `flag.Parse()` is called.
+- **`NormalizeConfigPath(path)`** — appends `.toml` suffix if needed.
+- **`FocusImageViewOnDesktop(window, viewer)`** — focuses image view on desktop,
+  skips on mobile (soft keyboard avoidance). Used in `OnImageChange` handlers.
+- **`OpenVideoWindow(app, player, displayPath, onClose)`** — creates video
+  player window with standard layout (800x520, close intercept, optional
+  cleanup). Used by both mains for consistent video window behavior.
+
+## Platform abstraction (`gallery/platform.go`, Phase 5)
+
+Phase 5 refactoring centralized ~10 scattered `IsMobile()` checks into a single
+platform abstraction. The `Platform` struct wraps device detection and provides
+semantic methods for platform-specific behavior:
+
+**Focus & keyboard routing:**
+- `ShouldFocusImageView()` — focus image view for keyboard nav (desktop only)
+- `ShouldHandleHotkeysAtWindowLevel()` — route keys to window handler (mobile)
+- `ShouldRegisterBackButton()` — register Android/iOS Back key (mobile)
+
+**Fullscreen management:**
+- `ShouldAutoFullscreen()` — auto-fullscreen on image open (mobile)
+- `ShouldExitFullscreenOnGalleryView()` — exit fullscreen on gallery view (mobile)
+
+**GPU & gesture optimization:**
+- `ShouldDownscaleImages()` — downscale for GPU memory (mobile)
+- `UsesMobileDragGestures()` — pinch-zoom, momentum scroll (mobile)
+- `ShouldUseTapForAction()` — prefer tap over swipe (desktop)
+
+Platform detection happens once at `Gallery` creation via `NewPlatform()`. All
+platform-specific logic routes through `viewer.Platform()` accessor. This is a
+**runtime seam** (unified codebase, no build tags), not compile-time.
+
+## Extension API (`gallery/extension.go`, Phase 6)
+
+Phase 6 added comprehensive documentation of the stable extension contract
+between the gallery library and applications. See `gallery/extension.go` for
+full documentation of:
+
+- Core interface: `CustomReader`
+- Optional behaviors: `Openable`, `VideoFile`, `VideoStreamer`, `DimensionProvider`
+- Thumbnailing: `Thumbnailer`
+- Callbacks: `OnImageChange`, `OnTapped`, `OnSwipeUp`, etc.
+
+The Gallery struct is now organized with extension points clearly separated from
+internal wiring. See struct definition in `gallery/gallery.go` for the three
+sections: Extension API (Callbacks), Extension API (Public Fields), and
+Internal Wiring.
 
 ---
 
