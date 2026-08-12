@@ -235,7 +235,7 @@ func (iv *ImageView) LoadImage() error {
 // leaves headroom for zooming in while keeping the texture a few MB. Desktop
 // (and any non-decoded case) is left untouched.
 func (iv *ImageView) downscaleForMobile(img image.Image) image.Image {
-	if !fyne.CurrentDevice().IsMobile() {
+	if !iv.platform.ShouldDownscaleImages() {
 		return img
 	}
 	screen := fyne.Max(iv.size.Width, iv.size.Height)
@@ -272,7 +272,7 @@ func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 	if !iv.info.IsDraggable {
 		return
 	}
-	if fyne.CurrentDevice().IsMobile() {
+	if iv.platform.UsesMobileDragGestures() {
 		iv.draggedMobile(drag)
 		return
 	}
@@ -290,7 +290,7 @@ func (iv *ImageView) Dragged(drag *fyne.DragEvent) {
 }
 
 func (iv *ImageView) DragEnd() {
-	if fyne.CurrentDevice().IsMobile() {
+	if iv.platform.UsesMobileDragGestures() {
 		iv.dragEndMobile()
 		return
 	}

@@ -95,7 +95,7 @@ func (viewer *Gallery) KeyPress(key *fyne.KeyEvent) {
 	// On mobile the image view is not focused (to suppress the soft keyboard),
 	// so image-viewer hotkeys (including the Back key) never reach TypedKey.
 	// Handle them here instead.
-	if fyne.CurrentDevice().IsMobile() {
+	if viewer.platform.ShouldHandleHotkeysAtWindowLevel() {
 		for _, x := range viewer.hotkeys {
 			if key.Name == x.Name {
 				x.Function()
@@ -386,7 +386,7 @@ func (viewer *Gallery) InitHotkeys() {
 		}})
 	}
 	showGallery := func() {
-		if fyne.CurrentDevice().IsMobile() && viewer.isFullscreen {
+		if viewer.platform.ShouldExitFullscreenOnGalleryView() && viewer.isFullscreen {
 			viewer.isFullscreen = false
 			viewer.window.SetFullScreen(false)
 		}
@@ -422,7 +422,7 @@ func (viewer *Gallery) InitHotkeys() {
 	// On mobile the Android/iOS back button sends key name "Back" to the
 	// focused widget (ImageView). Map it to the same show-gallery action so
 	// the user can return to the grid without a keyboard.
-	if fyne.CurrentDevice().IsMobile() {
+	if viewer.platform.ShouldRegisterBackButton() {
 		add(Hotkey{"Back", showGallery})
 	}
 	for _, x := range bindings.Quit {
@@ -492,7 +492,7 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 	}
 	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
 	viewer.Content.Refresh()
-	if fyne.CurrentDevice().IsMobile() && !viewer.isFullscreen {
+	if viewer.platform.ShouldAutoFullscreen() && !viewer.isFullscreen {
 		viewer.isFullscreen = true
 		viewer.window.SetFullScreen(true)
 	}

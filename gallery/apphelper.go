@@ -43,7 +43,7 @@ func NormalizeConfigPath(path string) string {
 func FocusImageViewOnDesktop(window fyne.Window, viewer *Gallery) {
 	// Focusing the image view drives keyboard navigation on desktop, but on
 	// mobile it summons the soft keyboard (the view is Focusable). Skip it.
-	if !fyne.CurrentDevice().IsMobile() {
+	if viewer.platform.ShouldFocusImageView() {
 		window.Canvas().Focus(viewer.CurrentImageView)
 	}
 }
