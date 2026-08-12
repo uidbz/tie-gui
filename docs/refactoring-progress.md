@@ -413,12 +413,89 @@ All pass. No behavior changes.
 
 ---
 
-## 📋 Remaining Phases (Not Started)
+## ✅ Phase 5 — Isolate Platform Seam (Complete)
 
-### Phase 5 — Isolate Platform Seam
-- Introduce platform abstraction to centralize: gesture routing,
-  fullscreen-on-open, soft-keyboard suppression, Android Back key
-- Replace scattered `IsMobile()` checks with calls into platform seam
+Completed in three incremental commits addressing the scattered IsMobile()
+checks flagged in the roadmap. Platform-specific behavior (mobile vs desktop)
+is now centralized in a single Platform abstraction instead of ~10 inline
+device checks.
+
+### 5.1 — Create Platform abstraction
+
+**Commit:** `79c6699` — refactor(phase5): create Platform abstraction for mobile vs desktop
+
+**Changes:**
+- Created `gallery/platform.go` with Platform struct and semantic methods:
+  - `ShouldFocusImageView()` — focus suppression (soft keyboard avoidance)
+  - `ShouldHandleHotkeysAtWindowLevel()` — keyboard routing
+  - `ShouldRegisterBackButton()` — Android/iOS back button
+  - `ShouldAutoFullscreen()`, `ShouldExitFullscreenOnGalleryView()` — fullscreen management
+  - `ShouldDownscaleImages()` — GPU memory optimization
+  - `UsesMobileDragGestures()` — gesture routing
+  - `ShouldUseTapForAction()` — tap vs swipe preference
+- Added `platform *Platform` field to Gallery and ImageView structs
+- Wired through NewGallery and NewImageView constructors
+- NewPlatform() gracefully handles test environments (defaults to desktop)
+
+**Rationale:** This is a runtime seam (per roadmap: unified codebase), not
+compile-time. Platform detection happens once at Gallery creation and is
+propagated to ImageView instances. Each method name expresses intent instead
+of requiring readers to reverse-engineer the meaning of `!IsMobile()` in
+context.
+
+### 5.2 — Replace checks in gallery package
+
+**Commit:** `af1f63b` — refactor(phase5): replace IsMobile checks in gallery package
+
+**Changes:**
+- **gallery/apphelper.go:** FocusImageViewOnDesktop uses `ShouldFocusImageView()`
+- **gallery/imageview.go:** downscaleForMobile uses `ShouldDownscaleImages()`,
+  Dragged/DragEnd use `UsesMobileDragGestures()`
+- **gallery/gallery.go:** KeyPress uses `ShouldHandleHotkeysAtWindowLevel()`,
+  InitHotkeys uses `ShouldRegisterBackButton()`, showGallery uses
+  `ShouldExitFullscreenOnGalleryView()`, ChangeImage uses `ShouldAutoFullscreen()`
+
+**Rationale:** Replaced 8 scattered `fyne.CurrentDevice().IsMobile()` checks
+with semantic method calls. Each call site now reads as intent (e.g.
+"should register back button?") instead of a device check plus reader-inferred
+logic.
+
+### 5.3 — Replace checks in cmd mains
+
+**Commit:** `93dad6e` — refactor(phase5): replace IsMobile checks in cmd mains
+
+**Changes:**
+- Added `Platform()` accessor to Gallery for external access
+- **cmd/tieview/main.go:** Tagger tap/swipe choice uses
+  `ShouldUseTapForAction()`, OnHide focus uses `ShouldFocusImageView()`
+- **cmd/imgview/main.go:** Folder picker check uses `IsMobile()`
+
+**Rationale:** The last 3 IsMobile() checks in project code (excluding
+third_party) now route through the Platform abstraction. The Platform()
+accessor lets mains query platform behavior without exposing the internal
+field.
+
+### Phase 5 Summary
+
+**Lines changed:** ~120 additions (1 new file), ~10 net line change (method calls replace checks)  
+**Key wins:**
+- Centralized ~10 scattered IsMobile() checks into 1 platform abstraction
+- Semantic method names express intent (ShouldAutoFullscreen vs bare IsMobile)
+- Platform detection happens once, not per check
+- Runtime seam maintains unified codebase (no build tags, no file splits)
+
+**Verification:**
+```sh
+go build ./cmd/imgview
+go build ./cmd/tieview
+go test ./...
+```
+
+All pass. No behavior changes.
+
+---
+
+## 📋 Remaining Phases (Not Started)
 
 ### Phase 6 — Library API Hardening
 - Document the `gallery` extension surface as the stable contract
