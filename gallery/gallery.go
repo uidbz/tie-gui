@@ -36,6 +36,7 @@ type Gallery struct {
 	layout           *TileLayout
 	window           fyne.Window
 	app              fyne.App
+	platform         *Platform
 	currentIndex     int
 	CurrentImageView *ImageView
 	currentPath      string
@@ -70,14 +71,15 @@ type Gallery struct {
 
 func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Gallery {
 	iv := &Gallery{
-		app:     app,
-		window:  window,
-		Content: container.NewStack([]fyne.CanvasObject{}...),
+		app:      app,
+		window:   window,
+		platform: NewPlatform(),
+		Content:  container.NewStack([]fyne.CanvasObject{}...),
 		// CurrentImage: container.NewBorder(nil, nil, nil, rect, container.New(&ImageLayout{}, []fyne.CanvasObject{}...)),
-		CurrentImage:  container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
-		cache:         make(map[string]*ImageView),
-		config:        config,
-		tileOnclick:   tileOnclick,
+		CurrentImage: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
+		cache:        make(map[string]*ImageView),
+		config:       config,
+		tileOnclick:  tileOnclick,
 		refreshThumbs: false,
 	}
 
@@ -282,7 +284,7 @@ func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
 		if info.OnDoubleTapped != nil {
 			info.OnDoubleTapped = viewer.ToggleFullscreen
 		}
-		img := NewImageView(info, viewer.window.Canvas().Size(), true, viewer.window, viewer.window.Canvas().Focus)
+		img := NewImageView(info, viewer.window.Canvas().Size(), true, viewer.window, viewer.window.Canvas().Focus, viewer.platform)
 		// Update window title when image size changes (zoom, window resize).
 		// Called from ImageLayout.Layout and ImageView zoom methods, which
 		// already run on the UI thread.

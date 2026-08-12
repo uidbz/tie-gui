@@ -47,6 +47,7 @@ type ImageView struct {
 	w                 fyne.Window
 	container         *fyne.Container
 	changeFn          func()
+	platform          *Platform
 
 	// nextFn/prevFn page to the adjacent image; wired by Viewer.ChangeImage so
 	// a mobile swipe/flick can navigate the same way the keyboard hotkeys do.
@@ -140,7 +141,7 @@ func (iv *ImageView) OriginalSize() {
 	iv.changeFn()
 }
 
-func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Window, focusFunc func(fyne.Focusable)) *ImageView {
+func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Window, focusFunc func(fyne.Focusable), platform *Platform) *ImageView {
 	iv := &ImageView{
 		focus:           focusFunc,
 		zoom:            2,
@@ -150,6 +151,7 @@ func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Windo
 		newSize:         true,
 		refreshBilinear: time.NewTimer(100 * time.Millisecond),
 		touches:         make(map[int]fyne.Position),
+		platform:        platform,
 	}
 	if err := iv.LoadImage(); err != nil {
 		// A failed decode leaves fyneImage nil and the renderer's Layout

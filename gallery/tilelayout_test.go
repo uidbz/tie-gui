@@ -67,7 +67,7 @@ func (errReader) Path() string { return "err" }
 // fyneImage.Resize after a failed decode).
 func TestNewImageViewBadImage(t *testing.T) {
 	info := NewImageInfoCustomReader(0, errReader{})
-	iv := NewImageView(info, fyne.NewSize(100, 100), true, nil, nil)
+	iv := NewImageView(info, fyne.NewSize(100, 100), true, nil, nil, NewPlatform())
 	if iv.fyneImage == nil {
 		t.Fatal("fyneImage is nil after failed decode")
 	}
