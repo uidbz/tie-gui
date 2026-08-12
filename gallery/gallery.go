@@ -21,7 +21,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-type Viewer struct {
+type Gallery struct {
 	Content       *fyne.Container
 	CurrentImage  *fyne.Container
 	CustomReaders []CustomReader
@@ -69,8 +69,8 @@ type Viewer struct {
 	isFullscreen bool
 }
 
-func NewViewer(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Viewer {
-	iv := &Viewer{
+func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Gallery {
+	iv := &Gallery{
 		app:     app,
 		window:  window,
 		Content: container.NewStack([]fyne.CanvasObject{}...),
@@ -85,7 +85,7 @@ func NewViewer(app fyne.App, window fyne.Window, config Config, tileOnclick func
 	return iv
 }
 
-func (viewer *Viewer) KeyPress(key *fyne.KeyEvent) {
+func (viewer *Gallery) KeyPress(key *fyne.KeyEvent) {
 	for _, x := range viewer.layout.hotkeys {
 		if key.Name == x.Name {
 			x.Function()
@@ -103,7 +103,7 @@ func (viewer *Viewer) KeyPress(key *fyne.KeyEvent) {
 	}
 }
 
-func (viewer *Viewer) ShowImageDir(path string) {
+func (viewer *Gallery) ShowImageDir(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
 	viewer.currentPage = 0
 	viewer.layout.offset = 0
@@ -112,7 +112,7 @@ func (viewer *Viewer) ShowImageDir(path string) {
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *Viewer) ShowImageArchive(path string) {
+func (viewer *Gallery) ShowImageArchive(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
 	viewer.currentPage = 0
 	viewer.layout.offset = 0
@@ -121,7 +121,7 @@ func (viewer *Viewer) ShowImageArchive(path string) {
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *Viewer) Init() {
+func (viewer *Gallery) Init() {
 	viewer.layout = NewTileLayout(viewer.config, viewer.window, viewer.app, viewer, viewer.tileOnclick)
 	empty := make([]fyne.CanvasObject, 0)
 	viewer.gallery = container.New(viewer.layout, empty...)
@@ -133,7 +133,7 @@ func (viewer *Viewer) Init() {
 // ToggleSidebar hides the sidebar when it is visible, and restores it when
 // it is hidden. It rebuilds the gallery layout immediately so the change
 // takes effect without a restart.
-func (viewer *Viewer) ToggleSidebar() {
+func (viewer *Gallery) ToggleSidebar() {
 	if viewer.Sidebar != nil {
 		viewer.sidebarStored = viewer.Sidebar
 		viewer.Sidebar = nil
@@ -144,7 +144,7 @@ func (viewer *Viewer) ToggleSidebar() {
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *Viewer) CreateView() {
+func (viewer *Gallery) CreateView() {
 	var mainPage fyne.CanvasObject
 	if viewer.scroll == nil {
 		viewer.scroll = container.NewScroll(viewer.gallery)
@@ -182,7 +182,7 @@ func (viewer *Viewer) CreateView() {
 	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, bottom, nil, nil, mainPage)}
 }
 
-func (viewer *Viewer) LoadGallery() {
+func (viewer *Gallery) LoadGallery() {
 	viewer.loading.Wait()
 	go func() {
 		viewer.layout.PlaceTiles(viewer.imageFiles)
@@ -217,18 +217,18 @@ func (viewer *Viewer) LoadGallery() {
 	viewer.galleryLoaded = true
 }
 
-func (viewer *Viewer) CurrentImageInfo() *ImageInfo {
+func (viewer *Gallery) CurrentImageInfo() *ImageInfo {
 	return viewer.CurrentImageView.info
 }
 
 // ImageCount reports how many images the viewer currently holds.
-func (viewer *Viewer) ImageCount() int {
+func (viewer *Gallery) ImageCount() int {
 	return len(viewer.imageFiles)
 }
 
 // RemoveItem removes info from the viewer's image list and fixes the order
 // indices of remaining items. Call ChangeGallery afterwards to refresh the UI.
-func (viewer *Viewer) RemoveItem(info *ImageInfo) {
+func (viewer *Gallery) RemoveItem(info *ImageInfo) {
 	for i, item := range viewer.imageFiles {
 		if item == info {
 			viewer.imageFiles = append(viewer.imageFiles[:i], viewer.imageFiles[i+1:]...)
@@ -240,7 +240,7 @@ func (viewer *Viewer) RemoveItem(info *ImageInfo) {
 	}
 }
 
-func (viewer *Viewer) ChangeGallery() {
+func (viewer *Gallery) ChangeGallery() {
 	// empty channel before changing page, then wait for workers to finish
 	for len(viewer.layout.imagesToLoad) > 0 {
 		<-viewer.layout.imagesToLoad
@@ -253,7 +253,7 @@ func (viewer *Viewer) ChangeGallery() {
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *Viewer) ChangePage(page int) {
+func (viewer *Gallery) ChangePage(page int) {
 	if page < 0 || page > viewer.maxPages-1 {
 		return
 	}
@@ -271,7 +271,7 @@ func (viewer *Viewer) ChangePage(page int) {
 	viewer.window.SetContent(viewer.Content)
 }
 
-func (viewer *Viewer) LoadImageToCache(info *ImageInfo) *ImageView {
+func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
 	if x, ok := viewer.cache[info.Path]; ok == false {
 		if viewer.OnTapped != nil {
 			info.OnTapped = viewer.OnTapped
@@ -300,7 +300,7 @@ func (viewer *Viewer) LoadImageToCache(info *ImageInfo) *ImageView {
 	}
 }
 
-func (viewer *Viewer) ToggleFullscreen() {
+func (viewer *Gallery) ToggleFullscreen() {
 	viewer.isFullscreen = !viewer.isFullscreen
 	viewer.CurrentImageView.fillWindow = false
 	viewer.window.SetFullScreen(viewer.isFullscreen)
@@ -308,7 +308,7 @@ func (viewer *Viewer) ToggleFullscreen() {
 	viewer.Content.Refresh()
 }
 
-func (viewer *Viewer) RunCmdA() {
+func (viewer *Gallery) RunCmdA() {
 	cmd := strings.ReplaceAll(viewer.config.Image.CmdA, "$FILE", viewer.CurrentImageView.info.Path)
 	c := exec.Command("/bin/sh", "-c", cmd)
 	go func() {
@@ -320,7 +320,7 @@ func (viewer *Viewer) RunCmdA() {
 	}()
 }
 
-func (viewer *Viewer) SaveImage() {
+func (viewer *Gallery) SaveImage() {
 	if viewer.config.Image.SaveDir != "" {
 		info := viewer.CurrentImageView.info
 		if r, err := info.GetReader(); err == nil {
@@ -340,7 +340,7 @@ func (viewer *Viewer) SaveImage() {
 	}
 }
 
-func (viewer *Viewer) NextImage() *ImageInfo {
+func (viewer *Gallery) NextImage() *ImageInfo {
 	viewer.loading.Wait()
 	nextImg := viewer.currentIndex + 1
 	if nextImg == len(viewer.imageFiles) {
@@ -349,7 +349,7 @@ func (viewer *Viewer) NextImage() *ImageInfo {
 	return viewer.imageFiles[nextImg]
 }
 
-func (viewer *Viewer) PrevImage() *ImageInfo {
+func (viewer *Gallery) PrevImage() *ImageInfo {
 	viewer.loading.Wait()
 	nextImg := viewer.currentIndex - 1
 	if nextImg < 0 {
@@ -358,7 +358,7 @@ func (viewer *Viewer) PrevImage() *ImageInfo {
 	return viewer.imageFiles[nextImg]
 }
 
-func (viewer *Viewer) InitHotkeys() {
+func (viewer *Gallery) InitHotkeys() {
 	viewer.hotkeys = []Hotkey{}
 	bindings := viewer.config.Image
 
@@ -450,7 +450,7 @@ func (viewer *Viewer) InitHotkeys() {
 	}
 }
 
-func (viewer *Viewer) ChangeImage(info *ImageInfo) {
+func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 	if info.OnOpen != nil {
 		info.OnOpen()
 		return
@@ -489,12 +489,12 @@ func (viewer *Viewer) ChangeImage(info *ImageInfo) {
 	img.changeFn()
 }
 
-// func (viewer *Viewer) SetImage() {
+// func (viewer *Gallery) SetImage() {
 // 	viewer.window.SetContent(viewer.imageContainer)
 // 	viewer.window.Canvas().Focus(viewer.currentImage)
 // }
 
-func (viewer *Viewer) ReadImageDir(absolutePath string, selected *ImageInfo) {
+func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 
@@ -633,7 +633,7 @@ type DimensionProvider interface {
 	Dimensions() (width, height int)
 }
 
-func (viewer *Viewer) ReadCustom(readers []CustomReader) {
+func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 
@@ -661,7 +661,7 @@ func (viewer *Viewer) ReadCustom(readers []CustomReader) {
 // fetch, which runs in a goroutine. LoadGallery blocks until fetch and the
 // swap have completed. A nil result from fetch (e.g. after it logged an
 // error) leaves the current images untouched.
-func (viewer *Viewer) ReadCustomAsync(fetch func() []CustomReader) {
+func (viewer *Gallery) ReadCustomAsync(fetch func() []CustomReader) {
 	// Add before spawning the goroutine so LoadGallery's loading.Wait()
 	// actually blocks until the query results have been turned into images.
 	viewer.loading.Add(1)
@@ -676,7 +676,7 @@ func (viewer *Viewer) ReadCustomAsync(fetch func() []CustomReader) {
 	}()
 }
 
-func (viewer *Viewer) ReadImageArchive(zipFile string) {
+func (viewer *Gallery) ReadImageArchive(zipFile string) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 

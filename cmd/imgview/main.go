@@ -136,7 +136,7 @@ func main() {
 
 	config := gallery.LoadConfig(myWindow, *configPath)
 
-	viewer := gallery.NewViewer(myApp, myWindow, config, func(t *gallery.Tile) {
+	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		switch true {
 		case t.Info.InputIsDir:
 			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
@@ -229,7 +229,7 @@ func main() {
 // showFolderPicker presents an empty-state screen with a button that opens the
 // platform folder chooser. The chosen folder's images are loaded into the
 // viewer and the normal gallery view is shown.
-func showFolderPicker(win fyne.Window, viewer *gallery.Viewer) {
+func showFolderPicker(win fyne.Window, viewer *gallery.Gallery) {
 	var content fyne.CanvasObject
 	pick := widget.NewButtonWithIcon("Select folder", nil, func() {
 		dialog.ShowFolderOpen(func(dir fyne.ListableURI, err error) {

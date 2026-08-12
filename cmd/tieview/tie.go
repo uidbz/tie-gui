@@ -192,7 +192,7 @@ func classifyTieRow(row client.Row) tieRowKind {
 // none of the exclude tags, and replaces the viewer's gallery with the
 // results. Tagged image directories in the results become browsable
 // entries: opening one calls browseDir with the directory's UID.
-func readFromTie(viewer *gallery.Viewer, tc *client.TieClient, include, exclude []string, filter string, browseDir func(client.DirUID)) {
+func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude []string, filter string, browseDir func(client.DirUID)) {
 	if len(include) == 0 {
 		return
 	}

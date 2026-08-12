@@ -18,7 +18,7 @@ func (o openReader) Open()        { *o.opened = true }
 // ChangeImage must call OnOpen instead of displaying the entry as an image
 // (used for browsable directory entries in the gallery).
 func TestChangeImageOnOpen(t *testing.T) {
-	viewer := NewViewer(nil, nil, Config{}, nil)
+	viewer := NewGallery(nil, nil, Config{}, nil)
 	opened := false
 	viewer.ReadCustom([]CustomReader{openReader{&opened}})
 	if len(viewer.imageFiles) != 1 {

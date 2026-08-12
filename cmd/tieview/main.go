@@ -64,7 +64,7 @@ func main() {
 	// by toggling tagger.Panel without rebuilding the content stack.
 	taggerOverlay := container.NewBorder(nil, tagger.Panel, nil, nil)
 
-	viewer := gallery.NewViewer(myApp, myWindow, config, func(t *gallery.Tile) {
+	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		if t.Info.InputIsVideo {
 			go openTieVideo(myApp, t.Info)
 			return
@@ -207,7 +207,7 @@ func fileHostNames(c client.Config) []string {
 
 // makeSidebar builds the navigation sidebar: the first tab browses images
 // by tag, the second navigates the tie virtual filesystem.
-func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger) *container.AppTabs {
+func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger) *container.AppTabs {
 	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir, tagger)
 	return container.NewAppTabs(
 		container.NewTabItem("Tags", tagWidget),
@@ -229,7 +229,7 @@ func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Viewer, tc *cli
 // tagger, when non-nil, receives the full tag list via SetAllTags whenever
 // the tag list is (re-)loaded. This keeps the image-tagger search trie in
 // sync with the sidebar's tag list without a separate network request.
-func makeTagSidebar(window fyne.Window, viewer *gallery.Viewer, tc *client.TieClient, browseDir func(client.DirUID), tagger *imageTagger) (*tagselection.TagSelection, func()) {
+func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID), tagger *imageTagger) (*tagselection.TagSelection, func()) {
 	ts := tagselection.NewTagSelection(window)
 
 	// allTags and allFavorites hold the full unfiltered lists from the most

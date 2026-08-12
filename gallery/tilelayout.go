@@ -9,7 +9,6 @@ import (
 	stdraw "image/draw"
 	"image/jpeg"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -58,7 +57,7 @@ type TileLayout struct {
 	config           Config
 	window           fyne.Window
 	app              fyne.App
-	viewer           *Viewer
+	viewer           *Gallery
 	offset           int
 	currentlyLoading sync.WaitGroup
 	cachedTiles      map[string]*Tile
@@ -72,77 +71,14 @@ type Tile struct {
 	width     float32
 	height    float32
 	landscape bool
-	Viewer    *Viewer
+	Viewer    *Gallery
 	Info      *ImageInfo
 	tabFn     func(t *Tile)
 	nameLabel *widget.Label
 	layout    *TileLayout // reference for showLabels state
 }
 
-type ImageInfo struct {
-	Path        string
-	FullPath    string // Used to get path of zipFile
-	// DirPath is the primary sort key: the directory or container that this
-	// entry logically belongs to (subdir path, archive path, or parent dir).
-	DirPath     string
-	// DisplayName is the text shown below the tile (dirname for dirs, filename otherwise).
-	DisplayName string
-	// PreviewPaths holds up to 4 absolute image paths used to generate the
-	// directory composite thumbnail.
-	PreviewPaths      []string
-	ShowArchive       bool
-	CustomReader      CustomReader
-	OnTapped          func()
-	OnDoubleTapped    func()
-	OnTappedSecondary func()
-	// OnSwipeUp, when non-nil, is called when the user performs an upward
-	// swipe gesture on the image view (mobile only). Used instead of OnTapped
-	// on mobile to avoid conflicts with normal image interaction.
-	OnSwipeUp func()
-	// OnOpen, when non-nil, replaces the default image display when the
-	// entry is opened (tile tap, next/prev navigation) — e.g. to browse
-	// into a directory the entry represents. Wired automatically from
-	// CustomReader when it implements Openable.
-	OnOpen func()
-
-	// Width and Height are the pixel dimensions of the original image. When
-	// non-zero they are used for the placeholder tile's aspect ratio before
-	// the thumbnail blob has been fetched, preventing layout reflow.
-	Width  int
-	Height int
-
-	archiveName       string
-	archiveFile       fs.FS
-	order             int
-	InputIsArchive    bool
-	InputIsDir        bool
-	InputIsReader     bool
-	InputIsVideo      bool
-	IsZoomable        bool
-	IsDraggable       bool
-	ThumbnailIsScaled bool
-}
-
-func NewImageInfo(order int, path string) *ImageInfo {
-	return &ImageInfo{
-		Path:        path,
-		IsDraggable: true,
-		IsZoomable:  true,
-		order:       order,
-	}
-}
-
-func NewImageInfoCustomReader(order int, r CustomReader) *ImageInfo {
-	return &ImageInfo{
-		InputIsReader: true,
-		CustomReader:  r,
-		IsDraggable:   true,
-		IsZoomable:    true,
-		order:         order,
-	}
-}
-
-func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Viewer, tabFn func(t *Tile)) *TileLayout {
+func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gallery, tabFn func(t *Tile)) *TileLayout {
 	batchSize := 1024
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan *ImageInfo, batchSize)
@@ -395,32 +331,32 @@ func (layout *TileLayout) imageLoader() {
 	}
 }
 
-func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
+func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	// Video files: extract a frame thumbnail for both local and
 	// network-backed entries (the reader is seekable in both cases).
-	if context.InputIsVideo {
-		return layout.videoThumbnail(context)
+	if info.InputIsVideo {
+		return layout.videoThumbnail(info)
 	}
 
 	// Directory tiles: generate a 2×2 composite of up to 4 preview images.
 	// The in-memory tile cache (cachedTiles) prevents repeated generation
 	// within a session, so we skip the disk cache here.
-	if len(context.PreviewPaths) > 0 {
-		data := layout.makeDirectoryComposite(context.PreviewPaths)
-		context.ThumbnailIsScaled = true
+	if len(info.PreviewPaths) > 0 {
+		data := layout.makeDirectoryComposite(info.PreviewPaths)
+		info.ThumbnailIsScaled = true
 		return bytes.NewReader(data), nil
 	}
 
 	// A custom Thumbnailer (e.g. one backed by network storage) takes
 	// precedence over the local thumbnail directory.
 	if layout.viewer.Thumbnailer != nil {
-		return layout.viewer.Thumbnailer.GetThumbnail(context)
+		return layout.viewer.Thumbnailer.GetThumbnail(info)
 	}
 
 	var thumbnail string
 	var thumbnailDir string = layout.config.General.ThumbnailDir
 	var reader io.ReadSeeker
-	r, err := context.GetReader()
+	r, err := info.GetReader()
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +383,7 @@ func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error
 		if err != nil {
 			return nil, err
 		}
-		context.ThumbnailIsScaled = true
+		info.ThumbnailIsScaled = true
 		return reader, nil
 	} else {
 		err := os.MkdirAll(thumbnailDir, 0755)
@@ -468,13 +404,13 @@ func (layout *TileLayout) GetThumbnail(context *ImageInfo) (io.ReadSeeker, error
 					fmt.Println("Error writing thumbnail to:", thumbnail)
 				}
 			}
-			context.ThumbnailIsScaled = true
+			info.ThumbnailIsScaled = true
 
 			return bytes.NewReader(buf.Bytes()), nil
 		}
 	}
 
-	return context.GetReader()
+	return info.GetReader()
 }
 
 // makeDirectoryComposite generates a 2×2 grid thumbnail from up to 4 image
@@ -521,13 +457,13 @@ func (layout *TileLayout) makeDirectoryComposite(paths []string) []byte {
 // using ffmpeg, scales it to 2×tileWidth wide, and overlays a circular play
 // icon in the top-left corner. On any failure it falls back to the loading
 // placeholder.
-func (layout *TileLayout) videoThumbnail(context *ImageInfo) (io.ReadSeeker, error) {
+func (layout *TileLayout) videoThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	tileW := int(layout.config.General.TileWidth)
 
 	// Check disk cache before running ffmpeg.
-	cachePath := layout.videoThumbnailCachePath(context.Path)
+	cachePath := layout.videoThumbnailCachePath(info.Path)
 	if data, err := os.ReadFile(cachePath); err == nil && !layout.viewer.refreshThumbs {
-		context.ThumbnailIsScaled = true
+		info.ThumbnailIsScaled = true
 		return bytes.NewReader(data), nil
 	}
 
@@ -536,14 +472,14 @@ func (layout *TileLayout) videoThumbnail(context *ImageInfo) (io.ReadSeeker, err
 	// directly so libmpv can stream without downloading first.
 	var frame image.Image
 	tileW2 := tileW * 2
-	if context.InputIsReader {
-		if vs, ok := context.CustomReader.(VideoStreamer); ok && vs.StreamURL() != "" {
+	if info.InputIsReader {
+		if vs, ok := info.CustomReader.(VideoStreamer); ok && vs.StreamURL() != "" {
 			frame = mpvplayer.ExtractFrame(vs.StreamURL(), tileW2, tileW2, 1.0)
-		} else if r, err := context.GetReader(); err == nil {
+		} else if r, err := info.GetReader(); err == nil {
 			frame = mpvplayer.ExtractFrameFromReader(r, tileW2, tileW2, 1.0)
 		}
 	} else {
-		frame = mpvplayer.ExtractFrame(context.Path, tileW2, tileW2, 1.0)
+		frame = mpvplayer.ExtractFrame(info.Path, tileW2, tileW2, 1.0)
 	}
 	if frame == nil {
 		return bytes.NewReader(loading), nil
@@ -570,7 +506,7 @@ func (layout *TileLayout) videoThumbnail(context *ImageInfo) (io.ReadSeeker, err
 		os.WriteFile(cachePath, buf.Bytes(), 0644)
 	}
 
-	context.ThumbnailIsScaled = true
+	info.ThumbnailIsScaled = true
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
@@ -648,14 +584,14 @@ const (
 	max      = lvlDeep * dirWidth
 )
 
-func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, context *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
+func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
 	t := &Tile{
 		Viewer: layout.viewer,
 		layout: layout,
 	}
 	decoded, _, err := Decode(reader)
 	if err != nil {
-		fmt.Println("Error decoding image when creating new tile:", err, context)
+		fmt.Println("Error decoding image when creating new tile:", err, info)
 	}
 	if decoded == nil {
 		na := bytes.NewReader(loading)
@@ -667,12 +603,12 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, context *ImageInfo,
 
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
-	t.Info = context
-	if context.Width > 0 && context.Height > 0 {
+	t.Info = info
+	if info.Width > 0 && info.Height > 0 {
 		// Use pre-stored original dimensions so placeholder tiles already
 		// carry the correct aspect ratio, avoiding layout reflow on load.
-		t.width = float32(context.Width)
-		t.height = float32(context.Height)
+		t.width = float32(info.Width)
+		t.height = float32(info.Height)
 	} else {
 		t.width = float32(img.Image.Bounds().Max.X)
 		t.height = float32(img.Image.Bounds().Max.Y)
@@ -682,8 +618,8 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, context *ImageInfo,
 	t.tabFn = tabFn
 
 	// Create name label using the entry's display name.
-	if context.DisplayName != "" {
-		lbl := widget.NewLabel(context.DisplayName)
+	if info.DisplayName != "" {
+		lbl := widget.NewLabel(info.DisplayName)
 		lbl.Alignment = fyne.TextAlignCenter
 		lbl.Truncation = fyne.TextTruncateEllipsis
 		if !layout.showLabels {

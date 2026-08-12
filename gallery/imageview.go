@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"strconv"
 	"time"
@@ -19,7 +18,6 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/driver/mobile"
 	"fyne.io/fyne/v2/widget"
-	"github.com/h2non/filetype"
 
 	"github.com/disintegration/imaging"
 )
@@ -634,50 +632,6 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 	iv.changeFn()
 	iv.container.Refresh()
 	// iv.refreshBilinear.Reset(100 * time.Millisecond)
-}
-
-func IsImage(file io.Reader) bool {
-	head := make([]byte, 261)
-	if _, err := file.Read(head); err != nil {
-		return false
-	}
-
-	return filetype.IsImage(head)
-}
-
-func IsImageFromPath(path string) bool {
-	file, err := os.Open(path)
-	defer file.Close()
-	if err != nil {
-		fmt.Println("Error opening:", path)
-		return false
-	}
-	return IsImage(file)
-}
-
-// IsVideoFromPath reports whether the file at path is a common video format,
-// detected by file extension.
-func IsVideoFromPath(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv", ".m4v",
-		".ogv", ".ts", ".mpg", ".mpeg", ".3gp", ".3g2":
-		return true
-	}
-	return false
-}
-
-func IsArchiveFromPath(path string) bool {
-	file, err := os.Open(path)
-	if err != nil {
-		fmt.Println("Error opening:", path)
-		return false
-	}
-	head := make([]byte, 261)
-	if _, err := file.Read(head); err != nil {
-		return false
-	}
-
-	return filetype.IsArchive(head)
 }
 
 func (iv *ImageView) FocusGained() {

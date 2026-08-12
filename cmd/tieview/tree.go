@@ -30,7 +30,7 @@ type tieFSNode struct {
 // content hash, which keeps IDs unique even when filenames collide.
 type tieFSTree struct {
 	tie    *client.TieClient
-	viewer *gallery.Viewer
+	viewer *gallery.Gallery
 	tree   *widget.Tree
 
 	mu       sync.Mutex
@@ -43,7 +43,7 @@ type tieFSTree struct {
 // newTieFSTree returns a tree for navigating the tie virtual filesystem.
 // Selecting a directory replaces the gallery with the directory's images;
 // selecting a file also opens that image. The tree widget is t.tree.
-func newTieFSTree(viewer *gallery.Viewer, tc *client.TieClient) *tieFSTree {
+func newTieFSTree(viewer *gallery.Gallery, tc *client.TieClient) *tieFSTree {
 	t := &tieFSTree{
 		tie:    tc,
 		viewer: viewer,

@@ -1,16 +1,16 @@
 package gallery
 
 import (
-	// "fmt"
+	"fmt"
 	"image"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/disintegration/imaging"
-	// "github.com/nfnt/resize"
-	// "github.com/bamiaux/rez"
+	"github.com/h2non/filetype"
 	"github.com/rwcarlsen/goexif/exif"
 )
 
@@ -80,4 +80,54 @@ func ReadDir(imgPath string) (string, []fs.DirEntry, int) {
 	}
 
 	return path, dirContent, 0
+}
+
+// IsImage reports whether the reader contains an image, detected by reading
+// the file header.
+func IsImage(file io.Reader) bool {
+	head := make([]byte, 261)
+	if _, err := file.Read(head); err != nil {
+		return false
+	}
+
+	return filetype.IsImage(head)
+}
+
+// IsImageFromPath reports whether the file at path is an image, detected by
+// reading the file header.
+func IsImageFromPath(path string) bool {
+	file, err := os.Open(path)
+	defer file.Close()
+	if err != nil {
+		fmt.Println("Error opening:", path)
+		return false
+	}
+	return IsImage(file)
+}
+
+// IsVideoFromPath reports whether the file at path is a common video format,
+// detected by file extension.
+func IsVideoFromPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv", ".m4v",
+		".ogv", ".ts", ".mpg", ".mpeg", ".3gp", ".3g2":
+		return true
+	}
+	return false
+}
+
+// IsArchiveFromPath reports whether the file at path is an archive, detected
+// by reading the file header.
+func IsArchiveFromPath(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Println("Error opening:", path)
+		return false
+	}
+	head := make([]byte, 261)
+	if _, err := file.Read(head); err != nil {
+		return false
+	}
+
+	return filetype.IsArchive(head)
 }
