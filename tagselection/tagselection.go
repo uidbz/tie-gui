@@ -415,7 +415,7 @@ func (ti *TagItem) CreateRenderer() fyne.WidgetRenderer {
 type TagSelection struct {
 	widget.BaseWidget
 	selected          []*TagItemData
-	favorite          []*TagItemData
+	quickPick         []*TagItemData
 	OnSelectedChanged func()
 	// OnNewTag, when non-nil, is called when the user presses Enter in the
 	// search box with a non-empty query but no result row highlighted. This
@@ -438,7 +438,7 @@ type TagSelection struct {
 	starredSet         map[string]bool // tags whose star button shows ★
 	tags       *trie.Trie
 	selectedList      *AutoExpandingList
-	favoriteList      *AutoExpandingList
+	quickPickList     *AutoExpandingList
 	listLabel         *widget.Label
 	content           fyne.CanvasObject
 	search            *SearchItem
@@ -478,9 +478,9 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 		caseMap: make(map[string]string),
 	}
 
-	ts.favoriteList = NewAutoExpandingList(
+	ts.quickPickList = NewAutoExpandingList(
 		func() int {
-			return len(ts.favorite)
+			return len(ts.quickPick)
 		},
 		func() fyne.CanvasObject {
 			// ShowStars is read at CreateItem time (lazy, when cells are first
@@ -488,7 +488,7 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 			return NewTagItem(false, ts.ShowStars, ts)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
-			data := ts.favorite[i]
+			data := ts.quickPick[i]
 			data.starred = ts.starredSet[data.text]
 			o.(*TagItem).SetData(data)
 		})
@@ -510,12 +510,12 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 
 	clear := func(i int) {
 		ts.selectedList.Unselect(i)
-		ts.favoriteList.Unselect(i)
+		ts.quickPickList.Unselect(i)
 		ts.Refresh()
 	}
 
-	ts.favoriteList.OnSelected = func(i int) {
-		ts.AddSelected(ts.favorite[i])
+	ts.quickPickList.OnSelected = func(i int) {
+		ts.AddSelected(ts.quickPick[i])
 		clear(i)
 	}
 
@@ -530,7 +530,7 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 	ts.listLabel = widget.NewLabel("Favorites")
 	ts.listLabel.TextStyle.Bold = true
 	ts.search = NewSearchItem(ts)
-	ts.content = container.NewVBox(ts.selectedList, canvas.NewLine(theme.ForegroundColor()), ts.listLabel, ts.favoriteList)
+	ts.content = container.NewVBox(ts.selectedList, canvas.NewLine(theme.ForegroundColor()), ts.listLabel, ts.quickPickList)
 
 	ts.ExtendBaseWidget(ts)
 
@@ -580,24 +580,24 @@ func (ts *TagSelection) ClearAllTags() {
 }
 
 func (ts *TagSelection) AddFavorite(tag string) {
-	ts.favorite = append(ts.favorite, NewTagItemData(tag))
+	ts.quickPick = append(ts.quickPick, NewTagItemData(tag))
 }
 
 // ClearFavorites empties the quick-pick tag list and refreshes it.
 func (ts *TagSelection) ClearFavorites() {
-	ts.favorite = ts.favorite[:0]
-	ts.favoriteList.Refresh()
+	ts.quickPick = ts.quickPick[:0]
+	ts.quickPickList.Refresh()
 }
 
 // SetFavorites replaces the quick-pick tag list with tags and refreshes once.
 // Prefer this over ClearFavorites + AddFavorite loops: a single Refresh call
 // avoids showing an empty list between the clear and the re-population.
 func (ts *TagSelection) SetFavorites(tags []string) {
-	ts.favorite = ts.favorite[:0]
+	ts.quickPick = ts.quickPick[:0]
 	for _, tag := range tags {
-		ts.favorite = append(ts.favorite, NewTagItemData(tag))
+		ts.quickPick = append(ts.quickPick, NewTagItemData(tag))
 	}
-	ts.favoriteList.Refresh()
+	ts.quickPickList.Refresh()
 }
 
 // ClearSelected removes all currently selected tags and refreshes the list.
@@ -615,7 +615,7 @@ func (ts *TagSelection) SetListLabel(text string) {
 // SetFavoriteMaxRows caps the visible row count of the quick-pick list.
 // 0 = uncapped (default). Must be called before SetFavorites to take effect.
 func (ts *TagSelection) SetFavoriteMaxRows(n int) {
-	ts.favoriteList.maxRows = n
+	ts.quickPickList.maxRows = n
 }
 
 // SetSelectedMaxRows caps the visible row count of the selected-tag list.
@@ -632,7 +632,7 @@ func (ts *TagSelection) SetStarred(tags []string) {
 	for _, t := range tags {
 		ts.starredSet[t] = true
 	}
-	ts.favoriteList.Refresh()
+	ts.quickPickList.Refresh()
 	if ts.ShowStars && ts.search != nil {
 		ts.search.searchList.Refresh()
 	}
@@ -643,9 +643,9 @@ func (ts *TagSelection) SetStarred(tags []string) {
 // and SetStarred separately when the same tag list should be shown and starred.
 func (ts *TagSelection) SetFavoritesWithStars(tags []string) {
 	// Update favorite list
-	ts.favorite = ts.favorite[:0]
+	ts.quickPick = ts.quickPick[:0]
 	for _, tag := range tags {
-		ts.favorite = append(ts.favorite, NewTagItemData(tag))
+		ts.quickPick = append(ts.quickPick, NewTagItemData(tag))
 	}
 	// Update starred set
 	ts.starredSet = make(map[string]bool, len(tags))
@@ -653,7 +653,7 @@ func (ts *TagSelection) SetFavoritesWithStars(tags []string) {
 		ts.starredSet[t] = true
 	}
 	// Single refresh for both
-	ts.favoriteList.Refresh()
+	ts.quickPickList.Refresh()
 	if ts.ShowStars && ts.search != nil {
 		ts.search.searchList.Refresh()
 	}
@@ -667,7 +667,7 @@ func (ts *TagSelection) ToggleStar(tag string, starred bool) {
 	}
 	ts.starredSet[tag] = starred
 	// Refresh both the quick-pick list and search results
-	ts.favoriteList.Refresh()
+	ts.quickPickList.Refresh()
 	if ts.ShowStars && ts.search != nil {
 		ts.search.searchList.Refresh()
 	}
