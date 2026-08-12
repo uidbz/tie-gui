@@ -252,22 +252,54 @@ shared state) and shadowed identically-named `ImageView` fields.
 thumbnail access and hotkeys reduces coupling. `TileLayout` still holds
 `viewer *Gallery` but now only uses it in `imageLoader` for tile creation.
 
+### 3.3 — Debug Output Cleanup
+
+**Commit:** `17a15ad` — refactor(phase3): remove debug fmt.Println statements
+
+**Changes:**
+- Removed 17 `fmt.Println` statements across gallery package (helper.go,
+  imageview.go, tilelayout.go, gallery.go)
+- All error cases were already handled (early return, fallback, skip)
+- Removed unused `fmt` imports from all four files
+
+**Rationale:** The println statements were debug noise that didn't add user
+value. Error cases were already handled via return values or fallbacks.
+
+### 3.4 — Simplified Title Update Callback
+
+**Commit:** `d92feed` — refactor(phase3): simplify title update callback
+
+**Changes:**
+- Removed unnecessary `go func() { fyne.Do(...) }` wrapper from `changeFn`
+- Now directly calls `viewer.window.SetTitle(...)` since already on UI thread
+
+**Rationale:** `changeFn` is called from `ImageLayout.Layout` and `ImageView`
+zoom methods, which Fyne guarantees run on the UI thread. Spawning a goroutine
+that immediately marshals back to UI thread via `fyne.Do` is pointless overhead.
+
 ### Phase 3 Status
 
-**Completed:**
+**Completed (4 of 6 items):**
 - ✅ Fixed region.go package-global drag state
 - ✅ Reduced layout→viewer back-references (thumbnailer, hotkeys)
+- ✅ Debug output cleanup (17 println statements removed)
+- ✅ Simplified title callback (removed unnecessary goroutine)
 
-**Not addressed (deferred or skipped):**
-- Layout→window-title side effect (complex, needs more design)
-- ImageView I/O coupling (`GetReader`, `LoadImage` in widget)
-- Split TileLayout into layout math + thumbnail loader (large refactor)
-- fmt.Println debug output cleanup (low value, many changes)
+**Not addressed (deferred):**
+- ImageView I/O coupling (`GetReader`, `LoadImage` in widget) — Medium
+  complexity; would require loader interface + refactor of file opening logic.
+  Deferred as ImageView currently works well and the coupling is not causing
+  active problems.
+- Split TileLayout into layout math + thumbnail loader — Large architectural
+  refactor; would extract thumbnail generation/caching into separate service.
+  High value but substantial work (20-30k tokens). Deferred to future phase
+  or separate project.
 
-**Rationale for deferring:** The completed items addressed the most problematic
-coupling (bidirectional references, package globals). The remaining items are
-either complex (require architectural design) or low-value (debug output). The
-project is now in a much better state than before Phase 3.
+**Rationale:** Phase 3 addressed the most problematic coupling issues:
+bidirectional references, package globals, debug clutter, unnecessary
+goroutines. The remaining items are architectural improvements that would
+benefit from dedicated design work. The project is in significantly better
+shape than before Phase 3 started.
 
 ### Verification
 
