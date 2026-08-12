@@ -21,8 +21,42 @@ import (
 )
 
 type Gallery struct {
-	Content       *fyne.Container
-	CurrentImage  *fyne.Container
+	// ═══════════════════════════════════════════════════════════════════════
+	// Extension API — Callbacks
+	// ═══════════════════════════════════════════════════════════════════════
+	// Set by applications to customize behavior. See gallery/extension.go for
+	// full documentation.
+
+	// OnImageChange is called after ChangeImage displays a new image.
+	OnImageChange func(info *ImageInfo)
+	// OnTapped is called when the user taps the image view (desktop: single click).
+	OnTapped func()
+	// OnDoubleTapped is called on double-tap/double-click of the image view.
+	OnDoubleTapped func()
+	// OnTappedSecondary is called on right-click (desktop) or long-press (mobile).
+	OnTappedSecondary func()
+	// OnSwipeUp is called when the user swipes upward on the image view.
+	// Preferred over OnTapped on mobile to avoid conflicts with pinch-zoom.
+	OnSwipeUp func()
+	// OnTileSecondaryTapped is called when a gallery tile receives a secondary
+	// tap (right-click). Set by the caller to implement context actions such as
+	// de-import. Receives the full Tile so the caller can inspect Info.
+	OnTileSecondaryTapped func(*Tile)
+
+	// ═══════════════════════════════════════════════════════════════════════
+	// Extension API — Public Fields
+	// ═══════════════════════════════════════════════════════════════════════
+
+	// Content is the root Fyne container for the gallery. Set this as the
+	// window's content to display the gallery.
+	Content *fyne.Container
+	// CurrentImage is the container for the single-image view.
+	CurrentImage *fyne.Container
+	// CurrentImageView is the currently displayed ImageView widget (nil when
+	// showing the gallery grid).
+	CurrentImageView *ImageView
+	// CustomReaders holds the current list of content sources (populated via
+	// ReadCustom).
 	CustomReaders []CustomReader
 	// Thumbnailer, when non-nil, supplies thumbnails for all items instead
 	// of the local thumbnail directory (see GeneralConfig.ThumbnailDir).
@@ -31,42 +65,32 @@ type Gallery struct {
 	// selector) instead of a plain full-width gallery.
 	Sidebar fyne.CanvasObject
 
-	gallery          *fyne.Container
-	imageFiles       []*ImageInfo
-	layout           *TileLayout
-	window           fyne.Window
-	app              fyne.App
-	platform         *Platform
-	currentIndex     int
-	CurrentImageView *ImageView
-	currentPath      string
-	cache            map[string]*ImageView
-	scroll           *container.Scroll
-	hotkeys          []Hotkey
-	loading          sync.WaitGroup
-	galleryLoaded    bool
-	config           Config
-	bottomBar        *fyne.Container
-	sidebarStored    fyne.CanvasObject // saved sidebar when hidden by the toggle
-	sidebarToggle    *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
-	refreshThumbs    bool
+	// ═══════════════════════════════════════════════════════════════════════
+	// Internal Wiring — Do Not Access Directly
+	// ═══════════════════════════════════════════════════════════════════════
 
-	tileOnclick       func(*Tile)
-	OnTapped          func()
-	OnDoubleTapped    func()
-	OnTappedSecondary func()
-	// OnSwipeUp, when non-nil, is called when the user swipes upward on the
-	// image view. Preferred over OnTapped on mobile — set one or the other.
-	OnSwipeUp     func()
-	OnImageChange func(info *ImageInfo)
-	// OnTileSecondaryTapped is called when a gallery tile receives a secondary
-	// tap (right-click). Set by the caller to implement context actions such as
-	// de-import. Receives the full Tile so the caller can inspect Info.
-	OnTileSecondaryTapped func(*Tile)
-
-	currentPage  int
-	maxPages     int
-	isFullscreen bool
+	gallery       *fyne.Container
+	imageFiles    []*ImageInfo
+	layout        *TileLayout
+	window        fyne.Window
+	app           fyne.App
+	platform      *Platform
+	currentIndex  int
+	currentPath   string
+	cache         map[string]*ImageView
+	scroll        *container.Scroll
+	hotkeys       []Hotkey
+	loading       sync.WaitGroup
+	galleryLoaded bool
+	config        Config
+	bottomBar     *fyne.Container
+	sidebarStored fyne.CanvasObject // saved sidebar when hidden by the toggle
+	sidebarToggle *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
+	refreshThumbs bool
+	tileOnclick   func(*Tile)
+	currentPage   int
+	maxPages      int
+	isFullscreen  bool
 }
 
 func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Gallery {
