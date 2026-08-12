@@ -57,12 +57,15 @@ type TileLayout struct {
 	config           Config
 	window           fyne.Window
 	app              fyne.App
-	viewer           *Gallery
+	viewer           *Gallery // TODO Phase 3: remove this back-reference
 	offset           int
 	currentlyLoading sync.WaitGroup
 	cachedTiles      map[string]*Tile
 	cacheLock        sync.Mutex
 	showLabels       bool
+	// Direct access to avoid back-reference through viewer
+	thumbnailer   Thumbnailer
+	refreshThumbs bool
 }
 
 type Tile struct {
@@ -83,17 +86,19 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan *ImageInfo, batchSize)
 	layout := &TileLayout{
-		tiles:        tiles,
-		wg:           sync.WaitGroup{},
-		minHeight:    0,
-		imagesToLoad: imagesToLoad,
-		tabFn:        tabFn,
-		config:       config,
-		window:       window,
-		app:          app,
-		viewer:       viewer,
-		cachedTiles:  make(map[string]*Tile),
-		showLabels:   true,
+		tiles:         tiles,
+		wg:            sync.WaitGroup{},
+		minHeight:     0,
+		imagesToLoad:  imagesToLoad,
+		tabFn:         tabFn,
+		config:        config,
+		window:        window,
+		app:           app,
+		viewer:        viewer,
+		cachedTiles:   make(map[string]*Tile),
+		showLabels:    true,
+		thumbnailer:   viewer.Thumbnailer,
+		refreshThumbs: viewer.refreshThumbs,
 	}
 
 	for i := 0; i < config.General.Workers; i++ {
@@ -349,8 +354,8 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 
 	// A custom Thumbnailer (e.g. one backed by network storage) takes
 	// precedence over the local thumbnail directory.
-	if layout.viewer.Thumbnailer != nil {
-		return layout.viewer.Thumbnailer.GetThumbnail(info)
+	if layout.thumbnailer != nil {
+		return layout.thumbnailer.GetThumbnail(info)
 	}
 
 	var thumbnail string
@@ -378,7 +383,7 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 		thumbnailDir = filepath.Join(thumbnailDir, hash[i:i+dirWidth])
 	}
 	thumbnail = filepath.Join(thumbnailDir, hash)
-	if _, err := os.Stat(thumbnail); err == nil && !layout.viewer.refreshThumbs { // && false {
+	if _, err := os.Stat(thumbnail); err == nil && !layout.refreshThumbs { // && false {
 		reader, err = os.Open(thumbnail)
 		if err != nil {
 			return nil, err
@@ -462,7 +467,7 @@ func (layout *TileLayout) videoThumbnail(info *ImageInfo) (io.ReadSeeker, error)
 
 	// Check disk cache before running ffmpeg.
 	cachePath := layout.videoThumbnailCachePath(info.Path)
-	if data, err := os.ReadFile(cachePath); err == nil && !layout.viewer.refreshThumbs {
+	if data, err := os.ReadFile(cachePath); err == nil && !layout.refreshThumbs {
 		info.ThumbnailIsScaled = true
 		return bytes.NewReader(data), nil
 	}
@@ -656,23 +661,8 @@ func (layout *TileLayout) InitHotkeys() {
 			layout.app.Quit()
 		}})
 	}
-	for _, x := range bindings.ScrollDown {
-		add(Hotkey{x, func() {
-			layout.viewer.scroll.Offset.Y = layout.viewer.scroll.Offset.Y + 300
-			layout.viewer.scroll.Refresh()
-		}})
-	}
-	for _, x := range bindings.ScrollUp {
-		add(Hotkey{x, func() {
-			layout.viewer.scroll.Offset.Y = layout.viewer.scroll.Offset.Y - 300
-			layout.viewer.scroll.Refresh()
-		}})
-	}
-	for _, x := range bindings.PathLevelUp {
-		add(Hotkey{x, func() {
-			layout.viewer.ShowImageDir(filepath.Dir(layout.viewer.currentPath))
-		}})
-	}
+	// NOTE: ScrollDown, ScrollUp, and PathLevelUp moved to Gallery.InitHotkeys
+	// to avoid layout→viewer back-reference.
 	for _, x := range bindings.ToggleFilenames {
 		add(Hotkey{x, func() {
 			layout.ToggleLabels()

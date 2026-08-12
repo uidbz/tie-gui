@@ -406,6 +406,25 @@ func (viewer *Gallery) InitHotkeys() {
 	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, showGallery})
 	}
+	// Gallery navigation hotkeys (moved from TileLayout to break back-reference)
+	galleryBindings := viewer.config.Gallery
+	for _, x := range galleryBindings.ScrollDown {
+		add(Hotkey{x, func() {
+			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y + 300
+			viewer.scroll.Refresh()
+		}})
+	}
+	for _, x := range galleryBindings.ScrollUp {
+		add(Hotkey{x, func() {
+			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y - 300
+			viewer.scroll.Refresh()
+		}})
+	}
+	for _, x := range galleryBindings.PathLevelUp {
+		add(Hotkey{x, func() {
+			viewer.ShowImageDir(filepath.Dir(viewer.currentPath))
+		}})
+	}
 	// On mobile the Android/iOS back button sends key name "Back" to the
 	// focused widget (ImageView). Map it to the same show-gallery action so
 	// the user can return to the grid without a keyboard.
