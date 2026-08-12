@@ -1,7 +1,6 @@
 package gallery
 
 import (
-	"fmt"
 	"image"
 	"io"
 	"io/fs"
@@ -99,7 +98,6 @@ func IsImageFromPath(path string) bool {
 	file, err := os.Open(path)
 	defer file.Close()
 	if err != nil {
-		fmt.Println("Error opening:", path)
 		return false
 	}
 	return IsImage(file)
@@ -121,7 +119,6 @@ func IsVideoFromPath(path string) bool {
 func IsArchiveFromPath(path string) bool {
 	file, err := os.Open(path)
 	if err != nil {
-		fmt.Println("Error opening:", path)
 		return false
 	}
 	head := make([]byte, 261)

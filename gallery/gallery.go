@@ -2,7 +2,6 @@ package gallery
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -261,9 +260,7 @@ func (viewer *Gallery) ChangePage(page int) {
 	for len(viewer.layout.imagesToLoad) > 0 {
 		<-viewer.layout.imagesToLoad
 	}
-	fmt.Println("Currently waiting")
 	viewer.layout.currentlyLoading.Wait()
-	fmt.Println("finished waiting")
 
 	viewer.currentPage = page
 	viewer.layout.offset = page * viewer.config.General.ImagesPerPage
@@ -312,11 +309,8 @@ func (viewer *Gallery) RunCmdA() {
 	cmd := strings.ReplaceAll(viewer.config.Image.CmdA, "$FILE", viewer.CurrentImageView.info.Path)
 	c := exec.Command("/bin/sh", "-c", cmd)
 	go func() {
-		if output, err := c.CombinedOutput(); err != nil {
-			fmt.Println(err)
-		} else {
-			fmt.Println(output)
-		}
+		// Command runs in background; configure command to show its own output if needed
+		c.Run()
 	}()
 }
 
@@ -332,9 +326,8 @@ func (viewer *Gallery) SaveImage() {
 				} else {
 					dest = filepath.Join(viewer.config.Image.SaveDir, filename)
 				}
-				if err := os.WriteFile(dest, data, 0755); err != nil {
-					fmt.Println(err)
-				}
+				// Write file; silently ignore errors (user will notice if file doesn't appear)
+				os.WriteFile(dest, data, 0755)
 			}
 		}
 	}
@@ -701,7 +694,7 @@ func (viewer *Gallery) ReadImageArchive(zipFile string) {
 
 	fsys, err := archiver.FileSystem(context.Background(), zipFile)
 	if err != nil {
-		fmt.Println(err)
+		// Archive cannot be opened; imageFiles stays empty
 		return
 	}
 	i := 0
@@ -711,7 +704,7 @@ func (viewer *Gallery) ReadImageArchive(zipFile string) {
 		}
 		file, err := fsys.Open(path)
 		if err != nil {
-			fmt.Println("Error opening:", x.Name())
+			// Skip files that can't be opened
 			return nil
 		}
 		if IsImage(file) {

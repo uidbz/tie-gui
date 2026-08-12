@@ -3,7 +3,6 @@ package gallery
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -153,7 +152,6 @@ func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Windo
 		touches:         make(map[int]fyne.Position),
 	}
 	if err := iv.LoadImage(); err != nil {
-		fmt.Println("Error:", err)
 		// A failed decode leaves fyneImage nil and the renderer's Layout
 		// would panic on fyneImage.Resize; show the loading placeholder
 		// instead so the view stays usable.
@@ -603,7 +601,6 @@ func (e *ImageView) RegisterKey(name fyne.KeyName, function func()) {
 
 func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 	if !iv.info.IsZoomable {
-		fmt.Println("Not zoomable")
 		return
 	}
 	iv.fillWindow = false

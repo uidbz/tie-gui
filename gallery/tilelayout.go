@@ -15,7 +15,6 @@ import (
 	// "path/filepath"
 	// "archive/zip"
 	"bytes"
-	"fmt"
 	"time"
 
 	_ "embed"
@@ -128,15 +127,15 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	for i := layout.offset; i < end; i++ {
 		tile, err := layout.NewImageTile(loadingImg, imageFiles[i], func(t *Tile) {})
 		if err != nil {
-			fmt.Println("Error loading tile:", err)
-		} else {
-			layout.tiles = append(layout.tiles, tile)
-			tileCopy := tile // Capture tile in closure
-			fyne.Do(func() {
-				layout.grid.AddObject(tileCopy)
-			})
-			layout.imagesToLoad <- imageFiles[i]
+			// Skip tiles that fail to load (corrupt images, etc.)
+			continue
 		}
+		layout.tiles = append(layout.tiles, tile)
+		tileCopy := tile // Capture tile in closure
+		fyne.Do(func() {
+			layout.grid.AddObject(tileCopy)
+		})
+		layout.imagesToLoad <- imageFiles[i]
 	}
 }
 
@@ -297,13 +296,13 @@ func (layout *TileLayout) imageLoader() {
 		} else {
 			thumb, err := layout.GetThumbnail(tc)
 			if err != nil {
-				fmt.Println("Error creating thumbnail:", err)
+				// Skip thumbnails that fail to generate
 				layout.currentlyLoading.Done()
 				continue
 			}
 			tile, err = layout.NewImageTile(thumb, tc, layout.tabFn)
 			if err != nil {
-				fmt.Println("Error creating tile:", err)
+				// Skip tiles that fail to decode
 				layout.currentlyLoading.Done()
 				continue
 			}
@@ -393,7 +392,7 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	} else {
 		err := os.MkdirAll(thumbnailDir, 0755)
 		if err != nil {
-			fmt.Println("Error creating thumbnail dir at:", thumbnailDir)
+			// Cache dir creation failed; thumbnail will not be cached on disk
 		} else {
 			decoded, _, err := Decode(reader)
 			if err != nil {
@@ -405,9 +404,8 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 			buf := &bytes.Buffer{}
 			err = jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90})
 			if err == nil {
-				if err := os.WriteFile(thumbnail, buf.Bytes(), 0755); err != nil {
-					fmt.Println("Error writing thumbnail to:", thumbnail)
-				}
+				// Write to disk cache; ignore errors (thumbnail still returned in-memory)
+				os.WriteFile(thumbnail, buf.Bytes(), 0755)
 			}
 			info.ThumbnailIsScaled = true
 
@@ -595,10 +593,8 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, ta
 		layout: layout,
 	}
 	decoded, _, err := Decode(reader)
-	if err != nil {
-		fmt.Println("Error decoding image when creating new tile:", err, info)
-	}
-	if decoded == nil {
+	if err != nil || decoded == nil {
+		// Decode failed; use loading placeholder
 		na := bytes.NewReader(loading)
 		decoded2, _, _ := Decode(na)
 		decoded = decoded2
