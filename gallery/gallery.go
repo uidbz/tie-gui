@@ -93,6 +93,25 @@ type Gallery struct {
 	isFullscreen  bool
 }
 
+// NewGallery creates a Gallery instance but does not wire hotkeys or layout.
+// Call Init() after setting optional fields (Sidebar, Thumbnailer, callbacks)
+// to complete initialization.
+//
+// The two-step construction pattern exists because applications need to
+// customize the Gallery between creation and initialization:
+//   - tieview sets Sidebar to the tag filter panel
+//   - tieview sets Thumbnailer to the filehost thumbnailer
+//   - Both mains set OnImageChange, OnTapped, etc.
+//
+// These fields must be set before Init() is called because Init() wires hotkeys
+// and layout, which may depend on the configuration being complete.
+//
+// Example usage:
+//   viewer := gallery.NewGallery(app, window, config, tileOnclick)
+//   viewer.Sidebar = makeSidebar(...)        // tieview only
+//   viewer.Thumbnailer = makeThumbnailer()   // tieview only
+//   viewer.OnImageChange = func(info) { ... }
+//   viewer.Init()  // Wires hotkeys, creates layout
 func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Gallery {
 	iv := &Gallery{
 		app:      app,
@@ -151,6 +170,10 @@ func (viewer *Gallery) ShowImageArchive(path string) {
 	viewer.window.SetContent(viewer.Content)
 }
 
+// Init completes Gallery initialization by wiring hotkeys and creating the
+// layout. Must be called after NewGallery and after setting optional fields
+// (Sidebar, Thumbnailer, callbacks). See NewGallery documentation for the
+// two-step construction pattern rationale.
 func (viewer *Gallery) Init() {
 	viewer.layout = NewTileLayout(viewer.config, viewer.window, viewer.app, viewer, viewer.tileOnclick)
 	empty := make([]fyne.CanvasObject, 0)
