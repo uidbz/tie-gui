@@ -66,18 +66,18 @@ func main() {
 		tagger.Toggle(tagger.hash)
 		viewer.Content.Refresh()
 	}
-	if fyne.CurrentDevice().IsMobile() {
+	if viewer.Platform().ShouldUseTapForAction() {
+		// On desktop a single tap on the image opens/closes the tag panel.
+		viewer.OnTapped = toggleTagger
+	} else {
 		// On mobile a tap is used for other interactions (focus, navigation).
 		// Use a swipe-up gesture instead to open/close the tag panel.
 		viewer.OnSwipeUp = toggleTagger
-	} else {
-		// On desktop a single tap on the image opens/closes the tag panel.
-		viewer.OnTapped = toggleTagger
 	}
 	// Restore keyboard focus to the image view when the panel is closed so
 	// that hotkeys (next/prev, zoom, etc.) keep working on desktop.
 	tagger.OnHide = func() {
-		if !fyne.CurrentDevice().IsMobile() {
+		if viewer.Platform().ShouldFocusImageView() {
 			myWindow.Canvas().Focus(viewer.CurrentImageView)
 		}
 	}

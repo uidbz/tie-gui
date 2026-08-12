@@ -196,7 +196,7 @@ func main() {
 	// On mobile there are no command-line args and no accessible working
 	// directory, so the gallery starts empty. Offer a folder picker (Android's
 	// document chooser) so the user can point imgview at a photo folder.
-	if fyne.CurrentDevice().IsMobile() && viewer.ImageCount() == 0 {
+	if viewer.Platform().IsMobile() && viewer.ImageCount() == 0 {
 		showFolderPicker(myWindow, viewer)
 	}
 

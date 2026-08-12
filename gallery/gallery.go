@@ -86,6 +86,11 @@ func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick fun
 	return iv
 }
 
+// Platform returns the gallery's platform abstraction for mobile vs desktop behavior.
+func (viewer *Gallery) Platform() *Platform {
+	return viewer.platform
+}
+
 func (viewer *Gallery) KeyPress(key *fyne.KeyEvent) {
 	for _, x := range viewer.layout.hotkeys {
 		if key.Name == x.Name {
