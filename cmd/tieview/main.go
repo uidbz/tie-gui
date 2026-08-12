@@ -129,8 +129,15 @@ func main() {
 		}, myWindow)
 	}
 
-	readFromTie(viewer, tieClient, []string{*tieTag}, nil, "tag", browseDir)
-	// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
+	// On mobile, load the default directory directly. On desktop, load images
+	// by tag (default "favorite") to populate the gallery with quick-access
+	// content instead of the full filesystem root.
+	if viewer.Platform().IsMobile() {
+		fsTree.showDir("/", "")
+	} else {
+		readFromTie(viewer, tieClient, []string{*tieTag}, nil, "tag", browseDir)
+		// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
+	}
 
 	viewer.OnImageChange = func(info *gallery.ImageInfo) {
 		gallery.FocusImageViewOnDesktop(myWindow, viewer)
