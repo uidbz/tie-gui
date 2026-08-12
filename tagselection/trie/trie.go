@@ -3,16 +3,15 @@ package trie
 import "fmt"
 
 const (
-	radix = 256 // ASCII [a-z,A-Z]
-)
-
-var (
-	maxResults = 100
+	// radix is 256 to support full extended ASCII character indexing.
+	// Each node has 256 child pointers, one for each possible byte value.
+	radix = 256
 )
 
 type Trie struct {
-	root  *Node
-	words int
+	root       *Node
+	words      int
+	maxResults int // max results returned by KeysWithPrefix; 0 = unlimited
 }
 
 type Node struct {
@@ -21,7 +20,17 @@ type Node struct {
 }
 
 func NewTrie() *Trie {
-	return &Trie{newNode(), 0}
+	return &Trie{
+		root:       newNode(),
+		words:      0,
+		maxResults: 100, // default limit
+	}
+}
+
+// SetMaxResults caps the number of results returned by KeysWithPrefix.
+// Set to 0 for unlimited results.
+func (trie *Trie) SetMaxResults(n int) {
+	trie.maxResults = n
 }
 
 // NewNode initializes an empty Node with the appropriate null links to child nodes
@@ -83,15 +92,16 @@ func (trie *Trie) Keys() []string {
 
 func (trie *Trie) KeysWithPrefix(prefix string) []string {
 	q := make([]string, 0)
-	return collect(get(trie.root, prefix, 0), prefix, q)
+	return trie.collect(get(trie.root, prefix, 0), prefix, q)
 }
 
-// collect is a recursive function that collects words in the trie
-func collect(node *Node, prefix string, q []string) []string {
+// collect is a recursive function that collects words in the trie.
+// Stops when maxResults is reached (if maxResults > 0).
+func (trie *Trie) collect(node *Node, prefix string, q []string) []string {
 	if node == nil {
 		return q
 	}
-	if len(q) == maxResults {
+	if trie.maxResults > 0 && len(q) >= trie.maxResults {
 		return q
 	}
 
@@ -100,7 +110,7 @@ func collect(node *Node, prefix string, q []string) []string {
 	}
 
 	for c := 0; c < radix; c++ {
-		q = collect(node.links[c], fmt.Sprintf("%s%c", prefix, c), q)
+		q = trie.collect(node.links[c], fmt.Sprintf("%s%c", prefix, c), q)
 	}
 	return q
 }

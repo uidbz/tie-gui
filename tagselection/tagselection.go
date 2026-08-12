@@ -565,6 +565,12 @@ func (ts *TagSelection) relayout() {
 	canvas.Refresh(ts)
 }
 
+// AddTag inserts a tag into the search trie (lowercased for case-insensitive
+// search) and records its original case in caseMap for display.
+//
+// Note: If multiple tags differ only by case (e.g. "Test", "TEST"), the trie
+// will match all of them on search, but caseMap retains only the last one's
+// case. This is a known limitation; case variants are effectively merged.
 func (ts *TagSelection) AddTag(tag string) {
 	lower := strings.ToLower(tag)
 	ts.tags.Put(lower)
