@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mholt/archiver/v4"
+	"github.com/mholt/archives"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -593,10 +593,16 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 			}
 
 		case IsArchiveFromPath(fullPath):
-			fsys, err := archiver.FileSystem(context.Background(), fullPath)
+			f, err := os.Open(fullPath)
 			if err != nil {
 				continue
 			}
+			fsys, err := archives.FileSystem(context.Background(), fullPath, f)
+			if err != nil {
+				f.Close()
+				continue
+			}
+			defer f.Close()
 			fs.WalkDir(fsys, ".", func(path string, x fs.DirEntry, err error) error {
 				if x.IsDir() {
 					return nil
@@ -745,7 +751,14 @@ func (viewer *Gallery) ReadImageArchive(zipFile string) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 
-	fsys, err := archiver.FileSystem(context.Background(), zipFile)
+	f, err := os.Open(zipFile)
+	if err != nil {
+		// Archive cannot be opened; imageFiles stays empty
+		return
+	}
+	defer f.Close()
+
+	fsys, err := archives.FileSystem(context.Background(), zipFile, f)
 	if err != nil {
 		// Archive cannot be opened; imageFiles stays empty
 		return
