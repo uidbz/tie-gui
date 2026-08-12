@@ -30,21 +30,15 @@ func main() {
 	// defer profile.Start(profile.CPUProfile).Stop()
 	// defer profile.Start().Stop()
 	tieTag := flag.String("tag", "favorite", "Show images with tag")
-	tieConfigName := flag.String("config", "", "Tie config file to load: a name searched in tie's config dirs (like `tie -c`), or a file path (default: config.toml from the user config dir)")
-	flag.StringVar(tieConfigName, "c", "", "Shorthand for -config")
+	tieConfigName := gallery.ConfigFlag("Tie config file to load: a name searched in tie's config dirs (like `tie -c`), or a file path (default: config.toml from the user config dir)")
 	flag.StringVar(&tieHostName, "host", "", "Fetch content from this filehost named in the tie config (default: \"fast\" when configured, else the first DefaultFileHosts entry)")
 	flag.Parse()
-
-	// Append .toml extension when the caller omitted it.
-	if *tieConfigName != "" && !strings.HasSuffix(*tieConfigName, ".toml") {
-		*tieConfigName += ".toml"
-	}
 
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.tieview", "tieview", icon)
 
 	config := gallery.LoadConfig(myWindow, "")
 
-	tieConfig := loadTieConfig(*tieConfigName)
+	tieConfig := loadTieConfig(gallery.NormalizeConfigPath(*tieConfigName))
 	applyTiePrefs(myApp, &tieConfig)
 	if tieHostName != "" {
 		if _, ok := tieConfig.FileHosts[tieHostName]; !ok {

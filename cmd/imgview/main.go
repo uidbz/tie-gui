@@ -120,18 +120,12 @@ func ParseInput(args []string) (absolutePath string, inputType int, err error) {
 func main() {
 	// defer profile.Start(profile.CPUProfile).Stop()
 	// defer profile.Start().Stop()
-	configPath := flag.String("config", "", "imgview config file to load (default: config.toml in user config dir)")
-	flag.StringVar(configPath, "c", "", "Shorthand for -config")
+	configPath := gallery.ConfigFlag("imgview config file to load (default: config.toml in user config dir)")
 	flag.Parse()
-
-	// Append .toml extension when the caller omitted it.
-	if *configPath != "" && !strings.HasSuffix(*configPath, ".toml") {
-		*configPath += ".toml"
-	}
 
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.imgview", "imgview", icon)
 
-	config := gallery.LoadConfig(myWindow, *configPath)
+	config := gallery.LoadConfig(myWindow, gallery.NormalizeConfigPath(*configPath))
 
 	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		switch true {
