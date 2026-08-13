@@ -86,6 +86,7 @@ type Gallery struct {
 	bottomBar     *fyne.Container
 	sidebarStored fyne.CanvasObject // saved sidebar when hidden by the toggle
 	sidebarToggle *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
+	menuButton    *widget.Button    // ☰ menu button in the bottom bar (right side)
 	refreshThumbs bool
 	tileOnclick   func(*Tile)
 	currentPage   int
@@ -201,6 +202,13 @@ func (viewer *Gallery) CreateView() {
 	var mainPage fyne.CanvasObject
 	if viewer.scroll == nil {
 		viewer.scroll = container.NewScroll(viewer.gallery)
+		// Add scroll listener to trigger layout refresh for virtual scrolling.
+		// Without this, tiles remain hidden when scrolling back up.
+		viewer.scroll.OnScrolled = func(pos fyne.Position) {
+			if viewer.gallery != nil {
+				viewer.gallery.Refresh()
+			}
+		}
 	}
 	if viewer.Sidebar != nil {
 		split := container.NewHSplit(viewer.Sidebar, viewer.scroll)
@@ -224,15 +232,66 @@ func (viewer *Gallery) CreateView() {
 		}
 	}
 
-	// Compose the bottom bar: toggle on the left edge, pagination filling the
-	// rest. The toggle is placed outside bottomBar.Objects so the existing
-	// Objects[:2] (Prev/Next) trimming in LoadGallery is unaffected.
+	// Create menu button if it doesn't exist yet
+	if viewer.menuButton == nil {
+		viewer.menuButton = widget.NewButton("☰", func() {
+			viewer.showGalleryMenu()
+		})
+	}
+
+	// Compose the bottom bar: sidebar toggle on the left, menu on the right,
+	// pagination in the center. The buttons are placed outside bottomBar.Objects
+	// so the existing Objects[:2] (Prev/Next) trimming in LoadGallery is unaffected.
 	var bottom fyne.CanvasObject = viewer.bottomBar
-	if viewer.sidebarToggle != nil && viewer.bottomBar != nil {
-		bottom = container.NewBorder(nil, nil, viewer.sidebarToggle, nil, viewer.bottomBar)
+	if viewer.bottomBar != nil {
+		var left, right fyne.CanvasObject
+		if viewer.sidebarToggle != nil {
+			left = viewer.sidebarToggle
+		}
+		right = viewer.menuButton
+		bottom = container.NewBorder(nil, nil, left, right, viewer.bottomBar)
 	}
 
 	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, bottom, nil, nil, mainPage)}
+}
+
+// showGalleryMenu displays a popup menu with gallery options.
+func (viewer *Gallery) showGalleryMenu() {
+	// Build menu items
+	var items []*fyne.MenuItem
+
+	// Toggle filenames option
+	filenameLabel := "Show filenames"
+	if viewer.layout != nil && viewer.layout.showLabels {
+		filenameLabel = "Hide filenames"
+	}
+	items = append(items, fyne.NewMenuItem(filenameLabel, func() {
+		if viewer.layout != nil {
+			viewer.layout.ToggleLabels()
+		}
+	}))
+
+	// Future options can be added here:
+	// - Sort order
+	// - Grid size
+	// - Refresh thumbnails
+	// - Settings
+
+	// Create and show popup menu
+	menu := fyne.NewMenu("", items...)
+	popUpMenu := widget.NewPopUpMenu(menu, viewer.window.Canvas())
+
+	// Position the menu at the bottom-right, near the menu button
+	// Get the button position and size
+	buttonPos := fyne.CurrentApp().Driver().AbsolutePositionForObject(viewer.menuButton)
+	buttonSize := viewer.menuButton.Size()
+
+	// Position menu above the button, aligned to the right edge
+	menuPos := fyne.NewPos(
+		buttonPos.X+buttonSize.Width-popUpMenu.Size().Width,
+		buttonPos.Y-popUpMenu.Size().Height,
+	)
+	popUpMenu.ShowAtPosition(menuPos)
 }
 
 func (viewer *Gallery) LoadGallery() {
@@ -264,7 +323,7 @@ func (viewer *Gallery) LoadGallery() {
 		if i == viewer.currentPage {
 			page.TextStyle.Bold = true
 		}
-		viewer.bottomBar.AddObject(page)
+		viewer.bottomBar.Add(page)
 	}
 	viewer.bottomBar.Refresh()
 	viewer.galleryLoaded = true
@@ -441,6 +500,11 @@ func (viewer *Gallery) InitHotkeys() {
 		if viewer.platform.ShouldExitFullscreenOnGalleryView() && viewer.isFullscreen {
 			viewer.isFullscreen = false
 			viewer.window.SetFullScreen(false)
+		}
+		// Release the current full-size image to free memory when returning to gallery
+		if viewer.CurrentImageView != nil && viewer.CurrentImageView.fyneImage != nil {
+			viewer.CurrentImageView.fyneImage.Image = nil
+			viewer.CurrentImageView.fyneImage.Refresh()
 		}
 		if !viewer.galleryLoaded {
 			viewer.LoadGallery()
@@ -672,6 +736,13 @@ type CustomReader interface {
 	Path() string // Used for caching and identification
 }
 
+// DisplayNamer is an optional CustomReader interface for entries that have a
+// display-friendly name (e.g. a URI that knows its original filename). When
+// not implemented, filepath.Base(Path()) is used as a fallback.
+type DisplayNamer interface {
+	DisplayName() string
+}
+
 // Openable is an optional CustomReader behavior for entries that are not
 // viewable images (e.g. a directory): Open replaces the default image
 // display when the entry is opened.
@@ -714,6 +785,24 @@ func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 	for i, r := range readers {
 		info := NewImageInfoCustomReader(i, r)
 		info.Path = r.Path()
+		// Set display name: prefer DisplayNamer interface, fallback to basename.
+		// For URIs, filepath.Base may not work correctly, so DisplayNamer is important.
+		if dn, ok := r.(DisplayNamer); ok {
+			info.DisplayName = dn.DisplayName()
+		} else {
+			// Fallback: extract basename from path
+			// This works for file paths but may show full URI for content:// schemes
+			base := filepath.Base(info.Path)
+			// If base is still very long (e.g. a URI), try to extract just the filename component
+			if len(base) > 50 && strings.Contains(base, "%2F") {
+				// URI-encoded path separator - decode and take last component
+				parts := strings.Split(base, "%2F")
+				if len(parts) > 0 {
+					base = parts[len(parts)-1]
+				}
+			}
+			info.DisplayName = base
+		}
 		if o, ok := r.(Openable); ok {
 			info.OnOpen = o.Open
 		}

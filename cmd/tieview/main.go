@@ -37,6 +37,12 @@ func main() {
 
 	config := gallery.LoadConfig(myWindow, "")
 
+	// Adjust config for mobile if needed
+	platform := gallery.NewPlatform()
+	if platform.IsMobile() {
+		config.AdjustForMobile()
+	}
+
 	tieConfig := loadTieConfig(gallery.NormalizeConfigPath(*tieConfigName))
 	applyTiePrefs(myApp, &tieConfig)
 	if tieHostName != "" {

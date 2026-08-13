@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -67,7 +68,10 @@ type tieReader struct {
 	// query's expanded attributes so placeholder tiles have the correct aspect
 	// ratio before the thumbnail blob is fetched.
 	dimensions string
-	isVideo    bool
+	// filename is the original filename from tie metadata, pre-populated from
+	// the query's expanded attributes for display in the gallery label.
+	filename string
+	isVideo  bool
 }
 
 // Dimensions implements gallery.DimensionProvider. It parses the "WxH" string
@@ -112,6 +116,17 @@ func (t *tieReader) Path() string {
 	return t.hash
 }
 
+func (t *tieReader) DisplayName() string {
+	if t.filename != "" {
+		return t.filename
+	}
+	// Fallback: show first 8 chars of hash (content-addressed identifier)
+	if len(t.hash) >= 8 {
+		return t.hash[:8] + "..."
+	}
+	return t.hash
+}
+
 func (t *tieReader) httpClient() *http.Client {
 	if t.client == nil {
 		t.client = httpClientForHost(t.host)
@@ -145,6 +160,11 @@ type tieDirReader struct {
 
 func (t *tieDirReader) Path() string {
 	return string(t.uid)
+}
+
+func (t *tieDirReader) DisplayName() string {
+	// Directory UID is like "dir-name" or "parent/child", extract last component
+	return filepath.Base(string(t.uid))
 }
 
 func (t *tieDirReader) GetReader() (io.ReadSeeker, error) {
@@ -226,12 +246,18 @@ func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude
 				hash:       row.Key,
 				thumbHash:  client.RowFirst(row, "thumbnail"),
 				dimensions: client.RowFirst(row, "dimensions"),
+				filename:   client.RowFirst(row, "filename"),
 			})
 		case tieRowDir:
 			uid := client.DirUID(row.Key)
 			readers = append(readers, &tieDirReader{uid: uid, open: func() { browseDir(uid) }})
 		case tieRowVideo:
-			readers = append(readers, &tieReader{host: host, hash: row.Key, isVideo: true})
+			readers = append(readers, &tieReader{
+				host:     host,
+				hash:     row.Key,
+				filename: client.RowFirst(row, "filename"),
+				isVideo:  true,
+			})
 		}
 		}
 		return readers

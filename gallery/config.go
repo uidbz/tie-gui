@@ -95,3 +95,24 @@ func LoadConfig(window fyne.Window, configPath string) (config Config) {
 
 	return config
 }
+
+// AdjustForMobile modifies config parameters to be more memory-efficient on
+// mobile devices. Call this after LoadConfig if running on mobile.
+func (c *Config) AdjustForMobile() {
+	// Smaller tiles to fit mobile screens and reduce memory
+	if c.General.TileWidth > 200 {
+		c.General.TileWidth = 200
+	}
+	// Fewer items per page to reduce memory usage
+	if c.General.ImagesPerPage > 100 {
+		c.General.ImagesPerPage = 100
+	}
+	// Fewer workers to reduce CPU/memory overhead
+	if c.General.Workers > 4 {
+		c.General.Workers = 4
+	}
+	// Slightly smaller gap for compact display
+	if c.General.TileGap > 3 {
+		c.General.TileGap = 3
+	}
+}

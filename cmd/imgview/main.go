@@ -35,6 +35,8 @@ type uriReader struct {
 
 func (r *uriReader) Path() string { return r.uri.String() }
 
+func (r *uriReader) DisplayName() string { return r.uri.Name() }
+
 func (r *uriReader) GetReader() (io.ReadSeeker, error) {
 	if r.data == nil {
 		rc, err := storage.Reader(r.uri)
@@ -126,6 +128,12 @@ func main() {
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.imgview", "imgview", icon)
 
 	config := gallery.LoadConfig(myWindow, gallery.NormalizeConfigPath(*configPath))
+
+	// Adjust config for mobile if needed
+	platform := gallery.NewPlatform()
+	if platform.IsMobile() {
+		config.AdjustForMobile()
+	}
 
 	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		switch true {

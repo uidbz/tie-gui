@@ -59,12 +59,16 @@ type TileLayout struct {
 	viewer           *Gallery // TODO Phase 3: remove this back-reference
 	offset           int
 	currentlyLoading sync.WaitGroup
-	cachedTiles      map[string]*Tile
-	cacheLock        sync.Mutex
+	tileCache        *tileCache
 	showLabels       bool
 	// Direct access to avoid back-reference through viewer
 	thumbnailer   Thumbnailer
 	refreshThumbs bool
+	// Virtual scrolling state
+	visibleTileIndices map[int]bool
+	lastLayoutSize     fyne.Size
+	// Pagination button (shown at end of gallery when more pages exist)
+	nextPageButton *widget.Button
 }
 
 type Tile struct {
@@ -84,20 +88,35 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 	batchSize := 1024
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan *ImageInfo, batchSize)
+
+	// Cache size based on platform: smaller on mobile to save memory
+	maxCacheSize := 500
+	if viewer.Platform().IsMobile() {
+		maxCacheSize = 150
+	}
+
+	// Default: labels off to save vertical space (mobile optimization)
+	showLabels := false
+	// Desktop users can toggle with 'N' key
+	if !viewer.Platform().IsMobile() {
+		showLabels = false // Keep off by default for desktop too
+	}
+
 	layout := &TileLayout{
-		tiles:         tiles,
-		wg:            sync.WaitGroup{},
-		minHeight:     0,
-		imagesToLoad:  imagesToLoad,
-		tabFn:         tabFn,
-		config:        config,
-		window:        window,
-		app:           app,
-		viewer:        viewer,
-		cachedTiles:   make(map[string]*Tile),
-		showLabels:    true,
-		thumbnailer:   viewer.Thumbnailer,
-		refreshThumbs: viewer.refreshThumbs,
+		tiles:                tiles,
+		wg:                   sync.WaitGroup{},
+		minHeight:            0,
+		imagesToLoad:         imagesToLoad,
+		tabFn:                tabFn,
+		config:               config,
+		window:               window,
+		app:                  app,
+		viewer:               viewer,
+		tileCache:            newTileCache(maxCacheSize),
+		showLabels:           showLabels,
+		thumbnailer:          viewer.Thumbnailer,
+		refreshThumbs:        viewer.refreshThumbs,
+		visibleTileIndices:   make(map[int]bool),
 	}
 
 	for i := 0; i < config.General.Workers; i++ {
@@ -110,6 +129,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 func (layout *TileLayout) Clear() {
 	layout.tiles = make([]*Tile, 0)
 	layout.offset = 0
+	layout.visibleTileIndices = make(map[int]bool)
 }
 
 func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
@@ -121,9 +141,11 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	// Start each page with a fresh tile list, indexed relative to
 	// layout.offset (same indexing imageLoader and Layout use).
 	layout.tiles = make([]*Tile, 0, end-layout.offset)
-	fyne.Do(func() {
-		layout.grid.Objects = make([]fyne.CanvasObject, 0)
-	})
+
+	// Clear visible indices when starting a new page
+	layout.visibleTileIndices = make(map[int]bool)
+
+	// Create all tiles on the background thread first
 	for i := layout.offset; i < end; i++ {
 		tile, err := layout.NewImageTile(loadingImg, imageFiles[i], func(t *Tile) {})
 		if err != nil {
@@ -131,12 +153,54 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 			continue
 		}
 		layout.tiles = append(layout.tiles, tile)
-		tileCopy := tile // Capture tile in closure
-		fyne.Do(func() {
-			layout.grid.AddObject(tileCopy)
-		})
 		layout.imagesToLoad <- imageFiles[i]
 	}
+
+	// Now add all tiles to the grid atomically on the UI thread
+	fyne.Do(func() {
+		layout.grid.Objects = make([]fyne.CanvasObject, 0, len(layout.tiles))
+		for _, tile := range layout.tiles {
+			layout.grid.Objects = append(layout.grid.Objects, tile)
+		}
+	})
+
+	// Add "Next Page" button at the end if there are more pages
+	// Calculate if we're on the last page
+	imagesPerPage := layout.config.General.ImagesPerPage
+	totalImages := len(imageFiles)
+	currentPage := layout.offset / imagesPerPage
+	maxPages := totalImages / imagesPerPage
+	if totalImages%imagesPerPage != 0 {
+		maxPages++
+	}
+
+	if currentPage < maxPages-1 {
+		if layout.nextPageButton == nil {
+			layout.nextPageButton = widget.NewButton("Load Next Page ▼", func() {
+				if layout.viewer != nil {
+					layout.viewer.ChangePage(currentPage + 1)
+				}
+			})
+			layout.nextPageButton.Importance = widget.HighImportance
+		} else {
+			// Update button text in case page number changed
+			layout.nextPageButton.SetText("Load Next Page ▼")
+			layout.nextPageButton.OnTapped = func() {
+				if layout.viewer != nil {
+					layout.viewer.ChangePage(currentPage + 1)
+				}
+			}
+		}
+		fyne.Do(func() {
+			layout.grid.Add(layout.nextPageButton)
+		})
+	}
+
+	// Trigger an initial layout refresh to ensure tiles are visible
+	// This is critical for the first page load when scroll offset is 0
+	fyne.Do(func() {
+		layout.grid.Refresh()
+	})
 }
 
 func (layout *TileLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
@@ -144,11 +208,10 @@ func (layout *TileLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(w, layout.minHeight)
 }
 
-// Layout implements a justified row layout: tiles are grouped into rows and
-// scaled so each row fills the full container width with no horizontal gaps.
-// Every tile in a row shares the same height, determined by the combined aspect
-// ratios of its members. This eliminates most whitespace and naturally handles
-// portrait and landscape images without special-casing either orientation.
+// Layout implements a justified row layout with virtual scrolling: tiles are
+// grouped into rows and scaled so each row fills the full container width with
+// no horizontal gaps. Only visible rows (plus a buffer) are rendered to reduce
+// memory usage.
 //
 // The target row height is TileWidth from the config (default 300 px). Rows
 // accumulate tiles until the computed row height drops to that target, at which
@@ -166,7 +229,14 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 
 	// layout.tiles is reset and refilled by PlaceTiles independently of the
 	// grid's objects; only lay out the indices that exist in both.
+	// Note: objects may include a pagination button at the end, which is not a tile.
 	n := len(objects)
+	hasNextButton := false
+	if len(objects) > len(layout.tiles) && layout.nextPageButton != nil {
+		// Last object is the next page button
+		n = len(layout.tiles)
+		hasNextButton = true
+	}
 	if len(layout.tiles) < n {
 		n = len(layout.tiles)
 	}
@@ -174,8 +244,31 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 		return
 	}
 
+	// Track layout size changes for virtual scrolling
+	layout.lastLayoutSize = containerSize
+
+	// Calculate visible viewport for virtual scrolling
+	// We get the scroll offset from the viewer's scroll container
+	scrollY := float32(0)
+	viewportHeight := containerSize.Height
+	if layout.viewer != nil && layout.viewer.scroll != nil {
+		scrollY = layout.viewer.scroll.Offset.Y
+		scrollSize := layout.viewer.scroll.Size()
+		if scrollSize.Height > 0 {
+			viewportHeight = scrollSize.Height
+		}
+	}
+	// Ensure viewport has reasonable minimum height (handles initial layout)
+	if viewportHeight < targetH*2 {
+		viewportHeight = targetH * 3 // Show at least ~3 rows initially
+	}
+
+	// Buffer: render 2 rows above and below the visible area
+	buffer := targetH * 2
+
 	currentY := float32(0)
 	i := 0
+	newVisibleIndices := make(map[int]bool)
 
 	for i < n {
 		rowStart := i
@@ -214,7 +307,12 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 			rowH = targetH
 		}
 
+		// Check if this row is visible (with buffer)
+		rowBottom := currentY + rowH + extraH
+		rowVisible := rowBottom >= (scrollY-buffer) && currentY <= (scrollY+viewportHeight+buffer)
+
 		// Place every tile in the row at its justified width and shared height.
+		// Only position tiles in visible rows to reduce layout overhead.
 		x := float32(0)
 		for k := rowStart; k < i; k++ {
 			tile := layout.tiles[k]
@@ -223,12 +321,39 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 				aspect = 1.0
 			}
 			tileW := aspect * rowH
-			objects[k].Resize(fyne.NewSize(tileW, rowH+extraH))
-			objects[k].Move(fyne.NewPos(x, currentY))
+
+			if rowVisible {
+				objects[k].Resize(fyne.NewSize(tileW, rowH+extraH))
+				objects[k].Move(fyne.NewPos(x, currentY))
+				objects[k].Show()
+				newVisibleIndices[k] = true
+			} else {
+				// Hide tiles outside the visible area to save rendering cycles
+				objects[k].Hide()
+			}
 			x += tileW + gap
 		}
 
 		currentY += rowH + extraH + gap
+	}
+
+	// Hide tiles that were previously visible but are now off-screen
+	for idx := range layout.visibleTileIndices {
+		if !newVisibleIndices[idx] && idx < len(objects) {
+			objects[idx].Hide()
+		}
+	}
+	layout.visibleTileIndices = newVisibleIndices
+
+	// Position the "Next Page" button at the end if present
+	if hasNextButton && layout.nextPageButton != nil {
+		buttonHeight := float32(60) // Large, easily tappable button
+		if layout.viewer != nil && layout.viewer.Platform().IsMobile() {
+			buttonHeight = 80 // Even larger on mobile
+		}
+		layout.nextPageButton.Resize(fyne.NewSize(containerSize.Width, buttonHeight))
+		layout.nextPageButton.Move(fyne.NewPos(0, currentY))
+		currentY += buttonHeight + gap
 	}
 
 	if currentY > gap {
@@ -259,19 +384,11 @@ func (layout *TileLayout) ToggleLabels() {
 }
 
 func (layout *TileLayout) tileFromCache(path string) (*Tile, bool) {
-	layout.cacheLock.Lock()
-	defer layout.cacheLock.Unlock()
-
-	t, ok := layout.cachedTiles[path]
-
-	return t, ok
+	return layout.tileCache.get(path)
 }
 
 func (layout *TileLayout) tileToCache(path string, tile *Tile) {
-	layout.cacheLock.Lock()
-	defer layout.cacheLock.Unlock()
-
-	layout.cachedTiles[path] = tile
+	layout.tileCache.put(path, tile)
 }
 
 func (layout *TileLayout) imageLoader() {
@@ -659,10 +776,13 @@ func (layout *TileLayout) InitHotkeys() {
 	}
 	// NOTE: ScrollDown, ScrollUp, and PathLevelUp moved to Gallery.InitHotkeys
 	// to avoid layout→viewer back-reference.
-	for _, x := range bindings.ToggleFilenames {
-		add(Hotkey{x, func() {
-			layout.ToggleLabels()
-		}})
+	// Skip ToggleFilenames on mobile (no keyboard to press N)
+	if !layout.viewer.Platform().IsMobile() {
+		for _, x := range bindings.ToggleFilenames {
+			add(Hotkey{x, func() {
+				layout.ToggleLabels()
+			}})
+		}
 	}
 }
 

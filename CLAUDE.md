@@ -39,9 +39,51 @@ Both binaries require CGo (Fyne depends on OpenGL / system graphics). The
 
 ---
 
+## Memory Optimization
+
+The gallery implements several optimizations for fluid performance on mobile and
+lower-end devices:
+
+### LRU Tile Cache (`gallery/tilecache.go`)
+In-memory thumbnail cache with size limits (500 desktop, 150 mobile). Uses
+insertion-order LRU eviction. Cache operations are mutex-protected.
+
+### Virtual Scrolling
+`TileLayout.Layout` only renders visible rows plus a 2-row buffer. Off-screen
+tiles are hidden (`Hide()`) to save GPU cycles. Visible indices tracked in
+`visibleTileIndices` map; updated each layout pass.
+
+**Scroll position**: Retrieved from `viewer.scroll.Offset.Y` to calculate
+which rows are in the viewport. Buffer is 2× `TileWidth` above and below.
+
+**Scroll listener**: `viewer.scroll.OnScrolled` triggers `gallery.Refresh()`
+to recalculate visible tiles when scrolling. Without this, tiles would remain
+hidden when scrolling back up after reaching the bottom.
+
+### Pagination Button
+Large "Load Next Page ▼" button appended to `grid.Objects` after all tiles
+when `currentPage < maxPages - 1`. Handled specially in `Layout()`: given
+full width and fixed height (60px desktop, 80px mobile).
+
+### Mobile Config Adjustments
+`Config.AdjustForMobile()` reduces memory footprint on mobile platforms:
+- TileWidth: 300 → 200
+- ImagesPerPage: 500 → 100
+- Workers: 8 → 4
+- TileGap: 5 → 3
+
+Applied automatically in both main programs after `LoadConfig` if
+`platform.IsMobile()` is true.
+
+### Image Cleanup
+`showGallery()` releases full-size images (`fyneImage.Image = nil`) when
+returning to the gallery view to free memory immediately.
+
+---
+
 ## Gallery layout (`gallery/tilelayout.go`)
 
-### Justified row layout (current)
+### Justified row layout with virtual scrolling
 
 `TileLayout.Layout` implements a **justified row layout**: tiles are grouped
 into rows and scaled so each row fills the full container width with no
@@ -77,12 +119,18 @@ giving the correct aspect ratio from the first layout pass.
 
 `PlaceTiles` creates placeholder tiles from `loading.png` for every slot on
 the current page, then sends each `ImageInfo` to the `imagesToLoad` channel.
-`Workers` (default 8) goroutines drain the channel, call `GetThumbnail` →
-`NewImageTile`, and write the real tile back. The grid refreshes every 20
-images or 500 ms after the last load.
+`Workers` (default 8 desktop, 4 mobile) goroutines drain the channel, call
+`GetThumbnail` → `NewImageTile`, and write the real tile back. The grid
+refreshes every 20 images or 500 ms after the last load.
 
-`cachedTiles map[string]*Tile` holds in-memory tile cache keyed by path/hash.
-Cache hits skip thumbnail decoding entirely.
+When the current page is not the last page, `PlaceTiles` adds a large
+"Load Next Page ▼" button as the final object in `grid.Objects`. This button
+is 60px tall on desktop (80px on mobile) and styled with high importance for
+easy tapping.
+
+`tileCache *tileCache` holds an LRU in-memory tile cache keyed by path/hash.
+Cache hits skip thumbnail decoding entirely. Cache size is limited to 500
+tiles on desktop, 150 on mobile.
 
 ### Thumbnail pipeline
 
@@ -155,6 +203,7 @@ preventing layout reflow as thumbnails load.
 | `VideoFile` | `IsVideo() bool` | Marks entry as video (shows placeholder, caller opens player) |
 | `VideoStreamer` | `StreamURL() string` | Returns direct HTTP URL so libmpv streams without downloading |
 | `DimensionProvider` | `Dimensions() (w, h int)` | Pre-known image dimensions for stable placeholder layout |
+| `DisplayNamer` | `DisplayName() string` | Human-readable name for thumbnail label (fallback: filepath.Base(Path())) |
 
 ---
 
@@ -177,6 +226,24 @@ avoid redundant calls.
 back mechanism is `PathLevelUp` (hotkey), which calls
 `ShowImageDir(filepath.Dir(currentPath))`. The Android back button returns to
 the gallery view but does not pop a directory stack.
+
+### Gallery hotkeys (default bindings)
+- **N**: Toggle filename labels on/off (ToggleFilenames) — **desktop only**
+- **J** / **Down**: Scroll down
+- **K** / **Up**: Scroll up
+- **Backspace**: Navigate to parent directory (PathLevelUp)
+- **Q** / **Escape**: Quit (gallery view) or return to gallery (image view)
+
+All hotkeys are configurable in `config.toml` under `[Gallery]` section.
+
+### Gallery UI controls
+- **☰ Menu button** (bottom-right): Opens popup menu with options
+  - Show/Hide filenames
+  - (Future: more options)
+- **◀/▶ Toggle** (bottom-left, tieview only): Show/hide tag sidebar
+- **Pagination** (bottom-center): Page navigation links and "Load Next Page" button at end of gallery
+
+**Default**: Filename labels are OFF by default (saves ~22px vertical space per row). Use ☰ menu → "Show filenames" to enable.
 
 ---
 
