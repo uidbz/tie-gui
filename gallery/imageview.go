@@ -66,6 +66,16 @@ type ImageView struct {
 	pinchZoom      float32
 	swipeAccum     float32
 	swipeVertAccum float32
+
+	// Progressive quality (mobile only). thumbImage is the downscaled bitmap
+	// shown at fit for low memory and smooth pinching; when zoomed in past what
+	// its pixels cover, fullImage holds a full-resolution decode swapped in on
+	// pinch-settle. wasDownscaled records whether the source was actually shrunk
+	// (nothing to upgrade if not); loadingFull guards concurrent decodes.
+	thumbImage    image.Image
+	fullImage     image.Image
+	wasDownscaled bool
+	loadingFull   bool
 }
 
 type Hotkey struct {
@@ -224,9 +234,83 @@ func (iv *ImageView) LoadImage() error {
 		return err2
 	}
 	iv.format = format
-	iv.setImage(iv.downscaleForMobile(img))
+	display := iv.downscaleForMobile(img)
+	iv.setImage(display)
+	// setImage recorded the (possibly downscaled) display dimensions; keep the
+	// TRUE original dimensions for correct zoom math and the progressive-quality
+	// threshold.
+	iv.imgWidth = img.Bounds().Dx()
+	iv.imgHeight = img.Bounds().Dy()
+	if iv.platform.ShouldDownscaleImages() {
+		iv.thumbImage = display
+		iv.wasDownscaled = display.Bounds().Dx() < img.Bounds().Dx()
+	}
 
 	return nil
+}
+
+// qualityFullResZoom is the zoom factor beyond which the downscaled mobile
+// thumbnail is stretched past its own pixels. The thumbnail only holds ~2x the
+// screen's logical pixels, so on high-density screens it runs short of detail
+// just past fit; the threshold sits just above the fit/detent band so any real
+// zoom-in swaps in a full-resolution decode and stays sharp.
+const qualityFullResZoom = 1.15
+
+// applyZoomQuality (mobile) upgrades the display bitmap to full resolution when
+// zoomed in past the thumbnail's coverage, and reverts to the thumbnail when
+// zoomed back out. Called once when a pinch settles. No-op on desktop or when
+// the source was never downscaled.
+func (iv *ImageView) applyZoomQuality() {
+	if !iv.wasDownscaled || iv.thumbImage == nil {
+		return
+	}
+	if iv.zoomFactor() > qualityFullResZoom {
+		if iv.fullImage != nil || iv.loadingFull {
+			return
+		}
+		iv.loadingFull = true
+		go func() {
+			full := iv.decodeFullImage()
+			fyne.Do(func() {
+				iv.loadingFull = false
+				// The gesture may have ended zoomed back out (or the view was
+				// released) while we decoded; only apply if still needed.
+				if full == nil || iv.fyneImage == nil || iv.zoomFactor() <= qualityFullResZoom {
+					return
+				}
+				iv.fullImage = full
+				iv.fyneImage.Image = full
+				// Keep ScaleMode Fastest: it skips CPU scaling and lets the GPU
+				// linear-filter the full-res texture. ImageScaleSmooth would run
+				// a CatmullRom resample of the whole full-res bitmap on the UI
+				// thread every repaint (target grows with zoom), which freezes
+				// the app at high zoom.
+				iv.fyneImage.Refresh()
+			})
+		}()
+		return
+	}
+	// Back within the thumbnail's range: drop the full-res bitmap to free memory.
+	if iv.fullImage != nil {
+		iv.fullImage = nil
+		iv.fyneImage.Image = iv.thumbImage
+		iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
+		iv.fyneImage.Refresh()
+	}
+}
+
+// decodeFullImage re-decodes the source at full resolution (EXIF-oriented,
+// matching the initial load). Runs off the UI goroutine.
+func (iv *ImageView) decodeFullImage() image.Image {
+	reader, err := iv.info.GetReader()
+	if err != nil {
+		return nil
+	}
+	img, _, err := Decode(reader)
+	if err != nil {
+		return nil
+	}
+	return img
 }
 
 // downscaleForMobile shrinks a decoded image on mobile so the GPU texture that
@@ -407,6 +491,7 @@ func (iv *ImageView) dragEndMobile() {
 		iv.newSize = true
 		iv.changeFn()
 		iv.container.Refresh()
+		iv.applyZoomQuality()
 		return
 	}
 
@@ -497,6 +582,7 @@ func (iv *ImageView) TouchUp(e *mobile.TouchEvent) {
 		iv.newSize = true
 		iv.changeFn()
 		iv.container.Refresh()
+		iv.applyZoomQuality()
 	}
 }
 

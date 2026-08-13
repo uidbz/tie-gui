@@ -505,6 +505,7 @@ func (viewer *Gallery) InitHotkeys() {
 		}
 		// Release the current full-size image to free memory when returning to gallery
 		if viewer.CurrentImageView != nil && viewer.CurrentImageView.fyneImage != nil {
+			viewer.CurrentImageView.fullImage = nil
 			viewer.CurrentImageView.fyneImage.Image = nil
 			viewer.CurrentImageView.fyneImage.Refresh()
 		}
