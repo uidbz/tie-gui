@@ -47,6 +47,7 @@ type ImageView struct {
 	w                 fyne.Window
 	container         *fyne.Container
 	changeFn          func()
+	toggleFullscreen  func()
 	platform          *Platform
 
 	// nextFn/prevFn page to the adjacent image; wired by Viewer.ChangeImage so
@@ -387,6 +388,28 @@ func (iv *ImageView) draggedMobile(drag *fyne.DragEvent) {
 func (iv *ImageView) dragEndMobile() {
 	iv.dragStart = false
 
+	// End any in-progress pinch here. When the primary finger has dragged, the
+	// driver's canvas.tapUp returns early (dragging != nil) and never delivers
+	// TouchUp to us, so pinchDist/touches would stay stale after a finger lifts
+	// and the surviving finger would keep driving TouchMoved's zoom path. DragEnd
+	// is the reliable "primary finger released" signal, so reset pinch state and
+	// skip the pan/paging logic (a pinch is not a swipe).
+	if iv.pinchDist > 0 {
+		iv.pinchDist = 0
+		iv.touches = make(map[int]fyne.Position)
+		iv.swipeAccum = 0
+		iv.swipeVertAccum = 0
+		// Snap to the default fillWindow view if the pinch settled inside the
+		// fit-to-screen detent (mirrors TouchUp, which is not delivered here).
+		if zf := iv.zoomFactor(); zf > 0.86 && zf < 1.14 {
+			iv.fillWindow = true
+		}
+		iv.newSize = true
+		iv.changeFn()
+		iv.container.Refresh()
+		return
+	}
+
 	c := iv.containerSize()
 
 	// Horizontal paging threshold. When zoomed in, demand a firmer throw.
@@ -436,6 +459,15 @@ func (iv *ImageView) dragEndMobile() {
 func (iv *ImageView) TouchDown(e *mobile.TouchEvent) {
 	iv.touches[e.ID] = iv.pos.Add(e.Position) // store in container coords
 	if len(iv.touches) == 2 {
+		// In the fillWindow (fit) state the widget is container-sized with the
+		// image letterboxed inside, so zoomFactor() reads >1 for non-matching
+		// aspect ratios and the first pinch frame would jump. Convert to the
+		// explicit fit representation (widget == visible image) first; it is
+		// visually identical, so the pinch starts smoothly at zoom 1.0.
+		if iv.fillWindow {
+			iv.fillWindow = false
+			iv.size = iv.baseSize()
+		}
 		iv.pinchDist = iv.touchDistance()
 		iv.pinchZoom = iv.zoomFactor()
 		iv.swipeAccum = 0
@@ -456,6 +488,12 @@ func (iv *ImageView) TouchUp(e *mobile.TouchEvent) {
 	// stay smooth). When it ends, sync the layout state and update the title
 	// once so downstream (zoom %, high-quality raster) reflects the final zoom.
 	if wasPinching && iv.pinchDist == 0 {
+		// If the pinch settled inside the fit-to-screen detent, snap to the
+		// default fillWindow view. Using fillWindow (not a fixed size) means the
+		// layout re-fits automatically on orientation/viewport changes.
+		if zf := iv.zoomFactor(); zf > 0.86 && zf < 1.14 {
+			iv.fillWindow = true
+		}
 		iv.newSize = true
 		iv.changeFn()
 		iv.container.Refresh()
@@ -488,6 +526,24 @@ func (iv *ImageView) TouchMoved(e *mobile.TouchEvent) {
 
 	iv.fillWindow = false
 	z := clampF(iv.pinchZoom*(dist/iv.pinchDist), 0.1, 40)
+
+	// Detent at fit-to-screen (z == 1.0, the "fill window" / x-hotkey view).
+	// Within a band around 1.0 the zoom change is compressed so the image
+	// resists moving through the fit point, making it easy to settle back on
+	// the default view instead of overshooting. The pull is strongest at the
+	// center and tapers to zero at the band edges to stay continuous. Near the
+	// center the displayed zoom advances at ~(1-strength) of the finger's
+	// motion, which is the "resistance" the user feels.
+	const detentBand float32 = 0.28
+	const detentStrength float32 = 0.82
+	if d := z - 1.0; d > -detentBand && d < detentBand {
+		ad := d
+		if ad < 0 {
+			ad = -ad
+		}
+		z += (1.0 - z) * detentStrength * (1 - ad/detentBand)
+	}
+
 	base := iv.baseSize()
 	newSize := fyne.NewSize(base.Width*z, base.Height*z)
 
@@ -580,6 +636,11 @@ func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
 	}
 }
 func (iv *ImageView) Tapped(_ *fyne.PointEvent) {
+	// On mobile, tapping toggles fullscreen (hides/shows Android system bars)
+	// before invoking any custom tap handler, matching Samsung Gallery behavior.
+	if iv.platform.IsMobile() && iv.toggleFullscreen != nil {
+		iv.toggleFullscreen()
+	}
 	if iv.info.OnTapped != nil {
 		iv.info.OnTapped()
 	}

@@ -402,6 +402,8 @@ func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
 		img.changeFn = func() {
 			viewer.window.SetTitle("imgview - " + img.GetImageInfo())
 		}
+		// Wire fullscreen toggle for mobile tap-to-hide-system-bars behavior.
+		img.toggleFullscreen = viewer.ToggleFullscreen
 		viewer.cache[info.Path] = img
 		return img
 	} else {
