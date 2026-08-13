@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"git.sr.ht/~uid/tie/client"
+	"git.sr.ht/~uid/tie/io/archivelib"
 	"git.sr.ht/~uid/tie/io/getlib"
 	"git.sr.ht/~uid/tie/io/putlib"
 
@@ -175,14 +176,106 @@ func (t *tieDirReader) Open() {
 	t.open()
 }
 
+// tieArchiveReader is the gallery entry for an archive blob (tie-type
+// image-archive / audio-archive / ...). Like a directory it is not image
+// content itself: opening it browses the archive's image members (Openable),
+// and its thumbnail is a folder icon.
+type tieArchiveReader struct {
+	hash     string
+	filename string
+	open     func()
+}
+
+func (t *tieArchiveReader) Path() string { return t.hash }
+
+func (t *tieArchiveReader) DisplayName() string {
+	if t.filename != "" {
+		return t.filename
+	}
+	if len(t.hash) >= 8 {
+		return t.hash[:8] + "..."
+	}
+	return t.hash
+}
+
+func (t *tieArchiveReader) GetReader() (io.ReadSeeker, error) {
+	return nil, errors.New("tie archive is not image content: " + t.hash)
+}
+
+func (t *tieArchiveReader) Open() { t.open() }
+
+// archiveMemberReader serves one image member's bytes out of an archive blob
+// that has already been fetched into memory. The whole archive is shared across
+// its members (viewing an archive means holding it), and each member's
+// decompressed bytes are extracted lazily on first read.
+type archiveMemberReader struct {
+	archiveHash string
+	data        []byte // the whole archive blob, shared between members
+	member      archivelib.Member
+	seeker      io.ReadSeeker
+}
+
+func (a *archiveMemberReader) Path() string { return a.archiveHash + "/" + a.member.Name }
+
+func (a *archiveMemberReader) DisplayName() string { return filepath.Base(a.member.Name) }
+
+func (a *archiveMemberReader) GetReader() (io.ReadSeeker, error) {
+	if a.seeker == nil {
+		rc, err := archivelib.Open(bytes.NewReader(a.data), a.member.Name)
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, err
+		}
+		a.seeker = bytes.NewReader(b)
+	}
+	return a.seeker, nil
+}
+
+// browseTieArchive fetches an archive blob and replaces the gallery with its
+// image members, mirroring how a directory listing is shown. The blob is read
+// once and shared across the member readers.
+func browseTieArchive(viewer *gallery.Gallery, host client.FileHost, hash string) {
+	viewer.ReadCustomAsync(func() []gallery.CustomReader {
+		r, err := getlib.ReadFile(httpClientForHost(host), host.URL, hash)
+		if err != nil {
+			fmt.Println("Error fetching archive", hash, ":", err)
+			return nil
+		}
+		data, err := io.ReadAll(r)
+		if err != nil {
+			fmt.Println("Error reading archive", hash, ":", err)
+			return nil
+		}
+		members, err := archivelib.List(bytes.NewReader(data))
+		if err != nil {
+			fmt.Println("Error listing archive", hash, ":", err)
+			return nil
+		}
+		readers := make([]gallery.CustomReader, 0, len(members))
+		for _, m := range members {
+			if m.Kind != archivelib.Image {
+				continue
+			}
+			readers = append(readers, &archiveMemberReader{archiveHash: hash, data: data, member: m})
+		}
+		return readers
+	})
+	viewer.ChangeGallery()
+}
+
 // tieRowKind is how a tag-query row appears in the gallery.
 type tieRowKind int
 
 const (
-	tieRowSkip  tieRowKind = iota // hidden (audio, plain dirs, ...)
-	tieRowFile                    // a viewable image
-	tieRowDir                     // a browsable tagged image directory
-	tieRowVideo                   // a playable video file
+	tieRowSkip    tieRowKind = iota // hidden (audio, plain dirs, ...)
+	tieRowFile                      // a viewable image
+	tieRowDir                       // a browsable tagged image directory
+	tieRowVideo                     // a playable video file
+	tieRowArchive                   // a browsable archive blob (zip of images)
 )
 
 // classifyTieRow reports how a tag-query row should appear. The gallery
@@ -194,6 +287,11 @@ func classifyTieRow(row client.Row) tieRowKind {
 	types := client.RowValues(row, client.TieTypeProperty.String())
 	if slices.Contains(types, client.TieImageDir.String()) {
 		return tieRowDir
+	}
+	for _, tp := range types {
+		if client.IsArchiveType(client.StringToTieType(tp)) {
+			return tieRowArchive
+		}
 	}
 	if slices.Contains(types, client.TieImageFile.String()) {
 		return tieRowFile
@@ -251,6 +349,13 @@ func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude
 		case tieRowDir:
 			uid := client.DirUID(row.Key)
 			readers = append(readers, &tieDirReader{uid: uid, open: func() { browseDir(uid) }})
+		case tieRowArchive:
+			hash := row.Key
+			readers = append(readers, &tieArchiveReader{
+				hash:     hash,
+				filename: client.RowFirst(row, "filename"),
+				open:     func() { browseTieArchive(viewer, host, hash) },
+			})
 		case tieRowVideo:
 			readers = append(readers, &tieReader{
 				host:     host,
@@ -275,23 +380,26 @@ type filehostThumbnailer struct {
 }
 
 func (t *filehostThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker, error) {
-	if _, ok := info.CustomReader.(*tieDirReader); ok {
-		// Directories have no image content; a folder icon marks the tile
-		// clearly as a directory.
+	switch info.CustomReader.(type) {
+	case *tieDirReader, *tieArchiveReader:
+		// Directories and archives have no image content of their own; a folder
+		// icon marks the tile clearly as browsable.
 		info.ThumbnailIsScaled = true
 		return folderIcon(t.tileWidth * 2), nil
 	}
-	tr, ok := info.CustomReader.(*tieReader)
-	if !ok {
-		return nil, errors.New("tie image without tie reader: " + info.Path)
-	}
-	if tr.isVideo {
-		// Video thumbnails are handled upstream (InputIsVideo → loading placeholder).
-		return nil, errors.New("video thumbnail not available")
-	}
-	if rs, ok := t.thumbnailReader(tr); ok {
-		info.ThumbnailIsScaled = true
-		return rs, nil
+	// tr is nil for readers that carry image bytes but have no filehost thumbnail
+	// cache (e.g. archive members): they fall through to on-the-fly generation
+	// without the cache lookup/upload.
+	tr, _ := info.CustomReader.(*tieReader)
+	if tr != nil {
+		if tr.isVideo {
+			// Video thumbnails are handled upstream (InputIsVideo → loading placeholder).
+			return nil, errors.New("video thumbnail not available")
+		}
+		if rs, ok := t.thumbnailReader(tr); ok {
+			info.ThumbnailIsScaled = true
+			return rs, nil
+		}
 	}
 
 	reader, err := info.GetReader()
@@ -310,7 +418,9 @@ func (t *filehostThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeek
 	if err := jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90}); err != nil {
 		return nil, err
 	}
-	t.upload(tr, buf.Bytes(), origW, origH)
+	if tr != nil {
+		t.upload(tr, buf.Bytes(), origW, origH)
+	}
 	// Make dimensions available for the current session without waiting for
 	// the next query to return them.
 	info.Width = origW

@@ -173,8 +173,17 @@ func (t *tieFSTree) showDirUID(uid client.DirUID, selectHash string) {
 // showListing replaces the gallery with the image files of a directory
 // listing, and opens the one with selectHash when given.
 func (t *tieFSTree) showListing(dir client.Directory, selectHash string) {
-	readers := make([]gallery.CustomReader, 0, len(dir.Files))
+	readers := make([]gallery.CustomReader, 0, len(dir.Files)+len(dir.Archives))
 	selIdx := -1
+	host := tieFileHost(t.tie)
+	for _, a := range dir.Archives {
+		hash := a.Hash
+		readers = append(readers, &tieArchiveReader{
+			hash:     hash,
+			filename: a.Filename,
+			open:     func() { browseTieArchive(t.viewer, host, hash) },
+		})
+	}
 	for _, f := range dir.Files {
 		if !isImageFile(f) {
 			continue
