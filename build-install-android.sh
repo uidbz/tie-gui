@@ -57,7 +57,7 @@ build() {
     local app="$1" id
     id="$(app_id "$app")"
 
-    local args=(package -os "$TARGET" -app-id "$id" -icon Icon.png)
+    local args=(package --os "$TARGET" --appID "$id" --icon Icon.png)
     if [ "${RELEASE:-0}" = "1" ]; then
         args+=(--release)
     fi
