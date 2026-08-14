@@ -202,13 +202,6 @@ func (viewer *Gallery) CreateView() {
 	var mainPage fyne.CanvasObject
 	if viewer.scroll == nil {
 		viewer.scroll = container.NewScroll(viewer.gallery)
-		// Add scroll listener to trigger layout refresh for virtual scrolling.
-		// Without this, tiles remain hidden when scrolling back up.
-		viewer.scroll.OnScrolled = func(pos fyne.Position) {
-			if viewer.gallery != nil {
-				viewer.gallery.Refresh()
-			}
-		}
 	}
 	if viewer.Sidebar != nil {
 		split := container.NewHSplit(viewer.Sidebar, viewer.scroll)

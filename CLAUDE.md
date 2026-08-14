@@ -48,17 +48,18 @@ lower-end devices:
 In-memory thumbnail cache with size limits (500 desktop, 150 mobile). Uses
 insertion-order LRU eviction. Cache operations are mutex-protected.
 
-### Virtual Scrolling
-`TileLayout.Layout` only renders visible rows plus a 2-row buffer. Off-screen
-tiles are hidden (`Hide()`) to save GPU cycles. Visible indices tracked in
-`visibleTileIndices` map; updated each layout pass.
+### Off-screen culling (Fyne clip)
+`TileLayout.Layout` positions **every** tile on the page each pass; it does not
+Hide/Show tiles or track a visible-index set. Off-screen tiles cost nothing to
+render because Fyne's GL painter culls any object outside the scroll
+container's clip rect (`Paint()` early-returns in
+`third_party/fyne/internal/painter/gl/painter.go`; the scroll registers as a
+clip via `IsClip` in `internal/driver/util.go`).
 
-**Scroll position**: Retrieved from `viewer.scroll.Offset.Y` to calculate
-which rows are in the viewport. Buffer is 2× `TileWidth` above and below.
-
-**Scroll listener**: `viewer.scroll.OnScrolled` triggers `gallery.Refresh()`
-to recalculate visible tiles when scrolling. Without this, tiles would remain
-hidden when scrolling back up after reaching the bottom.
+**Do not** add a `viewer.scroll.OnScrolled` → `gallery.Refresh()` handler: a
+`*fyne.Container.Refresh()` refreshes every child (re-uploading every tile
+texture) and, fired per scroll frame, made scrolling choppy. This was the
+"virtual scrolling" regression removed after commit `6a83e2f`.
 
 ### Pagination Button
 Large "Load Next Page ▼" button appended to `grid.Objects` after all tiles
@@ -83,7 +84,7 @@ returning to the gallery view to free memory immediately.
 
 ## Gallery layout (`gallery/tilelayout.go`)
 
-### Justified row layout with virtual scrolling
+### Justified row layout
 
 `TileLayout.Layout` implements a **justified row layout**: tiles are grouped
 into rows and scaled so each row fills the full container width with no
@@ -172,7 +173,7 @@ preventing layout reflow as thumbnails load.
 - `tiles []*Tile` — current page, indexed 0…pageSize-1
 - `offset int` — index of first tile on this page within `viewer.imageFiles`
 - `minHeight float32` — total pixel height of all rows; reported by `MinSize`
-- `cachedTiles map[string]*Tile` — session-scoped in-memory thumbnail cache
+- `tileCache *tileCache` — session-scoped LRU in-memory thumbnail cache
 - `imagesToLoad chan *ImageInfo` — work queue for loader goroutines
 
 ### `gallery.Tile` (`gallery/tilelayout.go`)

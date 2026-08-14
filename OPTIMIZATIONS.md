@@ -12,23 +12,21 @@ This document describes the memory and performance optimizations implemented to 
   - Mobile: Max 150 tiles cached (~18-36 MB)
   - Old thumbnails automatically evicted when cache fills up
 
-### 2. Virtual Scrolling (`gallery/tilelayout.go`, `gallery/gallery.go`)
-- **Problem**: All 500 tiles rendered simultaneously, even off-screen ones
-- **Solution**: Only render visible rows plus a 2-row buffer above/below viewport
+### 2. Off-screen culling via Fyne's clip (`gallery/tilelayout.go`, `gallery/gallery.go`)
+- **Note**: An earlier "virtual scrolling" attempt (Hide/Show off-screen tiles +
+  `viewer.scroll.OnScrolled` → `gallery.Refresh()`) was **removed** — it made
+  scrolling choppy because `*fyne.Container.Refresh()` re-uploads every tile
+  texture and fired on every scroll frame.
+- **Current approach**: `TileLayout.Layout` positions every tile; off-screen
+  tiles are culled by Fyne's GL painter, which skips any object outside the
+  scroll container's clip rect (`internal/painter/gl/painter.go`). No per-scroll
+  work is needed.
 - **Implementation**:
-  - `TileLayout.Layout` reads `viewer.scroll.Offset.Y` to determine visible area
-  - Tiles outside viewport are hidden (`Hide()`) to save GPU cycles
-  - `viewer.scroll.OnScrolled` callback triggers `gallery.Refresh()` to recalculate
-    visible tiles when scrolling (fixes white space when scrolling back up)
-  - Viewport height has fallback to `targetH * 3` for initial layout before scroll
-    container is sized
-  - `PlaceTiles` adds all tiles atomically in single `fyne.Do()` block to prevent
-    race where refresh happens before tiles are added
+  - `PlaceTiles` adds all tiles atomically in a single `fyne.Do()` block to
+    prevent a race where refresh happens before tiles are added.
 - **Impact**:
-  - Typical visible area: ~30-50 tiles instead of 500
-  - Reduces rendering overhead by ~90%
-  - Layout recalculates visible tiles on each scroll event
-  - No white space on initial load or when scrolling
+  - Off-screen tiles cost no render time (painter clip test), with no per-frame
+    relayout or refresh — smooth scrolling.
 
 ### 3. Improved Pagination UI
 - **Problem**: Bottom bar pagination controls are small and difficult to tap on mobile

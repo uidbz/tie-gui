@@ -1,5 +1,12 @@
 # Mobile and Virtual Scrolling Fixes
 
+> **Superseded (see CLAUDE.md):** The Hide/Show "virtual scrolling" and the
+> `viewer.scroll.OnScrolled` → `gallery.Refresh()` handler described below were
+> **reverted** — they made gallery scrolling choppy (a full container Refresh
+> re-uploads every tile texture on every scroll frame). Off-screen tiles are now
+> culled by Fyne's painter clip; no per-scroll handler exists. The sections
+> below are kept as historical context only.
+
 ## Issues Fixed
 
 ### 1. White Space on Startup (Mobile and Desktop)

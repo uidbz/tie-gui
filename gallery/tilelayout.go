@@ -64,9 +64,6 @@ type TileLayout struct {
 	// Direct access to avoid back-reference through viewer
 	thumbnailer   Thumbnailer
 	refreshThumbs bool
-	// Virtual scrolling state
-	visibleTileIndices map[int]bool
-	lastLayoutSize     fyne.Size
 	// Pagination button (shown at end of gallery when more pages exist)
 	nextPageButton *widget.Button
 }
@@ -116,7 +113,6 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 		showLabels:           showLabels,
 		thumbnailer:          viewer.Thumbnailer,
 		refreshThumbs:        viewer.refreshThumbs,
-		visibleTileIndices:   make(map[int]bool),
 	}
 
 	for i := 0; i < config.General.Workers; i++ {
@@ -129,7 +125,6 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 func (layout *TileLayout) Clear() {
 	layout.tiles = make([]*Tile, 0)
 	layout.offset = 0
-	layout.visibleTileIndices = make(map[int]bool)
 }
 
 func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
@@ -141,9 +136,6 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	// Start each page with a fresh tile list, indexed relative to
 	// layout.offset (same indexing imageLoader and Layout use).
 	layout.tiles = make([]*Tile, 0, end-layout.offset)
-
-	// Clear visible indices when starting a new page
-	layout.visibleTileIndices = make(map[int]bool)
 
 	// Create all tiles on the background thread first
 	for i := layout.offset; i < end; i++ {
@@ -244,31 +236,8 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 		return
 	}
 
-	// Track layout size changes for virtual scrolling
-	layout.lastLayoutSize = containerSize
-
-	// Calculate visible viewport for virtual scrolling
-	// We get the scroll offset from the viewer's scroll container
-	scrollY := float32(0)
-	viewportHeight := containerSize.Height
-	if layout.viewer != nil && layout.viewer.scroll != nil {
-		scrollY = layout.viewer.scroll.Offset.Y
-		scrollSize := layout.viewer.scroll.Size()
-		if scrollSize.Height > 0 {
-			viewportHeight = scrollSize.Height
-		}
-	}
-	// Ensure viewport has reasonable minimum height (handles initial layout)
-	if viewportHeight < targetH*2 {
-		viewportHeight = targetH * 3 // Show at least ~3 rows initially
-	}
-
-	// Buffer: render 2 rows above and below the visible area
-	buffer := targetH * 2
-
 	currentY := float32(0)
 	i := 0
-	newVisibleIndices := make(map[int]bool)
 
 	for i < n {
 		rowStart := i
@@ -307,12 +276,9 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 			rowH = targetH
 		}
 
-		// Check if this row is visible (with buffer)
-		rowBottom := currentY + rowH + extraH
-		rowVisible := rowBottom >= (scrollY-buffer) && currentY <= (scrollY+viewportHeight+buffer)
-
 		// Place every tile in the row at its justified width and shared height.
-		// Only position tiles in visible rows to reduce layout overhead.
+		// Off-screen tiles are culled by Fyne's painter against the scroll
+		// container's clip rect, so all tiles are positioned unconditionally.
 		x := float32(0)
 		for k := rowStart; k < i; k++ {
 			tile := layout.tiles[k]
@@ -321,29 +287,13 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 				aspect = 1.0
 			}
 			tileW := aspect * rowH
-
-			if rowVisible {
-				objects[k].Resize(fyne.NewSize(tileW, rowH+extraH))
-				objects[k].Move(fyne.NewPos(x, currentY))
-				objects[k].Show()
-				newVisibleIndices[k] = true
-			} else {
-				// Hide tiles outside the visible area to save rendering cycles
-				objects[k].Hide()
-			}
+			objects[k].Resize(fyne.NewSize(tileW, rowH+extraH))
+			objects[k].Move(fyne.NewPos(x, currentY))
 			x += tileW + gap
 		}
 
 		currentY += rowH + extraH + gap
 	}
-
-	// Hide tiles that were previously visible but are now off-screen
-	for idx := range layout.visibleTileIndices {
-		if !newVisibleIndices[idx] && idx < len(objects) {
-			objects[idx].Hide()
-		}
-	}
-	layout.visibleTileIndices = newVisibleIndices
 
 	// Position the "Next Page" button at the end if present
 	if hasNextButton && layout.nextPageButton != nil {
