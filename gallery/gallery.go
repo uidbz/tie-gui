@@ -645,16 +645,14 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 			}
 
 		case IsArchiveFromPath(fullPath):
-			f, err := os.Open(fullPath)
+			// Pass only the filename (nil stream): the library then manages
+			// its own file handles. Passing an *os.File and closing it here
+			// leaves the returned FS unable to read members later ("file
+			// already closed"), so member thumbnails never loaded.
+			fsys, err := archives.FileSystem(context.Background(), fullPath, nil)
 			if err != nil {
 				continue
 			}
-			fsys, err := archives.FileSystem(context.Background(), fullPath, f)
-			if err != nil {
-				f.Close()
-				continue
-			}
-			defer f.Close()
 			// Collect every image member so the archive tile can swipe
 			// through them; the first image becomes the gallery entry.
 			var previews []string
@@ -846,14 +844,9 @@ func (viewer *Gallery) ReadImageArchive(zipFile string) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()
 
-	f, err := os.Open(zipFile)
-	if err != nil {
-		// Archive cannot be opened; imageFiles stays empty
-		return
-	}
-	defer f.Close()
-
-	fsys, err := archives.FileSystem(context.Background(), zipFile, f)
+	// Pass only the filename (nil stream): the library manages its own file
+	// handles, so the returned FS stays usable after this function returns.
+	fsys, err := archives.FileSystem(context.Background(), zipFile, nil)
 	if err != nil {
 		// Archive cannot be opened; imageFiles stays empty
 		return

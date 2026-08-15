@@ -170,6 +170,17 @@ func TestReadImageDirArchiveEntry(t *testing.T) {
 	if !arch.HasPreviews() || arch.PreviewCount() != 2 {
 		t.Fatalf("HasPreviews=%v PreviewCount=%d", arch.HasPreviews(), arch.PreviewCount())
 	}
+
+	// Members must be readable after ReadImageDir returns (regression: the
+	// archive file was closed on return, breaking every later member read).
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	data, err := layout.dirPreviewThumbnail(arch)
+	if err != nil {
+		t.Fatalf("dirPreviewThumbnail: %v", err)
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
+		t.Fatalf("archive tile preview is not a JPEG: %v", err)
+	}
 }
 
 // Opening an archive directly lists its image members as regular image
@@ -195,6 +206,16 @@ func TestReadImageArchiveMembers(t *testing.T) {
 		}
 		if fi.HasPreviews() {
 			t.Fatalf("entry %d should not have swipe previews", i)
+		}
+		// Regression: members must be readable after ReadImageArchive
+		// returns (the archive file used to be closed on return).
+		r, err := fi.GetReader()
+		if err != nil {
+			t.Fatalf("entry %d GetReader: %v", i, err)
+		}
+		b, err := io.ReadAll(r)
+		if err != nil || len(b) == 0 {
+			t.Fatalf("entry %d read %d bytes, err=%v", i, len(b), err)
 		}
 	}
 	// Sorted by member path.
