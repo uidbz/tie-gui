@@ -1,4 +1,4 @@
 [submodule "third_party/fyne"]
 	path = third_party/fyne
 	url = https://github.com/uidbz/fyne.git
-	branch = feature/glvideo
+	branch = imgview

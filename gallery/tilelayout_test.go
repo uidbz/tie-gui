@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	stdraw "image/draw"
+	"image/jpeg"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -61,6 +66,354 @@ func (errReader) GetReader() (io.ReadSeeker, error) {
 	return bytes.NewReader([]byte("this is not an image")), nil
 }
 func (errReader) Path() string { return "err" }
+
+func writeTestJPEG(t *testing.T, path string, w, h int, c color.RGBA) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	stdraw.Draw(img, img.Bounds(), &image.Uniform{c}, image.Point{}, stdraw.Src)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testDirLayout(thumbDir string) *TileLayout {
+	layout := &TileLayout{}
+	layout.config.General.TileWidth = 300
+	layout.config.General.ThumbnailDir = thumbDir
+	return layout
+}
+
+func testJPEGBytes(t *testing.T, w, h int, c color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	stdraw.Draw(img, img.Bounds(), &image.Uniform{c}, image.Point{}, stdraw.Src)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// memReader is an in-memory CustomReader for preview tests.
+type memReader struct {
+	path string
+	data []byte
+}
+
+func (m memReader) GetReader() (io.ReadSeeker, error) { return bytes.NewReader(m.data), nil }
+func (m memReader) Path() string                      { return m.path }
+
+// memPreviewProvider adds a PreviewProvider implementation to memReader.
+type memPreviewProvider struct {
+	memReader
+	previews []CustomReader
+}
+
+func (m memPreviewProvider) Previews() ([]CustomReader, error) { return m.previews, nil }
+
+// memThumbnailer records GetThumbnail calls and returns a pre-scaled image.
+type memThumbnailer struct {
+	data   []byte
+	called int
+}
+
+func (m *memThumbnailer) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
+	m.called++
+	return bytes.NewReader(m.data), nil
+}
+
+// Reader-backed previews (tie directories, archive blobs) are thumbnailed
+// through the same pipeline as path-based previews, cached under a key
+// derived from the reader's Path.
+func TestDirPreviewThumbnailReaders(t *testing.T) {
+	tmp := t.TempDir()
+	imgA := testJPEGBytes(t, 1200, 900, color.RGBA{200, 30, 30, 255})
+	imgB := testJPEGBytes(t, 800, 800, color.RGBA{30, 30, 200, 255})
+
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	info := NewImageInfoCustomReader(0, memPreviewProvider{memReader{"dir", nil}, nil})
+	info.PreviewReaders = []CustomReader{
+		memReader{"dir/a.jpg", imgA},
+		memReader{"dir/b.jpg", imgB},
+	}
+
+	data, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatalf("dirPreviewThumbnail: %v", err)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w, h := img.Bounds().Dx(), img.Bounds().Dy(); w != 600 || h != 450 {
+		t.Fatalf("thumbnail size = %dx%d, want 600x450", w, h)
+	}
+
+	info.previewIndex = 1
+	dataB, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(data, dataB) {
+		t.Fatal("different preview readers produced identical thumbnails")
+	}
+}
+
+// When the layout has a Thumbnailer, reader-based previews come from it
+// (already scaled) instead of the raw reader bytes.
+func TestDirPreviewThumbnailReadersUsesThumbnailer(t *testing.T) {
+	tmp := t.TempDir()
+	rawBytes := testJPEGBytes(t, 1200, 900, color.RGBA{200, 30, 30, 255})  // red, full size
+	thumbBytes := testJPEGBytes(t, 600, 450, color.RGBA{30, 30, 200, 255}) // blue, pre-scaled
+
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	th := &memThumbnailer{data: thumbBytes}
+	layout.thumbnailer = th
+
+	info := NewImageInfoCustomReader(0, memPreviewProvider{memReader{"dir", nil}, nil})
+	info.PreviewReaders = []CustomReader{memReader{"dir/a.jpg", rawBytes}}
+
+	data, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th.called != 1 {
+		t.Fatalf("thumbnailer called %d times, want 1", th.called)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := img.Bounds().Dx(); w != 600 {
+		t.Fatalf("thumbnail width = %d, want 600 (pre-scaled, not re-scaled)", w)
+	}
+	// The blue thumbnail (not the red raw bytes) must have been used.
+	_, _, b, _ := img.At(500, 400).RGBA()
+	if b>>8 < 150 {
+		t.Fatal("thumbnailer image not used")
+	}
+}
+
+func TestPreviewCountAndHasPreviews(t *testing.T) {
+	video := NewImageInfo(0, "/v.mp4")
+	video.InputIsVideo = true
+	if !video.HasPreviews() || video.PreviewCount() != videoPreviewFrames {
+		t.Fatalf("video: HasPreviews=%v PreviewCount=%d", video.HasPreviews(), video.PreviewCount())
+	}
+
+	dir := NewImageInfo(0, "/d/a.jpg")
+	dir.PreviewPaths = []string{"/d/a.jpg", "/d/b.jpg"}
+	if !dir.HasPreviews() || dir.PreviewCount() != 2 {
+		t.Fatalf("dir: HasPreviews=%v PreviewCount=%d", dir.HasPreviews(), dir.PreviewCount())
+	}
+
+	tie := NewImageInfoCustomReader(0, memPreviewProvider{memReader{"uid", nil}, nil})
+	if !tie.HasPreviews() {
+		t.Fatal("PreviewProvider reader should have previews")
+	}
+	if tie.PreviewCount() != 0 {
+		t.Fatalf("PreviewCount before lazy load = %d, want 0", tie.PreviewCount())
+	}
+	tie.PreviewReaders = []CustomReader{memReader{"h", nil}}
+	if tie.PreviewCount() != 1 {
+		t.Fatalf("PreviewCount = %d, want 1", tie.PreviewCount())
+	}
+
+	plain := NewImageInfo(0, "/img.jpg")
+	if plain.HasPreviews() || plain.PreviewCount() != 0 {
+		t.Fatalf("plain image: HasPreviews=%v PreviewCount=%d", plain.HasPreviews(), plain.PreviewCount())
+	}
+}
+
+// A directory tile thumbnail is the preview image at 2×TileWidth wide with a
+// folder icon darkening the top-left corner.
+func TestDirPreviewThumbnailGenerates(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "a.jpg")
+	writeTestJPEG(t, src, 1200, 900, color.RGBA{200, 30, 30, 255})
+
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	info := NewImageInfo(0, src)
+	info.PreviewPaths = []string{src}
+
+	data, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatalf("dirPreviewThumbnail: %v", err)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode thumbnail: %v", err)
+	}
+	if w, h := img.Bounds().Dx(), img.Bounds().Dy(); w != 600 || h != 450 {
+		t.Fatalf("thumbnail size = %dx%d, want 600x450", w, h)
+	}
+
+	// Icon background area (top-left) must be darkened relative to the
+	// source red; a point far from the icon keeps the source color.
+	ri, _, _, _ := img.At(179, 45).RGBA()
+	ra, _, _, _ := img.At(500, 400).RGBA()
+	if ri>>8 > 150 {
+		t.Fatalf("icon area not darkened: R=%d", ri>>8)
+	}
+	if ra>>8 < 150 {
+		t.Fatalf("non-icon area lost source color: R=%d", ra>>8)
+	}
+}
+
+// The generated thumbnail is written to the disk cache under a stable key
+// (content hash + "d" suffix) and served from there on the next call.
+func TestDirPreviewThumbnailCache(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "a.jpg")
+	writeTestJPEG(t, src, 640, 480, color.RGBA{30, 200, 30, 255})
+
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	info := NewImageInfo(0, src)
+	info.PreviewPaths = []string{src}
+
+	if _, err := layout.dirPreviewThumbnail(info); err != nil {
+		t.Fatal(err)
+	}
+	var cacheFile string
+	filepath.Walk(layout.config.General.ThumbnailDir, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && !fi.IsDir() {
+			cacheFile = p
+		}
+		return nil
+	})
+	if cacheFile == "" {
+		t.Fatal("no cache file written")
+	}
+	if len(filepath.Base(cacheFile)) != 65 {
+		t.Fatalf("cache key = %q, want 64-hex hash + \"d\" suffix", filepath.Base(cacheFile))
+	}
+
+	sentinel := []byte("cached-thumbnail")
+	if err := os.WriteFile(cacheFile, sentinel, 0644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, sentinel) {
+		t.Fatal("cache hit did not return sentinel")
+	}
+}
+
+// previewIndex selects which preview is thumbnailed; out-of-range indices
+// clamp to the first preview.
+func TestDirPreviewThumbnailIndex(t *testing.T) {
+	tmp := t.TempDir()
+	srcA := filepath.Join(tmp, "a.jpg")
+	srcB := filepath.Join(tmp, "b.jpg")
+	writeTestJPEG(t, srcA, 640, 480, color.RGBA{200, 30, 30, 255})
+	writeTestJPEG(t, srcB, 800, 800, color.RGBA{30, 30, 200, 255})
+
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	info := NewImageInfo(0, srcA)
+	info.PreviewPaths = []string{srcA, srcB}
+
+	dataA, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.previewIndex = 1
+	dataB, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(dataA, dataB) {
+		t.Fatal("different previews produced identical thumbnails")
+	}
+
+	info.previewIndex = 99 // out of range → clamps to first
+	dataC, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(dataA, dataC) {
+		t.Fatal("out-of-range index did not clamp to first preview")
+	}
+}
+
+// Archive entries read preview members through the archive filesystem.
+func TestDirPreviewThumbnailArchive(t *testing.T) {
+	var buf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	stdraw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{40, 200, 40, 255}}, image.Point{}, stdraw.Src)
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	fsys := fstest.MapFS{"pics/one.jpg": &fstest.MapFile{Data: buf.Bytes()}}
+
+	layout := testDirLayout(filepath.Join(t.TempDir(), "cache"))
+	info := NewImageInfo(0, "pics/one.jpg")
+	info.InputIsArchive = true
+	info.archiveFile = fsys
+	info.PreviewPaths = []string{"pics/one.jpg"}
+
+	data, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatalf("archive preview: %v", err)
+	}
+	dec, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := dec.Bounds().Dx(); w != 600 {
+		t.Fatalf("thumbnail width = %d, want 600", w)
+	}
+}
+
+// drawFolderIcon darkens the badge background and paints a light folder
+// glyph on top of it.
+func TestDrawFolderIcon(t *testing.T) {
+	size := 96
+
+	white := image.NewNRGBA(image.Rect(0, 0, 128, 128))
+	stdraw.Draw(white, white.Bounds(), &image.Uniform{color.NRGBA{255, 255, 255, 255}}, image.Point{}, stdraw.Src)
+	drawFolderIcon(white, 8, 8, size)
+	// Inside the rounded-square badge but outside the glyph: darkened.
+	r, g, b, _ := white.At(8+size-10, 8+10).RGBA()
+	if r>>8 > 200 || g>>8 > 200 || b>>8 > 200 {
+		t.Fatalf("badge background not drawn: %d,%d,%d", r>>8, g>>8, b>>8)
+	}
+
+	black := image.NewNRGBA(image.Rect(0, 0, 128, 128))
+	drawFolderIcon(black, 8, 8, size)
+	// Folder body center: lightened by the white glyph.
+	r2, _, _, _ := black.At(8+size/2, 8+52).RGBA()
+	if r2>>8 < 100 {
+		t.Fatalf("folder glyph not drawn: R=%d", r2>>8)
+	}
+}
+
+func TestToRGBA(t *testing.T) {
+	if toRGBA(nil) != nil {
+		t.Fatal("nil should stay nil")
+	}
+	rgba := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	if toRGBA(rgba) != rgba {
+		t.Fatal("RGBA should pass through unchanged")
+	}
+	nrgba := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	nrgba.SetNRGBA(2, 2, color.NRGBA{255, 0, 0, 255})
+	out := toRGBA(nrgba)
+	r, g, b, a := out.At(2, 2).RGBA()
+	if r>>8 != 255 || g>>8 != 0 || b>>8 != 0 || a>>8 != 255 {
+		t.Fatalf("NRGBA conversion produced %d,%d,%d,%d", r>>8, g>>8, b>>8, a>>8)
+	}
+	// YCbCr (what JPEG decoding produces) must convert without panic.
+	if toRGBA(image.NewYCbCr(image.Rect(0, 0, 4, 4), image.YCbCrSubsampleRatio420)) == nil {
+		t.Fatal("YCbCr conversion returned nil")
+	}
+}
 
 // NewImageView on an undecodable image must fall back to the placeholder so
 // fyneImage is never nil (regression: renderer Layout panicked on

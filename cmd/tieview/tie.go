@@ -152,10 +152,13 @@ func (t *tieReader) GetReader() (io.ReadSeeker, error) {
 
 // tieDirReader is the gallery entry for a tagged tie directory (tie-type
 // image-dir). It is not image content — GetReader always fails; opening the
-// entry browses the directory instead (Openable), and its thumbnail is a
-// folder icon.
+// entry browses the directory instead (Openable). Its thumbnail is the first
+// image inside (badged with a folder icon by the gallery), and swiping the
+// tile cycles through the directory's images (PreviewProvider).
 type tieDirReader struct {
 	uid  client.DirUID
+	tc   *client.TieClient
+	host client.FileHost
 	open func()
 }
 
@@ -176,13 +179,33 @@ func (t *tieDirReader) Open() {
 	t.open()
 }
 
+// Previews implements gallery.PreviewProvider: the directory's image files
+// as tieReaders. Called lazily from a gallery loader goroutine.
+func (t *tieDirReader) Previews() ([]gallery.CustomReader, error) {
+	dir, err := client.ReadTieDir(t.tc, t.uid)
+	if err != nil {
+		return nil, err
+	}
+	readers := make([]gallery.CustomReader, 0, len(dir.Files))
+	for _, f := range dir.Files {
+		if !isImageFile(f) {
+			continue
+		}
+		readers = append(readers, &tieReader{host: t.host, hash: f.Uid, filename: f.Filename})
+	}
+	return readers, nil
+}
+
 // tieArchiveReader is the gallery entry for an archive blob (tie-type
 // image-archive / audio-archive / ...). Like a directory it is not image
-// content itself: opening it browses the archive's image members (Openable),
-// and its thumbnail is a folder icon.
+// content itself: opening it browses the archive's image members (Openable).
+// Its thumbnail is the first image member (badged with a folder icon by the
+// gallery), and swiping the tile cycles through the members
+// (PreviewProvider).
 type tieArchiveReader struct {
 	hash     string
 	filename string
+	host     client.FileHost
 	open     func()
 }
 
@@ -203,6 +226,32 @@ func (t *tieArchiveReader) GetReader() (io.ReadSeeker, error) {
 }
 
 func (t *tieArchiveReader) Open() { t.open() }
+
+// Previews implements gallery.PreviewProvider: the archive blob is fetched
+// once and its image members become preview readers sharing the blob.
+// Called lazily from a gallery loader goroutine.
+func (t *tieArchiveReader) Previews() ([]gallery.CustomReader, error) {
+	r, err := getlib.ReadFile(httpClientForHost(t.host), t.host.URL, t.hash)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	members, err := archivelib.List(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	readers := make([]gallery.CustomReader, 0, len(members))
+	for _, m := range members {
+		if m.Kind != archivelib.Image {
+			continue
+		}
+		readers = append(readers, &archiveMemberReader{archiveHash: t.hash, data: data, member: m})
+	}
+	return readers, nil
+}
 
 // archiveMemberReader serves one image member's bytes out of an archive blob
 // that has already been fetched into memory. The whole archive is shared across
@@ -348,12 +397,13 @@ func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude
 			})
 		case tieRowDir:
 			uid := client.DirUID(row.Key)
-			readers = append(readers, &tieDirReader{uid: uid, open: func() { browseDir(uid) }})
+			readers = append(readers, &tieDirReader{uid: uid, tc: tc, host: host, open: func() { browseDir(uid) }})
 		case tieRowArchive:
 			hash := row.Key
 			readers = append(readers, &tieArchiveReader{
 				hash:     hash,
 				filename: client.RowFirst(row, "filename"),
+				host:     host,
 				open:     func() { browseTieArchive(viewer, host, hash) },
 			})
 		case tieRowVideo:
@@ -382,8 +432,10 @@ type filehostThumbnailer struct {
 func (t *filehostThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker, error) {
 	switch info.CustomReader.(type) {
 	case *tieDirReader, *tieArchiveReader:
-		// Directories and archives have no image content of their own; a folder
-		// icon marks the tile clearly as browsable.
+		// Fallback for collections without usable previews (empty directory,
+		// fetch failure, ...): a plain folder icon marks the tile as
+		// browsable. When the entry has preview images, the gallery badges a
+		// content thumbnail via PreviewProvider and never reaches this case.
 		info.ThumbnailIsScaled = true
 		return folderIcon(t.tileWidth * 2), nil
 	}

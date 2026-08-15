@@ -59,6 +59,32 @@ import (
 // bounds; the actual render dimensions respect the video's aspect ratio.
 // Returns nil on any failure (mpv unavailable, file unreadable, timeout).
 func ExtractFrame(pathOrURL string, maxWidth, maxHeight int, timestamp float64) image.Image {
+	if timestamp <= 0 {
+		return extractFrame(pathOrURL, maxWidth, maxHeight, "", "")
+	}
+	return extractFrame(pathOrURL, maxWidth, maxHeight,
+		strconv.FormatFloat(timestamp, 'f', 3, 64), "absolute+keyframes")
+}
+
+// ExtractFramePercent returns a single video frame at percent (0–100) of the
+// video's duration, using keyframe-accurate seeking. Otherwise identical to
+// ExtractFrame. Percent seeking works without knowing the duration up front,
+// which makes it suitable for spreading preview frames across a video.
+func ExtractFramePercent(pathOrURL string, maxWidth, maxHeight int, percent float64) image.Image {
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	return extractFrame(pathOrURL, maxWidth, maxHeight,
+		strconv.FormatFloat(percent, 'f', 3, 64), "absolute-percent+keyframes")
+}
+
+// extractFrame renders one frame of the media at pathOrURL. When seekMode is
+// empty no seek is performed (frame at the start); otherwise seekTarget and
+// seekMode are passed to mpv's seek command.
+func extractFrame(pathOrURL string, maxWidth, maxHeight int, seekTarget, seekMode string) image.Image {
 	h := C.mpv_create()
 	if h == nil {
 		return nil
@@ -108,11 +134,9 @@ func ExtractFrame(pathOrURL string, maxWidth, maxHeight int, timestamp float64) 
 		return nil
 	}
 
-	// Seek to the requested timestamp.
-	if timestamp > 0 {
-		mpvCommand(h, "seek",
-			strconv.FormatFloat(timestamp, 'f', 3, 64),
-			"absolute+keyframes")
+	// Seek to the requested position (seconds or percent, per seekMode).
+	if seekMode != "" {
+		mpvCommand(h, "seek", seekTarget, seekMode)
 	}
 
 	// Poll until a rendered frame is available (up to 5 s after seek).
@@ -153,6 +177,22 @@ func ExtractFrame(pathOrURL string, maxWidth, maxHeight int, timestamp float64) 
 // ExtractFrameFromReader writes r to a temporary file then calls ExtractFrame.
 // Use this when you have a downloaded video blob but no URL.
 func ExtractFrameFromReader(r io.ReadSeeker, maxWidth, maxHeight int, timestamp float64) image.Image {
+	return extractFromReader(r, func(path string) image.Image {
+		return ExtractFrame(path, maxWidth, maxHeight, timestamp)
+	})
+}
+
+// ExtractFrameFromReaderPercent is ExtractFramePercent for a downloaded video
+// blob without a URL: the reader is written to a temporary file first.
+func ExtractFrameFromReaderPercent(r io.ReadSeeker, maxWidth, maxHeight int, percent float64) image.Image {
+	return extractFromReader(r, func(path string) image.Image {
+		return ExtractFramePercent(path, maxWidth, maxHeight, percent)
+	})
+}
+
+// extractFromReader materializes r into a temporary file and passes its path
+// to fn, removing the file afterwards.
+func extractFromReader(r io.ReadSeeker, fn func(path string) image.Image) image.Image {
 	tmp, err := os.CreateTemp("", "imgview-vid-*")
 	if err != nil {
 		return nil
@@ -168,5 +208,5 @@ func ExtractFrameFromReader(r io.ReadSeeker, maxWidth, maxHeight int, timestamp 
 		return nil
 	}
 
-	return ExtractFrame(tmp.Name(), maxWidth, maxHeight, timestamp)
+	return fn(tmp.Name())
 }

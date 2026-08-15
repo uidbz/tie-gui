@@ -181,6 +181,7 @@ func (t *tieFSTree) showListing(dir client.Directory, selectHash string) {
 		readers = append(readers, &tieArchiveReader{
 			hash:     hash,
 			filename: a.Filename,
+			host:     host,
 			open:     func() { browseTieArchive(t.viewer, host, hash) },
 		})
 	}

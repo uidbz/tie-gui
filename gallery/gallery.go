@@ -108,11 +108,12 @@ type Gallery struct {
 // and layout, which may depend on the configuration being complete.
 //
 // Example usage:
-//   viewer := gallery.NewGallery(app, window, config, tileOnclick)
-//   viewer.Sidebar = makeSidebar(...)        // tieview only
-//   viewer.Thumbnailer = makeThumbnailer()   // tieview only
-//   viewer.OnImageChange = func(info) { ... }
-//   viewer.Init()  // Wires hotkeys, creates layout
+//
+//	viewer := gallery.NewGallery(app, window, config, tileOnclick)
+//	viewer.Sidebar = makeSidebar(...)        // tieview only
+//	viewer.Thumbnailer = makeThumbnailer()   // tieview only
+//	viewer.OnImageChange = func(info) { ... }
+//	viewer.Init()  // Wires hotkeys, creates layout
 func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Gallery {
 	iv := &Gallery{
 		app:      app,
@@ -120,10 +121,10 @@ func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick fun
 		platform: NewPlatform(),
 		Content:  container.NewStack([]fyne.CanvasObject{}...),
 		// CurrentImage: container.NewBorder(nil, nil, nil, rect, container.New(&ImageLayout{}, []fyne.CanvasObject{}...)),
-		CurrentImage: container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
-		cache:        make(map[string]*ImageView),
-		config:       config,
-		tileOnclick:  tileOnclick,
+		CurrentImage:  container.New(&ImageLayout{}, []fyne.CanvasObject{}...),
+		cache:         make(map[string]*ImageView),
+		config:        config,
+		tileOnclick:   tileOnclick,
 		refreshThumbs: false,
 	}
 
@@ -346,9 +347,12 @@ func (viewer *Gallery) RemoveItem(info *ImageInfo) {
 }
 
 func (viewer *Gallery) ChangeGallery() {
-	// empty channel before changing page, then wait for workers to finish
+	// empty channel before changing page, then wait for workers to finish.
+	// Each drained item was Add()ed in PlaceTiles, so it must be Done here
+	// (workers never see it).
 	for len(viewer.layout.imagesToLoad) > 0 {
 		<-viewer.layout.imagesToLoad
+		viewer.layout.currentlyLoading.Done()
 	}
 	viewer.layout.currentlyLoading.Wait()
 
@@ -362,9 +366,12 @@ func (viewer *Gallery) ChangePage(page int) {
 	if page < 0 || page > viewer.maxPages-1 {
 		return
 	}
-	// empty channel before changing page, then wait for workers to finish
+	// empty channel before changing page, then wait for workers to finish.
+	// Each drained item was Add()ed in PlaceTiles, so it must be Done here
+	// (workers never see it).
 	for len(viewer.layout.imagesToLoad) > 0 {
 		<-viewer.layout.imagesToLoad
+		viewer.layout.currentlyLoading.Done()
 	}
 	viewer.layout.currentlyLoading.Wait()
 
@@ -512,25 +519,10 @@ func (viewer *Gallery) InitHotkeys() {
 	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, showGallery})
 	}
-	// Gallery navigation hotkeys (moved from TileLayout to break back-reference)
-	galleryBindings := viewer.config.Gallery
-	for _, x := range galleryBindings.ScrollDown {
-		add(Hotkey{x, func() {
-			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y + 300
-			viewer.scroll.Refresh()
-		}})
-	}
-	for _, x := range galleryBindings.ScrollUp {
-		add(Hotkey{x, func() {
-			viewer.scroll.Offset.Y = viewer.scroll.Offset.Y - 300
-			viewer.scroll.Refresh()
-		}})
-	}
-	for _, x := range galleryBindings.PathLevelUp {
-		add(Hotkey{x, func() {
-			viewer.ShowImageDir(filepath.Dir(viewer.currentPath))
-		}})
-	}
+	// Gallery navigation hotkeys (ScrollDown/ScrollUp/PathLevelUp) live in
+	// TileLayout.InitHotkeys: KeyPress dispatches layout.hotkeys on every
+	// platform, while viewer.hotkeys reach the desktop ImageView via focus
+	// and the window handler only on mobile.
 	// On mobile the Android/iOS back button sends key name "Back" to the
 	// focused widget (ImageView). Map it to the same show-gallery action so
 	// the user can return to the grid without a keyboard.
@@ -634,7 +626,7 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 			subDir, _ := os.ReadDir(subDirAbsPath)
 			var previews []string
 			for _, y := range subDir {
-				if y.IsDir() || len(previews) >= 4 {
+				if y.IsDir() {
 					continue
 				}
 				subFilePath := filepath.Join(subDirAbsPath, y.Name())
@@ -663,6 +655,9 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 				continue
 			}
 			defer f.Close()
+			// Collect every image member so the archive tile can swipe
+			// through them; the first image becomes the gallery entry.
+			var previews []string
 			fs.WalkDir(fsys, ".", func(path string, x fs.DirEntry, err error) error {
 				if x.IsDir() {
 					return nil
@@ -672,21 +667,25 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 					return err
 				}
 				if IsImage(file) {
-					info := NewImageInfo(i, path)
-					info.InputIsDir = true
-					info.DirPath = fullPath
-					info.FullPath = fullPath
-					info.archiveFile = fsys
-					info.archiveName = filepath.Base(fullPath)
-					info.InputIsArchive = true
-					info.ShowArchive = true
-					info.DisplayName = filepath.Base(fullPath)
-					viewer.imageFiles = append(viewer.imageFiles, info)
-					i++
-					return fs.SkipDir
+					previews = append(previews, path)
 				}
+				file.Close()
 				return nil
 			})
+			if len(previews) > 0 {
+				info := NewImageInfo(i, previews[0])
+				info.InputIsDir = true
+				info.DirPath = fullPath
+				info.FullPath = fullPath
+				info.archiveFile = fsys
+				info.archiveName = filepath.Base(fullPath)
+				info.InputIsArchive = true
+				info.ShowArchive = true
+				info.DisplayName = filepath.Base(fullPath)
+				info.PreviewPaths = previews
+				viewer.imageFiles = append(viewer.imageFiles, info)
+				i++
+			}
 
 		case IsVideoFromPath(fullPath):
 			info := NewImageInfo(i, fullPath)
@@ -769,6 +768,17 @@ type VideoStreamer interface {
 // pass and no reflow occurs as thumbnails arrive.
 type DimensionProvider interface {
 	Dimensions() (width, height int)
+}
+
+// PreviewProvider is an optional CustomReader behavior for entries that
+// represent a browsable collection of images (e.g. a tie directory or an
+// archive blob). Previews returns readers for the collection's images; the
+// gallery tile shows one as its thumbnail (badged with a folder icon) and
+// horizontal swipes cycle through them. It is called lazily from loader
+// goroutines, so network I/O is acceptable. An error or empty result falls
+// back to the caller's Thumbnailer (e.g. a static folder icon).
+type PreviewProvider interface {
+	Previews() ([]CustomReader, error)
 }
 
 func (viewer *Gallery) ReadCustom(readers []CustomReader) {

@@ -6,16 +6,25 @@ import "io/fs"
 // directories, or archives). It holds file metadata, display callbacks, and
 // optional dimension information for stable placeholder layout.
 type ImageInfo struct {
-	Path        string
-	FullPath    string // Used to get path of zipFile
+	Path     string
+	FullPath string // Used to get path of zipFile
 	// DirPath is the primary sort key: the directory or container that this
 	// entry logically belongs to (subdir path, archive path, or parent dir).
-	DirPath     string
+	DirPath string
 	// DisplayName is the text shown below the tile (dirname for dirs, filename otherwise).
 	DisplayName string
-	// PreviewPaths holds up to 4 absolute image paths used to generate the
-	// directory composite thumbnail.
-	PreviewPaths      []string
+	// PreviewPaths holds the image paths shown on a directory/archive tile:
+	// absolute file paths for directories, member paths (read via archiveFile)
+	// for archives. The tile displays PreviewPaths[previewIndex]; swiping
+	// horizontally on the tile cycles the index.
+	PreviewPaths []string
+	// PreviewReaders is the CustomReader-backed counterpart of PreviewPaths,
+	// populated lazily from a PreviewProvider (e.g. a tie directory or
+	// archive): the tile shows PreviewReaders[previewIndex] as thumbnail.
+	PreviewReaders []CustomReader
+	// previewIndex is the preview index currently shown on the tile. For
+	// video tiles it is the frame number (0..videoPreviewFrames-1).
+	previewIndex      int
 	ShowArchive       bool
 	CustomReader      CustomReader
 	OnTapped          func()
@@ -66,4 +75,29 @@ func NewImageInfoCustomReader(order int, r CustomReader) *ImageInfo {
 		IsZoomable:    true,
 		order:         order,
 	}
+}
+
+// HasPreviews reports whether the tile gets a swipe overlay for cycling
+// preview thumbnails: directory/archive entries with known previews, entries
+// whose CustomReader can provide them lazily (PreviewProvider), and video
+// tiles (which cycle through extracted frames).
+func (info *ImageInfo) HasPreviews() bool {
+	if info.InputIsVideo || len(info.PreviewPaths) > 0 || len(info.PreviewReaders) > 0 {
+		return true
+	}
+	_, ok := info.CustomReader.(PreviewProvider)
+	return ok
+}
+
+// PreviewCount reports how many thumbnails a horizontal swipe can cycle
+// through: the fixed frame count for videos, or the number of preview
+// paths/readers for directory/archive entries. 0 means no cycling.
+func (info *ImageInfo) PreviewCount() int {
+	if info.InputIsVideo {
+		return videoPreviewFrames
+	}
+	if len(info.PreviewPaths) > 0 {
+		return len(info.PreviewPaths)
+	}
+	return len(info.PreviewReaders)
 }

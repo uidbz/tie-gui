@@ -27,17 +27,17 @@ func NewMPVPlayer(file string) (*MPVPlayer, error) {
 }
 
 func (p *MPVPlayer) RenderInto(fbo uint32, width, height int) {}
-func (p *MPVPlayer) NeedsPaint() bool                          { return false }
-func (p *MPVPlayer) Aspect() float32                           { return 0 }
-func (p *MPVPlayer) SetOnUpdate(fn func())                     {}
-func (p *MPVPlayer) Play()                                     {}
-func (p *MPVPlayer) Pause()                                    {}
-func (p *MPVPlayer) TogglePause() bool                         { return true }
-func (p *MPVPlayer) IsPaused() bool                            { return true }
-func (p *MPVPlayer) Position() float64                         { return 0 }
-func (p *MPVPlayer) Duration() float64                         { return 0 }
-func (p *MPVPlayer) SeekTo(seconds float64)                    {}
-func (p *MPVPlayer) Close()                                    {}
+func (p *MPVPlayer) NeedsPaint() bool                         { return false }
+func (p *MPVPlayer) Aspect() float32                          { return 0 }
+func (p *MPVPlayer) SetOnUpdate(fn func())                    {}
+func (p *MPVPlayer) Play()                                    {}
+func (p *MPVPlayer) Pause()                                   {}
+func (p *MPVPlayer) TogglePause() bool                        { return true }
+func (p *MPVPlayer) IsPaused() bool                           { return true }
+func (p *MPVPlayer) Position() float64                        { return 0 }
+func (p *MPVPlayer) Duration() float64                        { return 0 }
+func (p *MPVPlayer) SeekTo(seconds float64)                   {}
+func (p *MPVPlayer) Close()                                   {}
 
 // ExtractFrame returns nil in this build; callers fall back to a placeholder.
 func ExtractFrame(pathOrURL string, maxWidth, maxHeight int, timestamp float64) image.Image {
@@ -46,5 +46,15 @@ func ExtractFrame(pathOrURL string, maxWidth, maxHeight int, timestamp float64) 
 
 // ExtractFrameFromReader returns nil in this build; callers fall back to a placeholder.
 func ExtractFrameFromReader(r io.ReadSeeker, maxWidth, maxHeight int, timestamp float64) image.Image {
+	return nil
+}
+
+// ExtractFramePercent returns nil in this build; callers fall back to a placeholder.
+func ExtractFramePercent(pathOrURL string, maxWidth, maxHeight int, percent float64) image.Image {
+	return nil
+}
+
+// ExtractFrameFromReaderPercent returns nil in this build; callers fall back to a placeholder.
+func ExtractFrameFromReaderPercent(r io.ReadSeeker, maxWidth, maxHeight int, percent float64) image.Image {
 	return nil
 }

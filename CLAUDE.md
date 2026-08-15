@@ -61,6 +61,20 @@ clip via `IsClip` in `internal/driver/util.go`).
 texture) and, fired per scroll frame, made scrolling choppy. This was the
 "virtual scrolling" regression removed after commit `6a83e2f`.
 
+**Do not** call `grid.Refresh()` or `scroll.Refresh()` on hot paths either —
+both recursively refresh children and force re-upload of every visible tile
+texture. Use `layout.relayoutGrid()` (direct `Layout` + `canvas.Refresh(grid)`)
+to reposition tiles, and `scroll.ScrollToOffset(...)` for programmatic
+scrolling (fast path, also used by the J/K scroll hotkeys).
+
+### Texture cache lifetime (fork patch)
+Off-screen tile textures expire after a cache lifetime and are re-uploaded
+when scrolled back into view. The vendored fork makes the default
+platform-dependent (`third_party/fyne/internal/cache/lifetime_desktop.go` =
+**10 min**, `lifetime_mobile.go` = 1 min for mobile/wasm); the `FYNE_CACHE`
+env var still overrides. Trade-off: more VRAM on desktop (~500 MB worst case
+for a fully scrolled 500-tile page) in exchange for hitch-free scroll-back.
+
 ### Pagination Button
 Large "Load Next Page ▼" button appended to `grid.Objects` after all tiles
 when `currentPage < maxPages - 1`. Handled specially in `Layout()`: given
@@ -118,11 +132,17 @@ giving the correct aspect ratio from the first layout pass.
 
 ### Placeholder tiles and lazy loading
 
-`PlaceTiles` creates placeholder tiles from `loading.png` for every slot on
-the current page, then sends each `ImageInfo` to the `imagesToLoad` channel.
-`Workers` (default 8 desktop, 4 mobile) goroutines drain the channel, call
-`GetThumbnail` → `NewImageTile`, and write the real tile back. The grid
-refreshes every 20 images or 500 ms after the last load.
+`PlaceTiles` decodes `loading.png` **once** and shares it across placeholder
+tiles for every slot on the current page, then sends each `ImageInfo` to the
+`imagesToLoad` channel. `Workers` (default 8 desktop, 4 mobile) goroutines
+drain the channel, call `GetThumbnail` → `NewImageTile`, and forward the real
+tile to a single `tileUpdater` goroutine via the `results` channel. The
+updater batches write-backs: one `fyne.Do` per flush (every ~120 ms trailing
+or 32 tiles) swaps tiles into `layout.tiles`/`grid.Objects` and calls
+`relayoutGrid()` — replacing the old every-20-images `grid.Refresh()` storm
+that re-uploaded all textures. Stale cross-page results are dropped via an
+`Info`-pointer guard. Decoded thumbnails are converted to `*image.RGBA` on
+the worker so texture upload skips the painter's CPU pixel conversion.
 
 When the current page is not the last page, `PlaceTiles` adds a large
 "Load Next Page ▼" button as the final object in `grid.Objects`. This button
@@ -136,16 +156,19 @@ tiles on desktop, 150 on mobile.
 ### Thumbnail pipeline
 
 **Local (`imgview`):** hash file content (HighwayHash) → check
-`~/.cache/imgview/<xx>/<yy>/<zz>/<hash>` → on miss: decode + EXIF-rotate →
-`ScaleImage(decoded, tileWidth*2)` → JPEG quality 90 → write cache.
+`~/.cache/imgview/<xx>/<yy>/<zz>/<hash>` → on miss: decode + EXIF-rotate
+(JPEG only) → `ScaleImage(decoded, tileWidth*2)` (imaging **Linear** filter,
+not Lanczos) → JPEG quality 90 → write cache.
 
 **Remote (`tieview`):** `filehostThumbnailer.GetThumbnail` →
 1. Check `tr.thumbHash` (pre-populated from query expand) → `GET filehost/<thumbHash>`
 2. On miss: download full blob → decode → scale → encode → `PUT filehost/upload/<thumbHash>` → `Set(imageHash, "thumbnail", thumbHash)` → `Set(imageHash, "dimensions", "WxH")`
 
 Thumbnail width is always `TileWidth * 2` (2× for HiDPI). Height is
-aspect-preserved. Directory tiles produce a square 2×2 composite at
-`TileWidth × TileWidth` px.
+aspect-preserved. Directory/archive tiles show the preview image at
+`ImageInfo.previewIndex` with a semi-transparent folder icon overlaid
+(`dirPreviewThumbnail`), disk-cached under `<hash>d` so the icon never leaks
+into the same image's plain thumbnail.
 
 ---
 
@@ -205,6 +228,7 @@ preventing layout reflow as thumbnails load.
 | `VideoStreamer` | `StreamURL() string` | Returns direct HTTP URL so libmpv streams without downloading |
 | `DimensionProvider` | `Dimensions() (w, h int)` | Pre-known image dimensions for stable placeholder layout |
 | `DisplayNamer` | `DisplayName() string` | Human-readable name for thumbnail label (fallback: filepath.Base(Path())) |
+| `PreviewProvider` | `Previews() ([]CustomReader, error)` | Browsable collection (tie dir/archive): supplies preview readers for the tile thumbnail + swipe cycling; called lazily on loader goroutines |
 
 ---
 
@@ -228,6 +252,25 @@ back mechanism is `PathLevelUp` (hotkey), which calls
 `ShowImageDir(filepath.Dir(currentPath))`. The Android back button returns to
 the gallery view but does not pop a directory stack.
 
+### Directory/archive/video tiles: preview swipe
+Directory and archive entries carry `ImageInfo.PreviewPaths` (all images in
+the folder / all image members in the archive); tie directories and archive
+blobs instead resolve `ImageInfo.PreviewReaders` lazily via the
+`PreviewProvider` interface (`GetThumbnail` calls it on a loader goroutine).
+Video tiles offer up to `videoPreviewFrames` (10) frame thumbnails spread
+across the duration by seek percent (`mpvplayer.ExtractFramePercent`), cached
+per frame index (`videoThumbnailCachePath` `-N` suffix; frame 0 keeps the
+historic suffix-free name). The tile displays the preview at
+`ImageInfo.previewIndex` (folder tiles get a folder-icon badge, video tiles
+a play icon). A transparent `dirSwipeOverlay` widget covers only tiles whose
+`ImageInfo.HasPreviews()` is true (regular image tiles have no overlay, so
+the scroller keeps native drag/fling there): taps forward to the tile,
+horizontal drags call `Tile.cyclePreview(±1)` (swipe left = next, right =
+previous, wraps around), vertical drags forward to `scroll.ScrollToOffset` so
+page scrolling still works when a gesture starts on an overlaid tile.
+`cyclePreview` regenerates the thumbnail off-thread and swaps `Content.Image`
+in place, invalidating only that tile's texture.
+
 ### Gallery hotkeys (default bindings)
 - **N**: Toggle filename labels on/off (ToggleFilenames) — **desktop only**
 - **J** / **Down**: Scroll down
@@ -236,6 +279,15 @@ the gallery view but does not pop a directory stack.
 - **Q** / **Escape**: Quit (gallery view) or return to gallery (image view)
 
 All hotkeys are configurable in `config.toml` under `[Gallery]` section.
+
+**Routing:** gallery-grid hotkeys (scroll, PathLevelUp, ToggleFilenames) are
+registered in `TileLayout.InitHotkeys` — `Gallery.KeyPress` (window-level
+`SetOnTypedKey`) dispatches `layout.hotkeys` unconditionally, which is
+required because no widget is focused in the gallery grid on desktop.
+`viewer.hotkeys` (image-view actions) reach the desktop via the focused
+`ImageView.TypedKey` and mobile via window-level dispatch
+(`ShouldHandleHotkeysAtWindowLevel`). Registering grid hotkeys on
+`viewer.hotkeys` leaves them dead on the desktop gallery view.
 
 ### Gallery UI controls
 - **☰ Menu button** (bottom-right): Opens popup menu with options
@@ -252,7 +304,11 @@ All hotkeys are configurable in `config.toml` under `[Gallery]` section.
 
 Directory entries are `tieDirReader` instances implementing `Openable`. Tapping
 one calls `browseDir(uid)` → `fsTree.showDirUID(uid, "")` — the virtual
-filesystem sidebar tree navigates, not the gallery grid.
+filesystem sidebar tree navigates, not the gallery grid. Both `tieDirReader`
+and `tieArchiveReader` also implement `PreviewProvider`, so their tiles show
+a content thumbnail (first image inside, folder-badged) and support swipe
+cycling; the static `folderIcon` in `cmd/tieview/folder.go` remains only as
+the fallback for empty or unreadable collections.
 
 Tag-based navigation uses `readFromTie(viewer, tc, include, exclude, "tag", browseDir)`.
 The query uses `Expand: true` so thumbnail hashes and image dimensions arrive

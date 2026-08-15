@@ -15,6 +15,7 @@ import (
 	// "path/filepath"
 	// "archive/zip"
 	"bytes"
+	"strconv"
 	"time"
 
 	_ "embed"
@@ -25,8 +26,6 @@ import (
 
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/widget"
-
-	"github.com/disintegration/imaging"
 
 	"git.sr.ht/~uid/imgview/mpvplayer"
 )
@@ -50,6 +49,7 @@ type TileLayout struct {
 	wg               sync.WaitGroup
 	minHeight        float32
 	imagesToLoad     chan *ImageInfo
+	results          chan loadedTile
 	tabFn            func(t *Tile)
 	grid             *fyne.Container
 	hotkeys          []Hotkey
@@ -68,6 +68,23 @@ type TileLayout struct {
 	nextPageButton *widget.Button
 }
 
+// loadedTile carries a finished thumbnail tile from a loader worker to the
+// tileUpdater goroutine, which batches UI-thread write-backs.
+type loadedTile struct {
+	info *ImageInfo
+	tile *Tile
+}
+
+const (
+	// flushBatchSize is the number of loaded tiles that triggers an
+	// immediate UI write-back; smaller batches are debounced by flushInterval.
+	flushBatchSize = 32
+	// flushInterval is the trailing debounce for tile write-backs during
+	// thumbnail loading. One batched relayout per interval replaces the old
+	// per-20-images grid.Refresh() storm (which re-uploaded every texture).
+	flushInterval = 120 * time.Millisecond
+)
+
 type Tile struct {
 	widget.BaseWidget
 	Content   *canvas.Image
@@ -79,6 +96,9 @@ type Tile struct {
 	tabFn     func(t *Tile)
 	nameLabel *widget.Label
 	layout    *TileLayout // reference for showLabels state
+	// swipeOverlay covers directory/archive tiles (PreviewPaths != nil) and
+	// turns horizontal drags into preview cycling; nil for regular images.
+	swipeOverlay *dirSwipeOverlay
 }
 
 func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gallery, tabFn func(t *Tile)) *TileLayout {
@@ -100,24 +120,26 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 	}
 
 	layout := &TileLayout{
-		tiles:                tiles,
-		wg:                   sync.WaitGroup{},
-		minHeight:            0,
-		imagesToLoad:         imagesToLoad,
-		tabFn:                tabFn,
-		config:               config,
-		window:               window,
-		app:                  app,
-		viewer:               viewer,
-		tileCache:            newTileCache(maxCacheSize),
-		showLabels:           showLabels,
-		thumbnailer:          viewer.Thumbnailer,
-		refreshThumbs:        viewer.refreshThumbs,
+		tiles:         tiles,
+		wg:            sync.WaitGroup{},
+		minHeight:     0,
+		imagesToLoad:  imagesToLoad,
+		results:       make(chan loadedTile, batchSize),
+		tabFn:         tabFn,
+		config:        config,
+		window:        window,
+		app:           app,
+		viewer:        viewer,
+		tileCache:     newTileCache(maxCacheSize),
+		showLabels:    showLabels,
+		thumbnailer:   viewer.Thumbnailer,
+		refreshThumbs: viewer.refreshThumbs,
 	}
 
 	for i := 0; i < config.General.Workers; i++ {
 		go layout.imageLoader()
 	}
+	go layout.tileUpdater()
 
 	return layout
 }
@@ -128,30 +150,37 @@ func (layout *TileLayout) Clear() {
 }
 
 func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
-	loadingImg := bytes.NewReader(loading)
+	// Decode the placeholder image once and share it across all placeholder
+	// tiles on this page (previously each tile decoded loading.png again
+	// because the shared reader was consumed after the first decode).
+	placeholder, _, err := Decode(bytes.NewReader(loading))
+	if err != nil || placeholder == nil {
+		placeholder = image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	}
+
 	end := layout.offset + layout.config.General.ImagesPerPage
 	if end > len(imageFiles) {
 		end = len(imageFiles)
 	}
 	// Start each page with a fresh tile list, indexed relative to
-	// layout.offset (same indexing imageLoader and Layout use).
-	layout.tiles = make([]*Tile, 0, end-layout.offset)
+	// layout.offset (same indexing imageLoader and Layout use). Build it
+	// locally on this background goroutine; layout.tiles is assigned on the
+	// UI thread together with the grid objects.
+	newTiles := make([]*Tile, 0, end-layout.offset)
 
 	// Create all tiles on the background thread first
 	for i := layout.offset; i < end; i++ {
-		tile, err := layout.NewImageTile(loadingImg, imageFiles[i], func(t *Tile) {})
-		if err != nil {
-			// Skip tiles that fail to load (corrupt images, etc.)
-			continue
-		}
-		layout.tiles = append(layout.tiles, tile)
+		tile := layout.newImageTileFromImage(placeholder, imageFiles[i], func(t *Tile) {})
+		newTiles = append(newTiles, tile)
+		layout.currentlyLoading.Add(1)
 		layout.imagesToLoad <- imageFiles[i]
 	}
 
 	// Now add all tiles to the grid atomically on the UI thread
 	fyne.Do(func() {
-		layout.grid.Objects = make([]fyne.CanvasObject, 0, len(layout.tiles))
-		for _, tile := range layout.tiles {
+		layout.tiles = newTiles
+		layout.grid.Objects = make([]fyne.CanvasObject, 0, len(newTiles))
+		for _, tile := range newTiles {
 			layout.grid.Objects = append(layout.grid.Objects, tile)
 		}
 	})
@@ -188,11 +217,25 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 		})
 	}
 
-	// Trigger an initial layout refresh to ensure tiles are visible
-	// This is critical for the first page load when scroll offset is 0
+	// Trigger an initial layout pass to ensure tiles are visible
+	// This is critical for the first page load when scroll offset is 0.
+	// relayoutGrid positions tiles without invalidating any textures
+	// (unlike grid.Refresh, which recursively refreshes all children).
 	fyne.Do(func() {
-		layout.grid.Refresh()
+		layout.relayoutGrid()
 	})
+}
+
+// relayoutGrid re-runs the justified layout and marks the canvas dirty
+// WITHOUT recursively refreshing child widgets. grid.Refresh() would queue
+// every tile's canvas.Image for texture deletion, forcing a re-upload of
+// every visible thumbnail on the next frame; this helper only repositions
+// tiles (Move/Resize mark the canvas dirty on their own) and queues the
+// container, which the painter explicitly handles without touching image
+// textures. Must be called on the UI thread (via fyne.Do).
+func (layout *TileLayout) relayoutGrid() {
+	layout.Layout(layout.grid.Objects, layout.grid.Size())
+	canvas.Refresh(layout.grid)
 }
 
 func (layout *TileLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
@@ -314,7 +357,10 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 }
 
 // ToggleLabels flips the filename label visibility for all current tiles and
-// refreshes the grid layout.
+// relayouts the grid. Label Show/Hide marks the canvas dirty by itself; the
+// tile renderer reads nameLabel.Visible() during its Layout, so a single
+// relayoutGrid suffices — no per-tile Refresh (which would invalidate every
+// tile texture).
 func (layout *TileLayout) ToggleLabels() {
 	layout.showLabels = !layout.showLabels
 	for _, t := range layout.tiles {
@@ -326,10 +372,9 @@ func (layout *TileLayout) ToggleLabels() {
 		} else {
 			t.nameLabel.Hide()
 		}
-		t.Refresh()
 	}
 	fyne.Do(func() {
-		layout.grid.Refresh()
+		layout.relayoutGrid()
 	})
 }
 
@@ -341,22 +386,13 @@ func (layout *TileLayout) tileToCache(path string, tile *Tile) {
 	layout.tileCache.put(path, tile)
 }
 
+// imageLoader is a worker goroutine that drains imagesToLoad, builds (or
+// fetches from cache) the real thumbnail tile, and forwards it to the
+// tileUpdater for batched UI write-back. currentlyLoading.Add is called by
+// PlaceTiles before enqueueing; each item is Done here exactly once (or by
+// the page-drain loops in ChangePage/ChangeGallery if discarded).
 func (layout *TileLayout) imageLoader() {
-	i := 0
-	refreshTimer := time.NewTimer(500 * time.Millisecond)
-
-	go func() {
-		for {
-			<-refreshTimer.C
-			fyne.Do(func() {
-				layout.grid.Refresh()
-			})
-		}
-	}()
-
 	for tc := range layout.imagesToLoad {
-		layout.currentlyLoading.Add(1)
-
 		var tile *Tile
 		if t, ok := layout.tileFromCache(tc.Path); ok {
 			tile = t
@@ -375,30 +411,74 @@ func (layout *TileLayout) imageLoader() {
 			}
 			layout.tileToCache(tc.Path, tile)
 		}
-		tileCopy := tile
-		idx := tc.order - layout.offset
-		// tc may belong to a page that has since been replaced; only write
-		// back when its slot still exists in the current page.
-		if idx >= 0 && idx < len(layout.tiles) {
-			layout.tiles[idx] = tile
+		layout.results <- loadedTile{info: tc, tile: tile}
+		layout.currentlyLoading.Done()
+	}
+}
+
+// tileUpdater batches loaded tiles and applies them to the grid in a single
+// UI-thread task per flush (every flushInterval trailing, or immediately at
+// flushBatchSize). This replaces the previous scheme (grid.Refresh every 20
+// thumbnails plus a 500 ms timer per worker), which recursively refreshed
+// every child widget and forced the painter to delete and re-upload ALL
+// visible tile textures on the next frame — the main source of scroll jank
+// while a page was loading.
+func (layout *TileLayout) tileUpdater() {
+	var pending []loadedTile
+	timer := time.NewTimer(flushInterval)
+	// stopTimer stops the debounce timer and non-blockingly drains any
+	// pending tick, so a later Reset never observes a stale fire.
+	stopTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
 		}
+	}
+	stopTimer()
+
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		batch := pending
+		pending = nil
 		fyne.Do(func() {
-			if idx >= 0 && idx < len(layout.grid.Objects) {
-				layout.grid.Objects[idx] = tileCopy
+			changed := false
+			for _, r := range batch {
+				idx := r.info.order - layout.offset
+				// r.info may belong to a page that has since been replaced;
+				// only write back when its slot still exists AND still
+				// holds the placeholder created for this exact ImageInfo.
+				if idx < 0 || idx >= len(layout.tiles) || layout.tiles[idx].Info != r.info {
+					continue
+				}
+				layout.tiles[idx] = r.tile
+				if idx < len(layout.grid.Objects) {
+					layout.grid.Objects[idx] = r.tile
+				}
+				changed = true
+			}
+			if changed {
+				layout.relayoutGrid()
 			}
 		})
+	}
 
-		if i == 20 { // Refresh grid every 10 images
-			fyne.Do(func() {
-				layout.grid.Refresh()
-			})
-			i = 0
-		} else {
-			refreshTimer.Reset(500 * time.Millisecond) // Refresh grid 500 ms after last loaded image
+	for {
+		select {
+		case r := <-layout.results:
+			pending = append(pending, r)
+			stopTimer()
+			if len(pending) >= flushBatchSize {
+				flush()
+			} else {
+				timer.Reset(flushInterval)
+			}
+		case <-timer.C:
+			flush()
 		}
-
-		layout.currentlyLoading.Done()
-		i++
 	}
 }
 
@@ -409,11 +489,25 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 		return layout.videoThumbnail(info)
 	}
 
-	// Directory tiles: generate a 2×2 composite of up to 4 preview images.
-	// The in-memory tile cache (cachedTiles) prevents repeated generation
-	// within a session, so we skip the disk cache here.
-	if len(info.PreviewPaths) > 0 {
-		data := layout.makeDirectoryComposite(info.PreviewPaths)
+	// Browsable collection entries (tie directories, archive blobs) that did
+	// not bring their own preview list pull it lazily from their
+	// CustomReader. Runs on a loader goroutine, so network I/O is fine.
+	if len(info.PreviewPaths) == 0 && len(info.PreviewReaders) == 0 {
+		if pp, ok := info.CustomReader.(PreviewProvider); ok {
+			if pr, err := pp.Previews(); err == nil {
+				info.PreviewReaders = pr
+			}
+		}
+	}
+
+	// Directory and archive tiles: thumbnail of the currently selected
+	// preview image (previewIndex, changed by swiping the tile) with a
+	// semi-transparent folder icon overlay.
+	if len(info.PreviewPaths) > 0 || len(info.PreviewReaders) > 0 {
+		data, err := layout.dirPreviewThumbnail(info)
+		if err != nil {
+			return nil, err
+		}
 		info.ThumbnailIsScaled = true
 		return bytes.NewReader(data), nil
 	}
@@ -483,73 +577,195 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	return info.GetReader()
 }
 
-// makeDirectoryComposite generates a 2×2 grid thumbnail from up to 4 image
-// paths. Each cell is tileWidth/2 × tileWidth/2; the composite is square.
-func (layout *TileLayout) makeDirectoryComposite(paths []string) []byte {
-	cellW := int(layout.config.General.TileWidth) / 2
-	size := cellW * 2
+// dirPreviewThumbnail generates (or retrieves from disk cache) the thumbnail
+// for a directory or archive tile: the preview image at info.previewIndex,
+// scaled to 2×tileWidth wide, with a semi-transparent folder icon overlaid in
+// the top-left corner (the same way video tiles get a play icon).
+//
+// Previews come from PreviewPaths (local directories: file paths; local
+// archives: member paths read via archiveFile) or from PreviewReaders
+// (CustomReader-backed entries such as tie directories and archive blobs).
+// The disk cache key is the preview's content hash with a "d" suffix so the
+// overlaid thumbnail never collides with the same image's plain thumbnail.
+func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
+	tileWidth := int(layout.config.General.TileWidth)
+	var cacheKey string
+	var scaled image.Image
 
-	// Dark neutral background for unfilled cells.
-	composite := imaging.New(size, size, color.NRGBA{R: 45, G: 45, B: 45, A: 255})
+	if len(info.PreviewPaths) > 0 {
+		idx := info.previewIndex
+		if idx < 0 || idx >= len(info.PreviewPaths) {
+			idx = 0
+		}
+		previewPath := info.PreviewPaths[idx]
 
-	positions := [4]image.Point{
-		{X: 0, Y: 0},
-		{X: cellW, Y: 0},
-		{X: 0, Y: cellW},
-		{X: cellW, Y: cellW},
+		// Read the preview image content: from the archive for archive
+		// entries, from disk for directory entries.
+		var b []byte
+		if info.InputIsArchive {
+			if info.archiveFile == nil {
+				return nil, errors.New("archive not readable")
+			}
+			f, err := info.archiveFile.Open(previewPath)
+			if err != nil {
+				return nil, err
+			}
+			defer f.Close()
+			b, err = io.ReadAll(f)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			var err error
+			b, err = os.ReadFile(previewPath)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		hash, err := contentHash(bytes.NewReader(b))
+		if err != nil {
+			return nil, err
+		}
+		if len(hash) != 64 {
+			return nil, errors.New("Invalid hash: " + hash)
+		}
+		cacheKey = hash
+		if data, ok := layout.dirPreviewCache(cacheKey); ok {
+			return data, nil
+		}
+		decoded, _, err := Decode(bytes.NewReader(b))
+		if err != nil {
+			return nil, err
+		}
+		scaled = ScaleImage(decoded, tileWidth*2)
+	} else {
+		idx := info.previewIndex
+		if idx < 0 || idx >= len(info.PreviewReaders) {
+			idx = 0
+		}
+		r := info.PreviewReaders[idx]
+
+		// tie readers use the content hash as Path, making it a perfect
+		// cache key with no download; anything else is hashed by name.
+		cacheKey = r.Path()
+		if len(cacheKey) != 64 {
+			sum := sha256.Sum256([]byte(cacheKey))
+			cacheKey = hex.EncodeToString(sum[:])
+		}
+		if data, ok := layout.dirPreviewCache(cacheKey); ok {
+			return data, nil
+		}
+
+		if layout.thumbnailer != nil {
+			// Let the app's Thumbnailer (e.g. the tie filehost cache)
+			// supply the already-scaled preview thumbnail.
+			child := NewImageInfoCustomReader(0, r)
+			child.Path = r.Path()
+			rs, err := layout.thumbnailer.GetThumbnail(child)
+			if err != nil {
+				return nil, err
+			}
+			decoded, _, err := Decode(rs)
+			if err != nil {
+				return nil, err
+			}
+			scaled = decoded
+		} else {
+			rs, err := r.GetReader()
+			if err != nil {
+				return nil, err
+			}
+			decoded, _, err := Decode(rs)
+			if err != nil {
+				return nil, err
+			}
+			scaled = ScaleImage(decoded, tileWidth*2)
+		}
 	}
 
-	for i, p := range paths {
-		if i >= 4 {
-			break
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			continue
-		}
-		img, _, err := Decode(f)
-		f.Close()
-		if err != nil {
-			continue
-		}
-		// Center-crop each preview to a square cell.
-		cell := imaging.Fill(img, cellW, cellW, imaging.Center, imaging.Lanczos)
-		composite = imaging.Paste(composite, cell, positions[i])
+	// Convert to NRGBA for the icon overlay.
+	result := image.NewNRGBA(scaled.Bounds())
+	stdraw.Draw(result, result.Bounds(), scaled, image.Point{}, stdraw.Src)
+
+	iconPx := tileWidth * 2 / 4 // ~25 % of image width; halved at display scale
+	if iconPx < 24 {
+		iconPx = 24
 	}
+	drawFolderIcon(result, iconPx/4, iconPx/4, iconPx)
 
 	buf := &bytes.Buffer{}
-	jpeg.Encode(buf, composite, &jpeg.Options{Quality: 85})
-	return buf.Bytes()
+	if err := jpeg.Encode(buf, result, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, err
+	}
+	cachePath := layout.dirPreviewCachePath(cacheKey)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
+		os.WriteFile(cachePath, buf.Bytes(), 0644)
+	}
+	return buf.Bytes(), nil
 }
 
+// dirPreviewCachePath returns the disk cache path for a directory/archive
+// preview thumbnail: the 64-hex cache key split into directory levels, with
+// a "d" suffix on the filename.
+func (layout *TileLayout) dirPreviewCachePath(cacheKey string) string {
+	thumbnailDir := layout.config.General.ThumbnailDir
+	max := lvlDeep * dirWidth
+	for i := 0; i <= max; i = i + dirWidth {
+		thumbnailDir = filepath.Join(thumbnailDir, cacheKey[i:i+dirWidth])
+	}
+	return filepath.Join(thumbnailDir, cacheKey+"d")
+}
+
+// dirPreviewCache returns the cached preview thumbnail for cacheKey.
+func (layout *TileLayout) dirPreviewCache(cacheKey string) ([]byte, bool) {
+	if layout.refreshThumbs {
+		return nil, false
+	}
+	data, err := os.ReadFile(layout.dirPreviewCachePath(cacheKey))
+	return data, err == nil
+}
+
+// videoPreviewFrames is the number of frame thumbnails a video tile offers
+// when swiped horizontally. Frames are spread across the duration by seek
+// percent, so any video length works without probing it first.
+const videoPreviewFrames = 10
+
 // videoThumbnail generates (or retrieves from disk cache) a thumbnail for a
-// video entry (local file or network-backed CustomReader). It extracts a frame
-// using ffmpeg, scales it to 2×tileWidth wide, and overlays a circular play
-// icon in the top-left corner. On any failure it falls back to the loading
-// placeholder.
+// video entry (local file or network-backed CustomReader). It extracts the
+// frame at info.previewIndex (changed by swiping the tile), scales it to
+// 2×tileWidth wide, and overlays a circular play icon in the top-left corner.
+// On any failure it falls back to the loading placeholder.
 func (layout *TileLayout) videoThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	tileW := int(layout.config.General.TileWidth)
 
-	// Check disk cache before running ffmpeg.
-	cachePath := layout.videoThumbnailCachePath(info.Path)
+	frameIdx := info.previewIndex
+	if frameIdx < 0 || frameIdx >= videoPreviewFrames {
+		frameIdx = 0
+	}
+
+	// Check disk cache before running mpv.
+	cachePath := layout.videoThumbnailCachePath(info.Path, frameIdx)
 	if data, err := os.ReadFile(cachePath); err == nil && !layout.refreshThumbs {
 		info.ThumbnailIsScaled = true
 		return bytes.NewReader(data), nil
 	}
 
-	// Extract a frame using libmpv's software renderer.
-	// For network-backed entries that expose a stream URL, pass the URL
-	// directly so libmpv can stream without downloading first.
+	// Extract a frame using libmpv's software renderer. Frame k seeks to
+	// (k+1)/(frames+1) of the duration, skipping the very start and end
+	// (often black frames). For network-backed entries that expose a stream
+	// URL, pass the URL directly so libmpv streams without downloading.
+	percent := float64(frameIdx+1) / float64(videoPreviewFrames+1) * 100
 	var frame image.Image
 	tileW2 := tileW * 2
 	if info.InputIsReader {
 		if vs, ok := info.CustomReader.(VideoStreamer); ok && vs.StreamURL() != "" {
-			frame = mpvplayer.ExtractFrame(vs.StreamURL(), tileW2, tileW2, 1.0)
+			frame = mpvplayer.ExtractFramePercent(vs.StreamURL(), tileW2, tileW2, percent)
 		} else if r, err := info.GetReader(); err == nil {
-			frame = mpvplayer.ExtractFrameFromReader(r, tileW2, tileW2, 1.0)
+			frame = mpvplayer.ExtractFrameFromReaderPercent(r, tileW2, tileW2, percent)
 		}
 	} else {
-		frame = mpvplayer.ExtractFrame(info.Path, tileW2, tileW2, 1.0)
+		frame = mpvplayer.ExtractFramePercent(info.Path, tileW2, tileW2, percent)
 	}
 	if frame == nil {
 		return bytes.NewReader(loading), nil
@@ -581,11 +797,16 @@ func (layout *TileLayout) videoThumbnail(info *ImageInfo) (io.ReadSeeker, error)
 }
 
 // videoThumbnailCachePath returns the path under ThumbnailDir where the video
-// thumbnail is cached, using a SHA-256 hash of the video file path as the key
-// (avoiding reading the full video file just for hashing).
-func (layout *TileLayout) videoThumbnailCachePath(videoPath string) string {
+// frame thumbnail is cached, using a SHA-256 hash of the video file path as
+// the key (avoiding reading the full video file just for hashing). Frame 0
+// keeps the historic suffix-free name so existing caches stay valid; other
+// frames get a "-N" suffix.
+func (layout *TileLayout) videoThumbnailCachePath(videoPath string, frame int) string {
 	sum := sha256.Sum256([]byte(videoPath))
 	hash := "v" + hex.EncodeToString(sum[:])
+	if frame > 0 {
+		hash += "-" + strconv.Itoa(frame)
+	}
 	dir := layout.config.General.ThumbnailDir
 	for i := 0; i < 3; i++ {
 		// skip the "v" prefix when indexing into the hash for dir levels
@@ -594,7 +815,20 @@ func (layout *TileLayout) videoThumbnailCachePath(videoPath string) string {
 	return filepath.Join(dir, hash)
 }
 
-
+// blendNRGBA alpha-blends c onto the pixel at (x, y) if inside dst's bounds.
+func blendNRGBA(dst *image.NRGBA, x, y int, c color.NRGBA) {
+	b := dst.Bounds()
+	if x >= b.Min.X && y >= b.Min.Y && x < b.Max.X && y < b.Max.Y {
+		src := dst.NRGBAAt(x, y)
+		a := float32(c.A) / 255
+		dst.SetNRGBA(x, y, color.NRGBA{
+			R: uint8(float32(c.R)*a + float32(src.R)*(1-a)),
+			G: uint8(float32(c.G)*a + float32(src.G)*(1-a)),
+			B: uint8(float32(c.B)*a + float32(src.B)*(1-a)),
+			A: 255,
+		})
+	}
+}
 
 // drawVideoPlayIcon overlays a semi-transparent circular play button at
 // (x0, y0) with the given pixel size onto dst.
@@ -604,20 +838,9 @@ func drawVideoPlayIcon(dst *image.NRGBA, x0, y0, size int) {
 	cy := y0 + radius
 	bg := color.NRGBA{0, 0, 0, 160}
 	fg := color.NRGBA{255, 255, 255, 230}
-	b := dst.Bounds()
 
 	setPixel := func(x, y int, c color.NRGBA) {
-		if x >= b.Min.X && y >= b.Min.Y && x < b.Max.X && y < b.Max.Y {
-			// Alpha-blend onto existing pixel.
-			src := dst.NRGBAAt(x, y)
-			a := float32(c.A) / 255
-			dst.SetNRGBA(x, y, color.NRGBA{
-				R: uint8(float32(c.R)*a + float32(src.R)*(1-a)),
-				G: uint8(float32(c.G)*a + float32(src.G)*(1-a)),
-				B: uint8(float32(c.B)*a + float32(src.B)*(1-a)),
-				A: 255,
-			})
-		}
+		blendNRGBA(dst, x, y, c)
 	}
 
 	// Semi-transparent circle background.
@@ -648,6 +871,60 @@ func drawVideoPlayIcon(dst *image.NRGBA, x0, y0, size int) {
 	}
 }
 
+// drawFolderIcon overlays a semi-transparent folder badge at (x0, y0) with
+// the given pixel size onto dst. It marks directory and archive tiles the
+// same way drawVideoPlayIcon marks video tiles.
+func drawFolderIcon(dst *image.NRGBA, x0, y0, size int) {
+	bg := color.NRGBA{0, 0, 0, 160}
+	fg := color.NRGBA{255, 255, 255, 230}
+
+	// Semi-transparent rounded-square background: inside each corner square,
+	// keep only pixels within the corner circle.
+	corner := size / 6
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			cx, cy := -1, -1
+			switch {
+			case x < corner && y < corner:
+				cx, cy = corner, corner
+			case x >= size-corner && y < corner:
+				cx, cy = size-corner-1, corner
+			case x < corner && y >= size-corner:
+				cx, cy = corner, size-corner-1
+			case x >= size-corner && y >= size-corner:
+				cx, cy = size-corner-1, size-corner-1
+			}
+			if cx >= 0 {
+				dx, dy := x-cx, y-cy
+				if dx*dx+dy*dy > corner*corner {
+					continue
+				}
+			}
+			blendNRGBA(dst, x0+x, y0+y, bg)
+		}
+	}
+
+	// Folder silhouette: back panel with a tab, then a slightly offset front
+	// flap cut out of it (simple two-rect glyph, readable at small sizes).
+	pad := size / 4
+	fx0, fx1 := x0+pad, x0+size-pad
+	tabH := size / 9
+	bodyY0 := y0 + size/3
+	bodyY1 := y0 + size - pad
+	// Tab (left half of the folder top).
+	for y := bodyY0 - tabH; y < bodyY0; y++ {
+		for x := fx0; x <= fx0+(fx1-fx0)/2; x++ {
+			blendNRGBA(dst, x, y, fg)
+		}
+	}
+	// Body.
+	for y := bodyY0; y <= bodyY1; y++ {
+		for x := fx0; x <= fx1; x++ {
+			blendNRGBA(dst, x, y, fg)
+		}
+	}
+}
+
 const (
 	lvlDeep  = 3
 	dirWidth = 2
@@ -655,10 +932,6 @@ const (
 )
 
 func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
-	t := &Tile{
-		Viewer: layout.viewer,
-		layout: layout,
-	}
 	decoded, _, err := Decode(reader)
 	if err != nil || decoded == nil {
 		// Decode failed; use loading placeholder
@@ -666,8 +939,36 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, ta
 		decoded2, _, _ := Decode(na)
 		decoded = decoded2
 	}
+	return layout.newImageTileFromImage(toRGBA(decoded), info, tabFn), nil
+}
+
+// toRGBA converts img to *image.RGBA. The GL painter uploads *image.RGBA
+// pixel data directly, but converts any other image type (YCbCr from JPEG
+// decode, NRGBA from imaging.Resize) with a full-pixel draw.Draw on the
+// paint thread at texture-upload time — calling this on a loader goroutine
+// keeps that cost off the UI thread and parallelises it across workers.
+func toRGBA(img image.Image) *image.RGBA {
+	if img == nil {
+		return nil
+	}
+	if rgba, ok := img.(*image.RGBA); ok {
+		return rgba
+	}
+	rgba := image.NewRGBA(img.Bounds())
+	stdraw.Draw(rgba, img.Bounds(), img, img.Bounds().Min, stdraw.Src)
+	return rgba
+}
+
+// newImageTileFromImage builds a tile around an already-decoded image.
+// PlaceTiles uses it to share one decoded placeholder across all tiles on a
+// page instead of decoding loading.png once per tile. The image is not
+// mutated afterwards, so sharing it between canvas.Image objects is safe.
+func (layout *TileLayout) newImageTileFromImage(decoded image.Image, info *ImageInfo, tabFn func(t *Tile)) *Tile {
+	t := &Tile{
+		Viewer: layout.viewer,
+		layout: layout,
+	}
 	img := canvas.NewImageFromImage(decoded) // do not resize if picture is smaller than tile
-	decoded = nil
 
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
@@ -698,7 +999,7 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, ta
 
 	t.ExtendBaseWidget(t)
 
-	return t, nil
+	return t
 }
 
 func (t *Tile) Tapped(_ *fyne.PointEvent) {
@@ -709,6 +1010,105 @@ func (t *Tile) TappedSecondary(_ *fyne.PointEvent) {
 	if t.Viewer != nil && t.Viewer.OnTileSecondaryTapped != nil {
 		t.Viewer.OnTileSecondaryTapped(t)
 	}
+}
+
+// cyclePreview advances the preview shown on a directory/archive/video tile
+// by delta (+1 = next, -1 = previous, wrapping around): the image within a
+// folder/archive, or the frame within a video. The new thumbnail is
+// generated off-thread and swapped into the existing tile in place, so only
+// this tile's texture is re-uploaded.
+func (t *Tile) cyclePreview(delta int) {
+	info := t.Info
+	n := info.PreviewCount()
+	if n == 0 || t.layout == nil {
+		return
+	}
+	info.previewIndex = ((info.previewIndex+delta)%n + n) % n
+	go func() {
+		thumb, err := t.layout.GetThumbnail(info)
+		if err != nil {
+			return
+		}
+		decoded, _, err := Decode(thumb)
+		if err != nil || decoded == nil {
+			return
+		}
+		rgba := toRGBA(decoded)
+		fyne.Do(func() {
+			if t.Info != info {
+				return // tile was replaced while loading
+			}
+			t.Content.Image = rgba
+			b := rgba.Bounds()
+			t.width, t.height = float32(b.Dx()), float32(b.Dy())
+			t.landscape = t.width > t.height
+			t.Content.Refresh() // invalidate only this tile's texture
+			t.layout.relayoutGrid()
+		})
+	}()
+}
+
+// swipeThreshold is the horizontal drag distance in pixels that triggers a
+// preview change on directory/archive tiles.
+const swipeThreshold = 40
+
+// dirSwipeOverlay is a transparent widget covering the image area of tiles
+// with cyclable previews (directories, archives, videos). It forwards taps to
+// the tile (so the entry still opens) and turns horizontal drags into preview
+// cycling (next/previous image inside the folder/archive, or next/previous
+// frame of a video). It only exists on tiles whose ImageInfo.HasPreviews is
+// true, so regular image tiles never intercept drags and the scroll container
+// keeps its native drag/fling behavior there. Vertical drags are forwarded to
+// the gallery's scroller so page scrolling still works when the gesture
+// starts on an overlaid tile (only fling momentum is lost in that case).
+type dirSwipeOverlay struct {
+	widget.BaseWidget
+	tile   *Tile
+	bg     *canvas.Rectangle
+	accumX float32
+	accumY float32
+}
+
+func newDirSwipeOverlay(t *Tile) *dirSwipeOverlay {
+	o := &dirSwipeOverlay{tile: t, bg: canvas.NewRectangle(color.Transparent)}
+	o.ExtendBaseWidget(o)
+	return o
+}
+
+func (o *dirSwipeOverlay) Tapped(ev *fyne.PointEvent)          { o.tile.Tapped(ev) }
+func (o *dirSwipeOverlay) TappedSecondary(ev *fyne.PointEvent) { o.tile.TappedSecondary(ev) }
+
+func (o *dirSwipeOverlay) Dragged(ev *fyne.DragEvent) {
+	o.accumX += ev.Dragged.DX
+	o.accumY += ev.Dragged.DY
+	absX, absY := o.accumX, o.accumY
+	if absX < 0 {
+		absX = -absX
+	}
+	if absY < 0 {
+		absY = -absY
+	}
+	if absX > absY && absX >= swipeThreshold {
+		// Swipe left (finger moves left) = next image, right = previous.
+		delta := 1
+		if o.accumX > 0 {
+			delta = -1
+		}
+		o.accumX, o.accumY = 0, 0
+		o.tile.cyclePreview(delta)
+		return
+	}
+	// Vertical-dominant (or still sub-threshold) drag: keep the page
+	// scrolling by forwarding the delta to the gallery's scroller.
+	if v := o.tile.Viewer; v != nil && v.scroll != nil && ev.Dragged.DY != 0 {
+		v.scroll.ScrollToOffset(fyne.NewPos(v.scroll.Offset.X, v.scroll.Offset.Y-ev.Dragged.DY))
+	}
+}
+
+func (o *dirSwipeOverlay) DragEnd() { o.accumX, o.accumY = 0, 0 }
+
+func (o *dirSwipeOverlay) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(o.bg)
 }
 
 func (layout *TileLayout) InitHotkeys() {
@@ -724,8 +1124,31 @@ func (layout *TileLayout) InitHotkeys() {
 			layout.app.Quit()
 		}})
 	}
-	// NOTE: ScrollDown, ScrollUp, and PathLevelUp moved to Gallery.InitHotkeys
-	// to avoid layout→viewer back-reference.
+	// Gallery navigation hotkeys live in layout.hotkeys because KeyPress
+	// dispatches those unconditionally, while Gallery.hotkeys are dispatched
+	// at window level only on mobile — on desktop they reach the focused
+	// ImageView instead. No widget is focused in the gallery grid, so
+	// registering these on Gallery.hotkeys left them dead on desktop.
+	scrollBy := func(dy float32) {
+		if layout.viewer == nil || layout.viewer.scroll == nil {
+			return
+		}
+		s := layout.viewer.scroll
+		s.ScrollToOffset(fyne.NewPos(s.Offset.X, s.Offset.Y+dy))
+	}
+	for _, x := range bindings.ScrollDown {
+		add(Hotkey{x, func() { scrollBy(300) }})
+	}
+	for _, x := range bindings.ScrollUp {
+		add(Hotkey{x, func() { scrollBy(-300) }})
+	}
+	for _, x := range bindings.PathLevelUp {
+		add(Hotkey{x, func() {
+			if layout.viewer != nil {
+				layout.viewer.ShowImageDir(filepath.Dir(layout.viewer.currentPath))
+			}
+		}})
+	}
 	// Skip ToggleFilenames on mobile (no keyboard to press N)
 	if !layout.viewer.Platform().IsMobile() {
 		for _, x := range bindings.ToggleFilenames {
@@ -739,22 +1162,45 @@ func (layout *TileLayout) InitHotkeys() {
 // TileRenderer renders the tile image with an optional name label below it.
 type TileRenderer struct {
 	tile *Tile
+	// objects is precomputed once at renderer creation: the painter calls
+	// Objects() for every visible widget on every repaint and on every
+	// mouse hit-test walk, so allocating a fresh slice per call cost ~500
+	// allocations per repaint on a full page. Hidden labels are skipped by
+	// the painter's visibility check, so the slice contents never change.
+	objects []fyne.CanvasObject
 }
 
 func (ta *Tile) CreateRenderer() fyne.WidgetRenderer {
-	return &TileRenderer{tile: ta}
+	r := &TileRenderer{tile: ta}
+	r.objects = []fyne.CanvasObject{ta.Content}
+	// Tiles with cyclable previews (directories, archives, videos) get a
+	// transparent swipe overlay above the image. Later objects win
+	// hit-testing, so the overlay (not the tile) receives taps/drags and
+	// forwards them appropriately.
+	if ta.swipeOverlay == nil && ta.Info != nil && ta.Info.HasPreviews() {
+		ta.swipeOverlay = newDirSwipeOverlay(ta)
+	}
+	if ta.swipeOverlay != nil {
+		r.objects = append(r.objects, ta.swipeOverlay)
+	}
+	if ta.nameLabel != nil {
+		r.objects = append(r.objects, ta.nameLabel)
+	}
+	return r
 }
 
 func (r *TileRenderer) Layout(size fyne.Size) {
+	imgH := size.Height
 	if r.tile.nameLabel != nil && r.tile.nameLabel.Visible() {
-		lh := labelHeight
-		r.tile.Content.Resize(fyne.NewSize(size.Width, size.Height-lh))
-		r.tile.Content.Move(fyne.NewPos(0, 0))
-		r.tile.nameLabel.Resize(fyne.NewSize(size.Width, lh))
-		r.tile.nameLabel.Move(fyne.NewPos(0, size.Height-lh))
-	} else {
-		r.tile.Content.Resize(size)
-		r.tile.Content.Move(fyne.NewPos(0, 0))
+		imgH = size.Height - labelHeight
+		r.tile.nameLabel.Resize(fyne.NewSize(size.Width, labelHeight))
+		r.tile.nameLabel.Move(fyne.NewPos(0, imgH))
+	}
+	r.tile.Content.Resize(fyne.NewSize(size.Width, imgH))
+	r.tile.Content.Move(fyne.NewPos(0, 0))
+	if r.tile.swipeOverlay != nil {
+		r.tile.swipeOverlay.Resize(fyne.NewSize(size.Width, imgH))
+		r.tile.swipeOverlay.Move(fyne.NewPos(0, 0))
 	}
 }
 
@@ -770,12 +1216,7 @@ func (r *TileRenderer) Refresh() {
 }
 
 func (r *TileRenderer) Objects() []fyne.CanvasObject {
-	if r.tile.nameLabel != nil {
-		return []fyne.CanvasObject{r.tile.Content, r.tile.nameLabel}
-	}
-	return []fyne.CanvasObject{r.tile.Content}
+	return r.objects
 }
 
 func (r *TileRenderer) Destroy() {}
-
-

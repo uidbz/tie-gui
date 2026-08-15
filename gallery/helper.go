@@ -19,7 +19,9 @@ func ScaleImage(img image.Image, w int) (scaledImage image.Image) {
 	// 	fmt.Println("Error resizing image:", err)
 	// }
 	// return scaledImage
-	return imaging.Resize(img, w, 0, imaging.Lanczos)
+	// Linear is dramatically cheaper than Lanczos and visually identical at
+	// thumbnail sizes (~600 px), speeding up the thumbnail miss path.
+	return imaging.Resize(img, w, 0, imaging.Linear)
 }
 
 func Decode(reader io.ReadSeeker) (image.Image, string, error) {
@@ -28,8 +30,13 @@ func Decode(reader io.ReadSeeker) (image.Image, string, error) {
 	if err != nil {
 		return img, fmt, err
 	}
-	reader.Seek(0, io.SeekStart)
-	orientation := getOrientation(reader)
+	orientation := "1"
+	if fmt == "jpeg" {
+		// EXIF orientation only exists in practice for JPEGs; skip the
+		// whole-file read + full EXIF parse for other formats.
+		reader.Seek(0, io.SeekStart)
+		orientation = getOrientation(reader)
+	}
 	switch orientation {
 	case "1":
 	case "2":
