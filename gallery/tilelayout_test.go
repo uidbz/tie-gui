@@ -3,6 +3,7 @@ package gallery
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	stdraw "image/draw"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -241,6 +243,146 @@ type memThumbnailer struct {
 func (m *memThumbnailer) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	m.called++
 	return bytes.NewReader(m.data), nil
+}
+
+// memCoverProvider combines PreviewProvider + CoverProvider for tests,
+// tracking calls to verify which path produced a thumbnail.
+type memCoverProvider struct {
+	memReader
+	previews       []CustomReader
+	previewsCalled int
+	cover          []byte
+	coverErr       error
+	stored         [][]byte
+}
+
+func (m *memCoverProvider) Previews() ([]CustomReader, error) {
+	m.previewsCalled++
+	return m.previews, nil
+}
+
+func (m *memCoverProvider) CoverThumbnail() (io.ReadSeeker, error) {
+	if m.coverErr != nil {
+		return nil, m.coverErr
+	}
+	return bytes.NewReader(m.cover), nil
+}
+
+func (m *memCoverProvider) StoreCoverThumbnail(jpegBytes []byte) {
+	m.stored = append(m.stored, jpegBytes)
+}
+
+// A CoverProvider cover serves the initial tile view WITHOUT enumerating the
+// collection (Previews must not be called) and is badged + disk-cached.
+func TestDirPreviewThumbnailCoverHit(t *testing.T) {
+	tmp := t.TempDir()
+	cover := testJPEGBytes(t, 600, 400, color.RGBA{30, 200, 30, 255})
+	raw := testJPEGBytes(t, 1200, 800, color.RGBA{200, 30, 30, 255})
+
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	cp := &memCoverProvider{
+		memReader: memReader{strings.Repeat("a", 64), nil},
+		previews:  []CustomReader{memReader{"m1", raw}},
+		cover:     cover,
+	}
+	info := NewImageInfoCustomReader(0, cp)
+
+	data, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatalf("dirPreviewThumbnail: %v", err)
+	}
+	if cp.previewsCalled != 0 {
+		t.Fatalf("Previews called %d times on cover hit, want 0", cp.previewsCalled)
+	}
+	if len(cp.stored) != 0 {
+		t.Fatalf("StoreCoverThumbnail called %d times on cover hit, want 0", len(cp.stored))
+	}
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := img.Bounds().Dx(); w != 600 {
+		t.Fatalf("cover width = %d, want 600", w)
+	}
+	// Folder badge: darkened icon area, untouched far area (green cover).
+	_, gi, _, _ := img.At(179, 45).RGBA()
+	_, ga, _, _ := img.At(500, 300).RGBA()
+	if gi>>8 > 150 {
+		t.Fatalf("icon area not darkened: G=%d", gi>>8)
+	}
+	if ga>>8 < 150 {
+		t.Fatalf("non-icon area lost source color: G=%d", ga>>8)
+	}
+
+	// Second call hits the local disk cache: break the cover and verify the
+	// result still comes back without another cover fetch or enumeration.
+	cp.cover, cp.coverErr = nil, errors.New("gone")
+	data2, err := layout.dirPreviewThumbnail(info)
+	if err != nil || !bytes.Equal(data, data2) {
+		t.Fatalf("disk-cache hit failed: err=%v equal=%v", err, bytes.Equal(data, data2))
+	}
+	if cp.previewsCalled != 0 {
+		t.Fatalf("Previews called on cache hit")
+	}
+}
+
+// Without a cover, the preview-readers path generates the thumbnail and
+// stores the plain (pre-badge) JPEG as the cover for next time. Swiping
+// (previewIndex > 0) never touches the cover path.
+func TestDirPreviewThumbnailCoverFallback(t *testing.T) {
+	tmp := t.TempDir()
+	rawA := testJPEGBytes(t, 1200, 900, color.RGBA{200, 30, 30, 255})
+	rawB := testJPEGBytes(t, 800, 800, color.RGBA{30, 30, 200, 255})
+
+	layout := testDirLayout(filepath.Join(tmp, "cache"))
+	cp := &memCoverProvider{
+		memReader: memReader{strings.Repeat("b", 64), nil},
+		previews: []CustomReader{
+			memReader{"arch/a.jpg", rawA},
+			memReader{"arch/b.jpg", rawB},
+		},
+		coverErr: errors.New("no cover yet"),
+	}
+	info := NewImageInfoCustomReader(0, cp)
+
+	data, err := layout.dirPreviewThumbnail(info)
+	if err != nil {
+		t.Fatalf("dirPreviewThumbnail: %v", err)
+	}
+	if cp.previewsCalled != 1 {
+		t.Fatalf("Previews called %d times, want 1", cp.previewsCalled)
+	}
+	if len(cp.stored) != 1 {
+		t.Fatalf("StoreCoverThumbnail called %d times, want 1", len(cp.stored))
+	}
+	// The stored cover is the PLAIN member thumbnail (no badge: the red
+	// source color is intact in the icon area).
+	storedImg, err := jpeg.Decode(bytes.NewReader(cp.stored[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := storedImg.Bounds().Dx(); w != 600 {
+		t.Fatalf("stored cover width = %d, want 600", w)
+	}
+	rs, _, _, _ := storedImg.At(179, 45).RGBA()
+	if rs>>8 < 150 {
+		t.Fatal("stored cover should be unbadged (red channel intact)")
+	}
+	// The returned tile thumbnail IS badged (icon darkens the red).
+	img, _ := jpeg.Decode(bytes.NewReader(data))
+	rt, _, _, _ := img.At(179, 45).RGBA()
+	if rt>>8 > 150 {
+		t.Fatalf("tile thumbnail not badged: R=%d", rt>>8)
+	}
+
+	// Swipe to index 1: per-member path, no cover store.
+	info.previewIndex = 1
+	if _, err := layout.dirPreviewThumbnail(info); err != nil {
+		t.Fatal(err)
+	}
+	if len(cp.stored) != 1 {
+		t.Fatalf("StoreCoverThumbnail called on swipe, stored=%d", len(cp.stored))
+	}
 }
 
 // Reader-backed previews (tie directories, archive blobs) are thumbnailed

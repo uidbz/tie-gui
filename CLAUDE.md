@@ -229,6 +229,7 @@ preventing layout reflow as thumbnails load.
 | `DimensionProvider` | `Dimensions() (w, h int)` | Pre-known image dimensions for stable placeholder layout |
 | `DisplayNamer` | `DisplayName() string` | Human-readable name for thumbnail label (fallback: filepath.Base(Path())) |
 | `PreviewProvider` | `Previews() ([]CustomReader, error)` | Browsable collection (tie dir/archive): supplies preview readers for the tile thumbnail + swipe cycling; called lazily on loader goroutines |
+| `CoverProvider` | `CoverThumbnail()` + `StoreCoverThumbnail([]byte)` | Server-cached cover for a collection tile (tie archive): serves previewIndex 0 without enumerating the collection; the gallery stores a generated first preview as the cover on a miss |
 
 ---
 
@@ -256,7 +257,10 @@ the gallery view but does not pop a directory stack.
 Directory and archive entries carry `ImageInfo.PreviewPaths` (all images in
 the folder / all image members in the archive); tie directories and archive
 blobs instead resolve `ImageInfo.PreviewReaders` lazily via the
-`PreviewProvider` interface (`GetThumbnail` calls it on a loader goroutine).
+`PreviewProvider` interface (resolved inside `dirPreviewThumbnail` on a
+loader goroutine — except that a `CoverProvider` entry's initial view
+(previewIndex 0) prefers its server-cached cover, skipping enumeration
+entirely).
 Video tiles offer up to `videoPreviewFrames` (10) frame thumbnails spread
 across the duration by seek percent (`mpvplayer.ExtractFramePercent`), cached
 per frame index (`videoThumbnailCachePath` `-N` suffix; frame 0 keeps the
@@ -309,6 +313,16 @@ and `tieArchiveReader` also implement `PreviewProvider`, so their tiles show
 a content thumbnail (first image inside, folder-badged) and support swipe
 cycling; the static `folderIcon` in `cmd/tieview/folder.go` remains only as
 the fallback for empty or unreadable collections.
+
+`tieArchiveReader` additionally implements `CoverProvider`: the tile's
+initial view uses the server-cached cover (tie relation `(archiveHash,
+"thumbnail", thumbHash)`, riding along with the query's expanded attributes
+at zero extra cost) instead of downloading the whole archive blob. On a cover
+miss the first member is extracted once (one full download) and uploaded as
+the cover via `StoreCoverThumbnail`, so the slow path runs once ever per
+archive and is shared by every machine. Full-archive downloads (cover misses
+and swipe cycling) are capped at 2 concurrent via `archiveFetchSem` in
+`cmd/tieview/tie.go` — each blob is held in memory for swipe cycling.
 
 Tag-based navigation uses `readFromTie(viewer, tc, include, exclude, "tag", browseDir)`.
 The query uses `Expand: true` so thumbnail hashes and image dimensions arrive

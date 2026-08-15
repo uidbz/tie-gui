@@ -199,14 +199,18 @@ func (t *tieDirReader) Previews() ([]gallery.CustomReader, error) {
 // tieArchiveReader is the gallery entry for an archive blob (tie-type
 // image-archive / audio-archive / ...). Like a directory it is not image
 // content itself: opening it browses the archive's image members (Openable).
-// Its thumbnail is the first image member (badged with a folder icon by the
-// gallery), and swiping the tile cycles through the members
-// (PreviewProvider).
+// Its tile thumbnail is the server-cached cover when available
+// (CoverProvider, tie relation (hash, "thumbnail", thumbHash)); otherwise
+// the first image member is extracted — which downloads the blob once — and
+// stored as the cover for next time. Swiping the tile cycles through the
+// members (PreviewProvider).
 type tieArchiveReader struct {
-	hash     string
-	filename string
-	host     client.FileHost
-	open     func()
+	hash      string
+	filename  string
+	host      client.FileHost
+	tc        *client.TieClient
+	thumbHash string // cover thumbnail hash, from expanded query attrs or after StoreCoverThumbnail
+	open      func()
 }
 
 func (t *tieArchiveReader) Path() string { return t.hash }
@@ -227,15 +231,19 @@ func (t *tieArchiveReader) GetReader() (io.ReadSeeker, error) {
 
 func (t *tieArchiveReader) Open() { t.open() }
 
+// archiveFetchSem bounds concurrent full-archive downloads: each download
+// holds the whole blob in memory, and a page of archives without cached
+// covers would otherwise fetch them all at once (one per loader worker).
+var archiveFetchSem = make(chan struct{}, 2)
+
 // Previews implements gallery.PreviewProvider: the archive blob is fetched
 // once and its image members become preview readers sharing the blob.
 // Called lazily from a gallery loader goroutine.
 func (t *tieArchiveReader) Previews() ([]gallery.CustomReader, error) {
-	r, err := getlib.ReadFile(httpClientForHost(t.host), t.host.URL, t.hash)
-	if err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(r)
+	archiveFetchSem <- struct{}{}
+	defer func() { <-archiveFetchSem }()
+
+	data, err := fetchBlob(t.host, t.hash)
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +259,44 @@ func (t *tieArchiveReader) Previews() ([]gallery.CustomReader, error) {
 		readers = append(readers, &archiveMemberReader{archiveHash: t.hash, data: data, member: m})
 	}
 	return readers, nil
+}
+
+// CoverThumbnail implements gallery.CoverProvider: the archive's
+// server-cached cover thumbnail, resolved via the (hash, "thumbnail",
+// thumbHash) relation. Avoids downloading the archive blob. Returns an
+// error when no cover exists yet (the caller then generates and stores one
+// via the PreviewProvider path).
+func (t *tieArchiveReader) CoverThumbnail() (io.ReadSeeker, error) {
+	thumbHash := t.thumbHash
+	if thumbHash == "" {
+		row, err := t.tc.Get(t.hash)
+		if err != nil {
+			return nil, err
+		}
+		thumbHash = client.RowFirst(row, "thumbnail")
+		if thumbHash == "" {
+			return nil, errors.New("no cover thumbnail for archive " + t.hash)
+		}
+		t.thumbHash = thumbHash
+	}
+	data, err := fetchBlob(t.host, thumbHash)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(data), nil
+}
+
+// StoreCoverThumbnail implements gallery.CoverProvider: uploads the
+// generated cover thumbnail and records the (hash, "thumbnail", thumbHash)
+// mapping. Failures are logged; the generated thumbnail remains usable,
+// just uncached.
+func (t *tieArchiveReader) StoreCoverThumbnail(jpegBytes []byte) {
+	thumbHash, err := uploadThumbnail(t.tc, t.host, t.hash, jpegBytes)
+	if err != nil {
+		fmt.Println("Error storing archive cover thumbnail:", err)
+		return
+	}
+	t.thumbHash = thumbHash
 }
 
 // archiveMemberReader serves one image member's bytes out of an archive blob
@@ -386,37 +432,74 @@ func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude
 		host := tieFileHost(tc)
 		readers := make([]gallery.CustomReader, 0, len(rows))
 		for _, row := range rows {
-		switch classifyTieRow(row) {
-		case tieRowFile:
-			readers = append(readers, &tieReader{
-				host:       host,
-				hash:       row.Key,
-				thumbHash:  client.RowFirst(row, "thumbnail"),
-				dimensions: client.RowFirst(row, "dimensions"),
-				filename:   client.RowFirst(row, "filename"),
-			})
-		case tieRowDir:
-			uid := client.DirUID(row.Key)
-			readers = append(readers, &tieDirReader{uid: uid, tc: tc, host: host, open: func() { browseDir(uid) }})
-		case tieRowArchive:
-			hash := row.Key
-			readers = append(readers, &tieArchiveReader{
-				hash:     hash,
-				filename: client.RowFirst(row, "filename"),
-				host:     host,
-				open:     func() { browseTieArchive(viewer, host, hash) },
-			})
-		case tieRowVideo:
-			readers = append(readers, &tieReader{
-				host:     host,
-				hash:     row.Key,
-				filename: client.RowFirst(row, "filename"),
-				isVideo:  true,
-			})
-		}
+			switch classifyTieRow(row) {
+			case tieRowFile:
+				readers = append(readers, &tieReader{
+					host:       host,
+					hash:       row.Key,
+					thumbHash:  client.RowFirst(row, "thumbnail"),
+					dimensions: client.RowFirst(row, "dimensions"),
+					filename:   client.RowFirst(row, "filename"),
+				})
+			case tieRowDir:
+				uid := client.DirUID(row.Key)
+				readers = append(readers, &tieDirReader{uid: uid, tc: tc, host: host, open: func() { browseDir(uid) }})
+			case tieRowArchive:
+				hash := row.Key
+				readers = append(readers, &tieArchiveReader{
+					hash:      hash,
+					filename:  client.RowFirst(row, "filename"),
+					host:      host,
+					tc:        tc,
+					thumbHash: client.RowFirst(row, "thumbnail"),
+					open:      func() { browseTieArchive(viewer, host, hash) },
+				})
+			case tieRowVideo:
+				readers = append(readers, &tieReader{
+					host:     host,
+					hash:     row.Key,
+					filename: client.RowFirst(row, "filename"),
+					isVideo:  true,
+				})
+			}
 		}
 		return readers
 	})
+}
+
+// uploadThumbnail stores jpegBytes on the filehost and records the
+// (ownerHash, "thumbnail", thumbHash) mapping, returning the thumbHash.
+// Set (not Add) keeps the relation single-valued, so regenerated values
+// replace ones whose blobs were reaped from the filehost.
+func uploadThumbnail(tc *client.TieClient, host client.FileHost, ownerHash string, jpegBytes []byte) (string, error) {
+	if host.URL == "" {
+		return "", errors.New("no filehost URL configured")
+	}
+	pc := putlib.PutConfig{Client: httpClientForHost(host)}
+	thumbHash, err := pc.AddressOf(bytes.NewReader(jpegBytes))
+	if err != nil {
+		return "", err
+	}
+	item := pc.UploadMultipart(host.URL+"/upload/"+thumbHash, bytes.NewReader(jpegBytes), len(jpegBytes), ownerHash+".jpg")
+	if item.ErrorMsg != "" {
+		return "", errors.New(item.ErrorMsg)
+	}
+	if item.Hash != thumbHash {
+		return "", errors.New("checksum mismatch uploading thumbnail")
+	}
+	if err := tc.Set(ownerHash, "thumbnail", []string{thumbHash}); err != nil {
+		return "", err
+	}
+	return thumbHash, nil
+}
+
+// fetchBlob downloads a blob from the filehost.
+func fetchBlob(host client.FileHost, hash string) ([]byte, error) {
+	r, err := getlib.ReadFile(httpClientForHost(host), host.URL, hash)
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(r)
 }
 
 // filehostThumbnailer implements gallery.Thumbnailer on top of the tie
@@ -521,29 +604,9 @@ func (t *filehostThumbnailer) thumbnailReader(tr *tieReader) (rs io.ReadSeeker, 
 // mappings. Failures are logged; the generated thumbnail remains usable,
 // just uncached.
 func (t *filehostThumbnailer) upload(tr *tieReader, jpegBytes []byte, origW, origH int) {
-	host := tieFileHost(t.tie)
-	if host.URL == "" {
-		return
-	}
-	pc := putlib.PutConfig{Client: httpClientForHost(host)}
-	thumbHash, err := pc.AddressOf(bytes.NewReader(jpegBytes))
+	thumbHash, err := uploadThumbnail(t.tie, tieFileHost(t.tie), tr.hash, jpegBytes)
 	if err != nil {
-		fmt.Println("Error hashing thumbnail:", err)
-		return
-	}
-	item := pc.UploadMultipart(host.URL+"/upload/"+thumbHash, bytes.NewReader(jpegBytes), len(jpegBytes), tr.hash+".jpg")
-	if item.ErrorMsg != "" {
-		fmt.Println("Error uploading thumbnail:", item.ErrorMsg)
-		return
-	}
-	if item.Hash != thumbHash {
-		fmt.Println("Error uploading thumbnail: checksum mismatch")
-		return
-	}
-	// Set (not Add) keeps relations single-valued, so regenerated values
-	// replace ones whose blobs were reaped from the filehost.
-	if err := t.tie.Set(tr.hash, "thumbnail", []string{thumbHash}); err != nil {
-		fmt.Println("Error saving thumbnail mapping:", err)
+		fmt.Println("Error uploading thumbnail:", err)
 		return
 	}
 	dims := fmt.Sprintf("%dx%d", origW, origH)

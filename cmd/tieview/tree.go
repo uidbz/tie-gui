@@ -182,6 +182,7 @@ func (t *tieFSTree) showListing(dir client.Directory, selectHash string) {
 			hash:     hash,
 			filename: a.Filename,
 			host:     host,
+			tc:       t.tie,
 			open:     func() { browseTieArchive(t.viewer, host, hash) },
 		})
 	}

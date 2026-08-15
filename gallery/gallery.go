@@ -779,6 +779,22 @@ type PreviewProvider interface {
 	Previews() ([]CustomReader, error)
 }
 
+// CoverProvider is an optional CustomReader behavior for collection entries
+// (directories, archives) that can supply a ready-made cover thumbnail
+// WITHOUT enumerating the collection — e.g. a server-cached cover for a tie
+// archive, which avoids downloading the whole archive blob just to thumbnail
+// its tile. The gallery uses the cover only for previewIndex 0 (the tile's
+// initial view); swipe cycling still goes through PreviewProvider.
+//
+// CoverThumbnail returns a ready-scaled thumbnail JPEG or an error. On error
+// the gallery falls back to the PreviewProvider path, and after generating
+// the first preview itself it calls StoreCoverThumbnail with the plain
+// (pre-badge) JPEG so the cover is cached for next time.
+type CoverProvider interface {
+	CoverThumbnail() (io.ReadSeeker, error)
+	StoreCoverThumbnail(jpegBytes []byte)
+}
+
 func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 	viewer.loading.Add(1)
 	defer viewer.loading.Done()

@@ -489,27 +489,20 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 		return layout.videoThumbnail(info)
 	}
 
-	// Browsable collection entries (tie directories, archive blobs) that did
-	// not bring their own preview list pull it lazily from their
-	// CustomReader. Runs on a loader goroutine, so network I/O is fine.
-	if len(info.PreviewPaths) == 0 && len(info.PreviewReaders) == 0 {
-		if pp, ok := info.CustomReader.(PreviewProvider); ok {
-			if pr, err := pp.Previews(); err == nil {
-				info.PreviewReaders = pr
-			}
-		}
-	}
-
 	// Directory and archive tiles: thumbnail of the currently selected
 	// preview image (previewIndex, changed by swiping the tile) with a
-	// semi-transparent folder icon overlay.
-	if len(info.PreviewPaths) > 0 || len(info.PreviewReaders) > 0 {
+	// semi-transparent folder icon overlay. Entries whose CustomReader can
+	// supply previews (PreviewProvider) enter this branch too; the preview
+	// list is resolved lazily inside dirPreviewThumbnail. On failure the
+	// code falls through to the Thumbnailer (e.g. folder icon) or the
+	// generic path instead of leaving the tile on the placeholder.
+	_, hasPreviewProvider := info.CustomReader.(PreviewProvider)
+	if len(info.PreviewPaths) > 0 || len(info.PreviewReaders) > 0 || hasPreviewProvider {
 		data, err := layout.dirPreviewThumbnail(info)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			info.ThumbnailIsScaled = true
+			return bytes.NewReader(data), nil
 		}
-		info.ThumbnailIsScaled = true
-		return bytes.NewReader(data), nil
 	}
 
 	// A custom Thumbnailer (e.g. one backed by network storage) takes
@@ -640,23 +633,53 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 		}
 		scaled = ScaleImage(decoded, tileWidth*2)
 	} else {
+		// Cover fast path: entries with a ready-made cover thumbnail
+		// (CoverProvider, e.g. a server-cached tie archive cover) serve the
+		// tile's initial view WITHOUT enumerating the collection — no
+		// archive download, no directory query.
+		if cp, ok := info.CustomReader.(CoverProvider); ok &&
+			info.previewIndex == 0 && len(info.PreviewReaders) == 0 {
+			cacheKey = readerCacheKey(info.CustomReader.Path())
+			if data, ok := layout.dirPreviewCache(cacheKey); ok {
+				return data, nil
+			}
+			if rs, err := cp.CoverThumbnail(); err == nil {
+				decoded, _, derr := Decode(rs)
+				if derr != nil {
+					return nil, derr
+				}
+				return layout.finishDirPreview(cacheKey, decoded)
+			}
+			// Cover unavailable: fall through to the preview-readers path;
+			// the generated first preview is stored as the cover below.
+		}
+
+		// Lazily resolve the preview readers (PreviewProvider). This is
+		// where collection enumeration happens — one cheap query for tie
+		// directories, a full blob download for tie archives.
+		if len(info.PreviewReaders) == 0 {
+			if pp, ok := info.CustomReader.(PreviewProvider); ok {
+				if pr, err := pp.Previews(); err == nil {
+					info.PreviewReaders = pr
+				}
+			}
+			if len(info.PreviewReaders) == 0 {
+				return nil, errors.New("no previews available")
+			}
+		}
 		idx := info.previewIndex
 		if idx < 0 || idx >= len(info.PreviewReaders) {
 			idx = 0
 		}
 		r := info.PreviewReaders[idx]
-
-		// tie readers use the content hash as Path, making it a perfect
-		// cache key with no download; anything else is hashed by name.
-		cacheKey = r.Path()
-		if len(cacheKey) != 64 {
-			sum := sha256.Sum256([]byte(cacheKey))
-			cacheKey = hex.EncodeToString(sum[:])
-		}
+		cacheKey = readerCacheKey(r.Path())
 		if data, ok := layout.dirPreviewCache(cacheKey); ok {
 			return data, nil
 		}
 
+		// plainJPEG keeps the pre-badge thumbnail bytes so a CoverProvider
+		// can store them as the entry's cover for next time.
+		var plainJPEG []byte
 		if layout.thumbnailer != nil {
 			// Let the app's Thumbnailer (e.g. the tie filehost cache)
 			// supply the already-scaled preview thumbnail.
@@ -666,7 +689,11 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			decoded, _, err := Decode(rs)
+			plainJPEG, err = io.ReadAll(rs)
+			if err != nil {
+				return nil, err
+			}
+			decoded, _, err := Decode(bytes.NewReader(plainJPEG))
 			if err != nil {
 				return nil, err
 			}
@@ -681,14 +708,41 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 				return nil, err
 			}
 			scaled = ScaleImage(decoded, tileWidth*2)
+			if _, ok := info.CustomReader.(CoverProvider); ok && info.previewIndex == 0 {
+				buf := &bytes.Buffer{}
+				if err := jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90}); err == nil {
+					plainJPEG = buf.Bytes()
+				}
+			}
+		}
+
+		if cp, ok := info.CustomReader.(CoverProvider); ok &&
+			info.previewIndex == 0 && plainJPEG != nil {
+			cp.StoreCoverThumbnail(plainJPEG)
 		}
 	}
 
+	return layout.finishDirPreview(cacheKey, scaled)
+}
+
+// readerCacheKey derives a 64-hex disk-cache key from a reader path: tie
+// readers already use content hashes; anything else is hashed by name.
+func readerCacheKey(path string) string {
+	if len(path) == 64 {
+		return path
+	}
+	sum := sha256.Sum256([]byte(path))
+	return hex.EncodeToString(sum[:])
+}
+
+// finishDirPreview badges a scaled preview image with the folder icon,
+// encodes it as JPEG, and writes it to the disk cache under cacheKey.
+func (layout *TileLayout) finishDirPreview(cacheKey string, scaled image.Image) ([]byte, error) {
 	// Convert to NRGBA for the icon overlay.
 	result := image.NewNRGBA(scaled.Bounds())
 	stdraw.Draw(result, result.Bounds(), scaled, image.Point{}, stdraw.Src)
 
-	iconPx := tileWidth * 2 / 4 // ~25 % of image width; halved at display scale
+	iconPx := int(layout.config.General.TileWidth) * 2 / 4 // ~25 % of image width; halved at display scale
 	if iconPx < 24 {
 		iconPx = 24
 	}
