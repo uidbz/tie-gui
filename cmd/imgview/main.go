@@ -137,10 +137,13 @@ func main() {
 
 	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		switch true {
-		case t.Info.InputIsDir:
-			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
+		// Archive entries have both InputIsDir and ShowArchive set; check
+		// ShowArchive first so they open the archive instead of navigating
+		// to the (nonexistent) directory of their first member path.
 		case t.Info.ShowArchive:
 			t.Viewer.ShowImageArchive(t.Info.FullPath)
+		case t.Info.InputIsDir:
+			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
 		case t.Info.InputIsVideo:
 			go func() {
 				player, err := mpvplayer.NewMPVPlayer(t.Info.Path)

@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"archive/zip"
 	"bytes"
 	"image"
 	"image/color"
@@ -107,6 +108,100 @@ type memReader struct {
 
 func (m memReader) GetReader() (io.ReadSeeker, error) { return bytes.NewReader(m.data), nil }
 func (m memReader) Path() string                      { return m.path }
+
+func makeTestZip(t *testing.T, path string, files map[string][]byte) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for name, data := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A directory listing must surface an archive as an entry carrying
+// ShowArchive + FullPath (what the tap handler uses to open it) and all
+// image members as swipeable previews.
+func TestReadImageDirArchiveEntry(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestJPEG(t, filepath.Join(tmp, "photo.jpg"), 100, 80, color.RGBA{200, 30, 30, 255})
+	zipPath := filepath.Join(tmp, "pack.zip")
+	makeTestZip(t, zipPath, map[string][]byte{
+		"pics/a.jpg":     testJPEGBytes(t, 100, 80, color.RGBA{30, 200, 30, 255}),
+		"pics/b.jpg":     testJPEGBytes(t, 100, 80, color.RGBA{30, 30, 200, 255}),
+		"pics/notes.txt": []byte("not an image"),
+	})
+
+	v := &Gallery{}
+	v.ReadImageDir(tmp, nil)
+
+	var arch *ImageInfo
+	for _, fi := range v.imageFiles {
+		if fi.ShowArchive {
+			arch = fi
+		}
+	}
+	if arch == nil {
+		t.Fatal("no archive entry in directory listing")
+	}
+	if arch.FullPath != zipPath {
+		t.Fatalf("FullPath = %q, want %q", arch.FullPath, zipPath)
+	}
+	if !arch.InputIsDir || !arch.InputIsArchive {
+		t.Fatalf("InputIsDir=%v InputIsArchive=%v, want both true", arch.InputIsDir, arch.InputIsArchive)
+	}
+	if len(arch.PreviewPaths) != 2 {
+		t.Fatalf("PreviewPaths = %d, want 2 (txt member skipped)", len(arch.PreviewPaths))
+	}
+	if !arch.HasPreviews() || arch.PreviewCount() != 2 {
+		t.Fatalf("HasPreviews=%v PreviewCount=%d", arch.HasPreviews(), arch.PreviewCount())
+	}
+}
+
+// Opening an archive directly lists its image members as regular image
+// entries (no folder badge, no swipe overlay).
+func TestReadImageArchiveMembers(t *testing.T) {
+	tmp := t.TempDir()
+	zipPath := filepath.Join(tmp, "pack.zip")
+	makeTestZip(t, zipPath, map[string][]byte{
+		"pics/b.jpg":     testJPEGBytes(t, 100, 80, color.RGBA{30, 200, 30, 255}),
+		"pics/a.jpg":     testJPEGBytes(t, 100, 80, color.RGBA{30, 30, 200, 255}),
+		"pics/notes.txt": []byte("not an image"),
+	})
+
+	v := &Gallery{}
+	v.ReadImageArchive(zipPath)
+
+	if len(v.imageFiles) != 2 {
+		t.Fatalf("entries = %d, want 2", len(v.imageFiles))
+	}
+	for i, fi := range v.imageFiles {
+		if !fi.InputIsArchive {
+			t.Fatalf("entry %d InputIsArchive=false", i)
+		}
+		if fi.HasPreviews() {
+			t.Fatalf("entry %d should not have swipe previews", i)
+		}
+	}
+	// Sorted by member path.
+	if v.imageFiles[0].Path != "pics/a.jpg" || v.imageFiles[1].Path != "pics/b.jpg" {
+		t.Fatalf("entries not sorted: %q, %q", v.imageFiles[0].Path, v.imageFiles[1].Path)
+	}
+}
 
 // memPreviewProvider adds a PreviewProvider implementation to memReader.
 type memPreviewProvider struct {
