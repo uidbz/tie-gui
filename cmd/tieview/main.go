@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 
 	"git.sr.ht/~uid/conf"
 	"git.sr.ht/~uid/tie/client"
@@ -225,6 +226,40 @@ func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Gallery, tc *cl
 	)
 }
 
+// ratingFilterOptions maps the rating Select's labels to filters. "Any" clears
+// the constraint; "N" is exact; "N+" is at least N; "Unrated" uses the
+// server-side MissingRelation predicate.
+var ratingFilterOptions = []struct {
+	label  string
+	filter ratingFilter
+}{
+	{"Any", ratingFilter{mode: ratingAny}},
+	{"Unrated", ratingFilter{mode: ratingUnrated}},
+	{"5", ratingFilter{mode: ratingExact, n: 5}},
+	{"4", ratingFilter{mode: ratingExact, n: 4}},
+	{"3", ratingFilter{mode: ratingExact, n: 3}},
+	{"2", ratingFilter{mode: ratingExact, n: 2}},
+	{"1", ratingFilter{mode: ratingExact, n: 1}},
+	{"4+", ratingFilter{mode: ratingMin, n: 4}},
+	{"3+", ratingFilter{mode: ratingMin, n: 3}},
+	{"2+", ratingFilter{mode: ratingMin, n: 2}},
+	{"1+", ratingFilter{mode: ratingMin, n: 1}},
+}
+
+// sortModeOptions maps the sort Select's labels to sort modes.
+var sortModeOptions = []struct {
+	label string
+	mode  sortMode
+}{
+	{"Default", sortDefault},
+	{"Name ↑", sortNameAsc},
+	{"Name ↓", sortNameDesc},
+	{"Rating ↓", sortRatingDesc},
+	{"Rating ↑", sortRatingAsc},
+	{"Newest", sortNewest},
+	{"Oldest", sortOldest},
+}
+
 // makeTagSidebar builds the tag sidebar: it lists the tags registered under
 // the "tags" key and re-queries the gallery whenever the selection changes.
 // When tags are selected the list is narrowed to tags that co-occur with the
@@ -238,10 +273,84 @@ func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Gallery, tc *cl
 // tagger, when non-nil, receives the full tag list via SetAllTags whenever
 // the tag list is (re-)loaded. This keeps the image-tagger search trie in
 // sync with the sidebar's tag list without a separate network request.
-func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID), tagger *imageTagger) (*tagselection.TagSelection, func()) {
+func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID), tagger *imageTagger) (fyne.CanvasObject, func()) {
 	ts := tagselection.NewTagSelection(window)
 	// Sidebar uses include/exclude filtering, so show the checkbox.
 	ts.ShowIncludeExclude = true
+
+	// Current filter/sort state, all read and written on the UI goroutine.
+	curRating := ratingFilter{mode: ratingAny}
+	curSort := sortDefault
+	untaggedOnly := false
+
+	// refreshGallery re-queries the gallery from the live tag selection plus the
+	// rating/sort/untagged controls. Used by every control's change handler.
+	refreshGallery := func() {
+		in, ex := ts.SelectedTags()
+		queryGallery(viewer, tc, galleryFilter{
+			include:      in,
+			exclude:      ex,
+			rating:       curRating,
+			untaggedOnly: untaggedOnly,
+			sort:         curSort,
+		}, browseDir)
+		viewer.ChangeGallery()
+	}
+
+	ratingSelect := widget.NewSelect(nil, func(label string) {
+		for _, o := range ratingFilterOptions {
+			if o.label == label {
+				curRating = o.filter
+				break
+			}
+		}
+		refreshGallery()
+	})
+	for _, o := range ratingFilterOptions {
+		ratingSelect.Options = append(ratingSelect.Options, o.label)
+	}
+	// Set the field directly (not SetSelectedIndex) so OnChanged does not fire
+	// during construction — the sidebar is built before viewer.Init(), so an
+	// early refreshGallery/ChangeGallery would run against an uninitialized view.
+	ratingSelect.Selected = ratingFilterOptions[0].label // "Any"
+
+	sortSelect := widget.NewSelect(nil, func(label string) {
+		for _, o := range sortModeOptions {
+			if o.label == label {
+				curSort = o.mode
+				break
+			}
+		}
+		refreshGallery()
+	})
+	for _, o := range sortModeOptions {
+		sortSelect.Options = append(sortSelect.Options, o.label)
+	}
+	sortSelect.Selected = sortModeOptions[0].label // "Default"
+
+	// The Untagged toggle shows images that carry no tag at all (server-side
+	// MissingRelation="tag"). Enabling it clears the tag selection; selecting a
+	// tag later turns it back off (handled in OnSelectedChanged).
+	var untaggedBtn *widget.Button
+	untaggedBtn = widget.NewButton("Untagged", func() {
+		untaggedOnly = !untaggedOnly
+		if untaggedOnly {
+			untaggedBtn.SetText("Untagged ✓")
+			ts.ClearSelected() // fires OnSelectedChanged → would clear the flag
+			untaggedOnly = true
+		} else {
+			untaggedBtn.SetText("Untagged")
+		}
+		refreshGallery()
+	})
+
+	controls := container.NewVBox(
+		container.NewGridWithColumns(2,
+			container.NewBorder(nil, nil, widget.NewLabel("Rating"), nil, ratingSelect),
+			container.NewBorder(nil, nil, widget.NewLabel("Sort"), nil, sortSelect),
+		),
+		untaggedBtn,
+	)
 
 	// allTags and allFavorites hold the full unfiltered lists from the most
 	// recent tag fetch. All reads and writes happen on the UI goroutine
@@ -324,8 +433,17 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 
 	ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
-		readFromTie(viewer, tc, in, ex, "tag", browseDir)
-		viewer.ChangeGallery()
+		// Clicking a tag row or include/exclude checkbox moves keyboard
+		// focus to that widget, and typed keys would no longer reach the
+		// window-level gallery hotkeys. Release it.
+		window.Canvas().Unfocus()
+		// Selecting any tag exits untagged-only mode; an empty selection (e.g.
+		// from ClearSelected when entering untagged mode) leaves it untouched.
+		if (len(in) > 0 || len(ex) > 0) && untaggedOnly {
+			untaggedOnly = false
+			untaggedBtn.SetText("Untagged")
+		}
+		refreshGallery()
 
 		// Refresh the tag list in the background. Copies of in/ex are
 		// passed so the goroutine is safe from later UI changes.
@@ -364,7 +482,8 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 		}()
 	}
 
-	return ts, reloadTags
+	sidebar := container.NewBorder(controls, nil, nil, nil, ts)
+	return sidebar, reloadTags
 }
 
 // openTieVideo opens a libmpv video player window for a tie video entry.

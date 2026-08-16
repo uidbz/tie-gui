@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"slices"
+	"strconv"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -41,13 +42,17 @@ type imageTagger struct {
 	// always pass, so the panel kept showing the previous image's tags).
 	panelHash   string
 	appliedTags []string // snapshot of tags applied to panelHash in tie
+	// appliedRating is the rating (0 = unrated, else 1..5) currently stored in
+	// tie for panelHash, snapshotted at load so syncRating can diff against it.
+	appliedRating int
 
 	// allTags is the full known tag list (from tc.Get("tags")), kept here so
 	// OnNewTag can append and refresh the available list without a round-trip.
 	allTags []string
 
-	ts    *tagselection.TagSelection
-	Panel fyne.CanvasObject // embed into viewer.Content as a stack overlay layer
+	ts     *tagselection.TagSelection
+	rating *starRating
+	Panel  fyne.CanvasObject // embed into viewer.Content as a stack overlay layer
 
 	// OnHide, when non-nil, is called after the panel becomes hidden.
 	// Use it to restore keyboard focus to the image view on desktop.
@@ -66,6 +71,9 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 	}
 	it.ts = tagselection.NewTagSelection(window)
 	it.ts.ShowStars = true // must be set before the widget is first rendered
+	// Keep the search entry focused after a selection or Escape so the user
+	// can add several tags in a row without clicking back into the box.
+	it.ts.KeepSearchFocus = true
 	// ShowIncludeExclude defaults to false — applied tags have no include/exclude
 	// distinction, so the checkbox is hidden in the tagger context.
 	it.ts.SetListLabel("Favorites")
@@ -129,18 +137,55 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 		}()
 	}
 
+	// The star rating widget writes the (hash,"rating","<1-5>") triple for the
+	// image currently loaded in the panel. Clearing (rating 0) removes it.
+	it.rating = newStarRating(24, func(rating int) {
+		it.syncRating(rating)
+	})
+
 	closeBtn := widget.NewButton("✕", func() { it.HidePanel() })
 	header := container.NewBorder(nil, nil,
 		widget.NewLabel("Image tags"),
 		closeBtn,
 	)
+	ratingRow := container.NewBorder(nil, nil, widget.NewLabel("Rating"), nil, container.NewHBox(it.rating))
+	top := container.NewVBox(header, ratingRow)
 
 	bg := canvas.NewRectangle(theme.BackgroundColor())
-	inner := container.NewBorder(header, nil, nil, nil, it.ts)
+	inner := container.NewBorder(top, nil, nil, nil, it.ts)
 	it.Panel = container.NewStack(bg, container.NewPadded(inner))
 	it.Panel.Hide()
 
 	return it
+}
+
+// syncRating persists a user-chosen rating for the panel's image. It diffs
+// against the appliedRating snapshot: a change to 1..5 replaces the stored
+// value (delete old, add new), and clearing (0) just deletes it. Tags and
+// rating share the same content-hash subject, so this rates the content
+// everywhere it appears.
+func (it *imageTagger) syncRating(rating int) {
+	if it.panelHash == "" {
+		return
+	}
+	hash := it.panelHash
+	old := it.appliedRating
+	if rating == old {
+		return
+	}
+	it.appliedRating = rating
+	go func() {
+		if old != 0 {
+			if _, err := it.tc.Delete(hash, "rating", strconv.Itoa(old)); err != nil {
+				fmt.Printf("imageTagger: error clearing rating: %v\n", err)
+			}
+		}
+		if rating != 0 {
+			if _, err := it.tc.Add(hash, "rating", strconv.Itoa(rating)); err != nil {
+				fmt.Printf("imageTagger: error setting rating %d: %v\n", rating, err)
+			}
+		}
+	}()
 }
 
 // SetAllTags replaces the search trie with the full tag list and refreshes
@@ -172,6 +217,8 @@ func (it *imageTagger) ShowForImage(hash string) {
 		it.panelHash = hash
 		it.appliedTags = nil
 		it.ts.SetSelected(nil)
+		it.appliedRating = 0
+		it.rating.SetRating(0)
 		it.loadCurrentTags()
 	}
 	it.Panel.Show()
@@ -211,6 +258,8 @@ func (it *imageTagger) SetCurrentHash(hash string) {
 		it.panelHash = hash
 		it.appliedTags = nil
 		it.ts.SetSelected(nil)
+		it.appliedRating = 0
+		it.rating.SetRating(0)
 		it.loadCurrentTags()
 	}
 }
@@ -232,12 +281,15 @@ func (it *imageTagger) loadCurrentTags() {
 			return
 		}
 		tags := client.RowValues(row, "tag")
+		rating, _ := strconv.Atoi(client.RowFirst(row, "rating"))
 		fyne.Do(func() {
 			if it.panelHash != hash {
 				return // stale: user navigated to a different image
 			}
 			it.appliedTags = append([]string(nil), tags...)
 			it.ts.SetSelected(tags)
+			it.appliedRating = rating
+			it.rating.SetRating(rating)
 		})
 	}()
 }

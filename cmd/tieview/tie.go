@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -429,41 +430,179 @@ func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude
 			fmt.Println("Error happened querying tie:", err)
 			return nil
 		}
-		host := tieFileHost(tc)
-		readers := make([]gallery.CustomReader, 0, len(rows))
+		return buildReaders(viewer, tc, rows, browseDir)
+	})
+}
+
+// buildReaders turns tag/rating query rows into gallery readers, classifying
+// each row into a viewable image, a browsable directory/archive, or a video.
+// Rows that classify as tieRowSkip are dropped.
+func buildReaders(viewer *gallery.Gallery, tc *client.TieClient, rows []client.Row, browseDir func(client.DirUID)) []gallery.CustomReader {
+	host := tieFileHost(tc)
+	readers := make([]gallery.CustomReader, 0, len(rows))
+	for _, row := range rows {
+		switch classifyTieRow(row) {
+		case tieRowFile:
+			readers = append(readers, &tieReader{
+				host:       host,
+				hash:       row.Key,
+				thumbHash:  client.RowFirst(row, "thumbnail"),
+				dimensions: client.RowFirst(row, "dimensions"),
+				filename:   client.RowFirst(row, "filename"),
+			})
+		case tieRowDir:
+			uid := client.DirUID(row.Key)
+			readers = append(readers, &tieDirReader{uid: uid, tc: tc, host: host, open: func() { browseDir(uid) }})
+		case tieRowArchive:
+			hash := row.Key
+			readers = append(readers, &tieArchiveReader{
+				hash:      hash,
+				filename:  client.RowFirst(row, "filename"),
+				host:      host,
+				tc:        tc,
+				thumbHash: client.RowFirst(row, "thumbnail"),
+				open:      func() { browseTieArchive(viewer, host, hash) },
+			})
+		case tieRowVideo:
+			readers = append(readers, &tieReader{
+				host:     host,
+				hash:     row.Key,
+				filename: client.RowFirst(row, "filename"),
+				isVideo:  true,
+			})
+		}
+	}
+	return readers
+}
+
+// ratingMode selects how the rating filter constrains the gallery.
+type ratingMode int
+
+const (
+	ratingAny     ratingMode = iota // no rating constraint
+	ratingExact                     // exactly n stars
+	ratingMin                       // at least n stars
+	ratingUnrated                   // no rating triple at all
+)
+
+// ratingFilter is a gallery rating constraint. n is the star count for the
+// exact/min modes and ignored otherwise.
+type ratingFilter struct {
+	mode ratingMode
+	n    int
+}
+
+// matches reports whether a query row satisfies the rating filter, read from
+// the row's expanded "rating" attribute.
+func (rf ratingFilter) matches(row client.Row) bool {
+	switch rf.mode {
+	case ratingUnrated:
+		return len(client.RowValues(row, "rating")) == 0
+	case ratingExact:
+		r, _ := strconv.Atoi(client.RowFirst(row, "rating"))
+		return r == rf.n
+	case ratingMin:
+		r, _ := strconv.Atoi(client.RowFirst(row, "rating"))
+		return r >= rf.n
+	default:
+		return true
+	}
+}
+
+// sortMode selects how gallery rows are ordered client-side.
+type sortMode int
+
+const (
+	sortDefault    sortMode = iota // engine order (unspecified)
+	sortNameAsc                    // filename A→Z
+	sortNameDesc                   // filename Z→A
+	sortRatingDesc                 // highest rating first
+	sortRatingAsc                  // lowest rating first
+	sortNewest                     // most recent tag-date first
+	sortOldest                     // oldest tag-date first
+)
+
+// sortRows orders rows in place per mode. Rating is numeric; name and date are
+// string comparisons (tag-date's fixed layout sorts chronologically as text).
+func sortRows(rows []client.Row, mode sortMode) {
+	rating := func(r client.Row) int { n, _ := strconv.Atoi(client.RowFirst(r, "rating")); return n }
+	name := func(r client.Row) string { return client.RowFirst(r, "filename") }
+	date := func(r client.Row) string { return client.RowFirst(r, "tag-date") }
+	switch mode {
+	case sortNameAsc:
+		sort.SliceStable(rows, func(i, j int) bool { return name(rows[i]) < name(rows[j]) })
+	case sortNameDesc:
+		sort.SliceStable(rows, func(i, j int) bool { return name(rows[i]) > name(rows[j]) })
+	case sortRatingDesc:
+		sort.SliceStable(rows, func(i, j int) bool { return rating(rows[i]) > rating(rows[j]) })
+	case sortRatingAsc:
+		sort.SliceStable(rows, func(i, j int) bool { return rating(rows[i]) < rating(rows[j]) })
+	case sortNewest:
+		sort.SliceStable(rows, func(i, j int) bool { return date(rows[i]) > date(rows[j]) })
+	case sortOldest:
+		sort.SliceStable(rows, func(i, j int) bool { return date(rows[i]) < date(rows[j]) })
+	}
+}
+
+// galleryFilter is the full set of sidebar constraints driving the gallery.
+type galleryFilter struct {
+	include, exclude []string     // tag AND / NOT lists
+	rating           ratingFilter // star constraint
+	untaggedOnly     bool         // show only items with no tag at all
+	sort             sortMode     // client-side ordering
+}
+
+// queryGallery populates the viewer from tie according to gf. The server seed is
+// chosen by precedence — untagged, then tags, then a rating-only browse — and
+// uses the MissingRelation predicate for the "untagged" and "unrated" cases so
+// only qualifying rows cross the wire. The rating filter and sort are applied
+// client-side over the expanded rows. It calls ReadCustomAsync; the caller is
+// responsible for viewer.ChangeGallery().
+func queryGallery(viewer *gallery.Gallery, tc *client.TieClient, gf galleryFilter, browseDir func(client.DirUID)) {
+	spec := client.QuerySpec{Reverse: true, Expand: true, Limit: -1}
+	imageScope := client.TieImageFile.String()
+	tieType := client.TieTypeProperty.String()
+	switch {
+	case gf.untaggedOnly:
+		spec.Terms = []string{imageScope}
+		spec.Filter = tieType
+		spec.MissingRelation = "tag"
+	case len(gf.include) > 0:
+		spec.Terms = gf.include
+		spec.Exclude = gf.exclude
+		spec.Filter = "tag"
+	case gf.rating.mode == ratingUnrated:
+		spec.Terms = []string{imageScope}
+		spec.Filter = tieType
+		spec.MissingRelation = "rating"
+	case gf.rating.mode == ratingExact:
+		spec.Terms = []string{strconv.Itoa(gf.rating.n)}
+		spec.Filter = "rating"
+	case gf.rating.mode == ratingMin:
+		spec.Terms = []string{imageScope}
+		spec.Filter = tieType
+	default:
+		// Nothing selected (no tags, no rating): leave the gallery unchanged,
+		// matching the prior readFromTie behavior for an empty selection.
+		return
+	}
+
+	rf := gf.rating
+	sm := gf.sort
+	viewer.ReadCustomAsync(func() []gallery.CustomReader {
+		rows, _, err := tc.Query(spec)
+		if err != nil {
+			fmt.Println("Error happened querying tie:", err)
+			return nil
+		}
+		filtered := rows[:0]
 		for _, row := range rows {
-			switch classifyTieRow(row) {
-			case tieRowFile:
-				readers = append(readers, &tieReader{
-					host:       host,
-					hash:       row.Key,
-					thumbHash:  client.RowFirst(row, "thumbnail"),
-					dimensions: client.RowFirst(row, "dimensions"),
-					filename:   client.RowFirst(row, "filename"),
-				})
-			case tieRowDir:
-				uid := client.DirUID(row.Key)
-				readers = append(readers, &tieDirReader{uid: uid, tc: tc, host: host, open: func() { browseDir(uid) }})
-			case tieRowArchive:
-				hash := row.Key
-				readers = append(readers, &tieArchiveReader{
-					hash:      hash,
-					filename:  client.RowFirst(row, "filename"),
-					host:      host,
-					tc:        tc,
-					thumbHash: client.RowFirst(row, "thumbnail"),
-					open:      func() { browseTieArchive(viewer, host, hash) },
-				})
-			case tieRowVideo:
-				readers = append(readers, &tieReader{
-					host:     host,
-					hash:     row.Key,
-					filename: client.RowFirst(row, "filename"),
-					isVideo:  true,
-				})
+			if rf.matches(row) {
+				filtered = append(filtered, row)
 			}
 		}
-		return readers
+		sortRows(filtered, sm)
+		return buildReaders(viewer, tc, filtered, browseDir)
 	})
 }
 
