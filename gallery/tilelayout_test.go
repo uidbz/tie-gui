@@ -17,6 +17,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/test"
 )
 
 func testTile() *Tile {
@@ -670,6 +671,39 @@ func TestToRGBA(t *testing.T) {
 	// YCbCr (what JPEG decoding produces) must convert without panic.
 	if toRGBA(image.NewYCbCr(image.Rect(0, 0, 4, 4), image.YCbCrSubsampleRatio420)) == nil {
 		t.Fatal("YCbCr conversion returned nil")
+	}
+}
+
+// A cached ImageView whose bitmap was released (showGallery frees it) must
+// be reloaded when the view is shown again — regression: previously seen
+// images came back blank.
+func TestLoadImageToCacheReloadsReleasedView(t *testing.T) {
+	test.NewApp()
+	win := test.NewWindow(nil)
+
+	v := &Gallery{
+		cache:    make(map[string]*ImageView),
+		window:   win,
+		platform: NewPlatform(),
+	}
+	info := NewImageInfoCustomReader(0, memReader{path: "p", data: testJPEGBytes(t, 64, 48, color.RGBA{10, 20, 30, 255})})
+	info.Path = "p"
+
+	iv1 := v.LoadImageToCache(info)
+	if iv1.fyneImage == nil || iv1.fyneImage.Image == nil {
+		t.Fatal("initial load did not produce an image")
+	}
+
+	// Simulate showGallery's release of the bitmap.
+	iv1.fullImage = nil
+	iv1.fyneImage.Image = nil
+
+	iv2 := v.LoadImageToCache(info)
+	if iv2 != iv1 {
+		t.Fatal("expected the cached view instance")
+	}
+	if iv2.fyneImage.Image == nil {
+		t.Fatal("released view was not reloaded on cache hit")
 	}
 }
 

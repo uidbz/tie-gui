@@ -436,14 +436,14 @@ type TagSelection struct {
 	// tagger leaves it false (applied tags have no include/exclude distinction).
 	ShowIncludeExclude bool
 	starredSet         map[string]bool // tags whose star button shows ★
-	tags       *trie.Trie
-	selectedList      *AutoExpandingList
-	quickPickList     *AutoExpandingList
-	listLabel         *widget.Label
-	content           fyne.CanvasObject
-	search            *SearchItem
-	window            fyne.Window
-	caseMap           map[string]string // lowercase tag -> original case
+	tags               *trie.Trie
+	selectedList       *AutoExpandingList
+	quickPickList      *AutoExpandingList
+	listLabel          *widget.Label
+	content            fyne.CanvasObject
+	search             *SearchItem
+	window             fyne.Window
+	caseMap            map[string]string // lowercase tag -> original case
 }
 
 type AutoExpandingList struct {
@@ -701,6 +701,20 @@ func (ts *TagSelection) AddSelected(tid *TagItemData) {
 	if ts.OnSelectedChanged != nil {
 		ts.OnSelectedChanged()
 	}
+}
+
+// SetSelected replaces the selected-tag list and refreshes it once, WITHOUT
+// firing OnSelectedChanged. Use it to reflect externally loaded state (e.g.
+// tags fetched from tie into the image tagger): AddSelected would fire the
+// callback per tag, and each partial state would look like a user edit —
+// in the tagger that triggers spurious tie delete/add writes. It also
+// refreshes the list immediately, which a bare AddSelected loop does not.
+func (ts *TagSelection) SetSelected(tags []string) {
+	ts.selected = ts.selected[:0]
+	for _, tag := range tags {
+		ts.selected = append(ts.selected, NewTagItemData(tag))
+	}
+	ts.selectedList.Refresh()
 }
 
 /*****************************

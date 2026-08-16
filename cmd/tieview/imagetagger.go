@@ -30,9 +30,17 @@ import (
 //
 // Tag writes are persisted immediately via tc.Add / tc.Delete in a goroutine.
 type imageTagger struct {
-	tc          *client.TieClient
-	hash        string   // content hash of the currently viewed image ("" = none)
-	appliedTags []string // snapshot of tags applied to the current image in tie
+	tc *client.TieClient
+	// hash is the content hash of the currently VIEWED image ("" = none),
+	// tracked via SetCurrentHash whether the panel is open or not.
+	hash string
+	// panelHash is the hash whose tags are currently LOADED in the panel.
+	// It trails hash when the user navigates with the panel closed; opening
+	// the panel then detects the mismatch and loads the new image's tags
+	// (regression: a single hash field made ShowForImage's staleness check
+	// always pass, so the panel kept showing the previous image's tags).
+	panelHash   string
+	appliedTags []string // snapshot of tags applied to panelHash in tie
 
 	// allTags is the full known tag list (from tc.Get("tags")), kept here so
 	// OnNewTag can append and refresh the available list without a round-trip.
@@ -44,6 +52,10 @@ type imageTagger struct {
 	// OnHide, when non-nil, is called after the panel becomes hidden.
 	// Use it to restore keyboard focus to the image view on desktop.
 	OnHide func()
+	// OnTagsAdded, when non-nil, is called on the UI goroutine with tags that
+	// were successfully written to tie, so the sidebar can add genuinely new
+	// tags to its search trie without a full reload.
+	OnTagsAdded func(tags []string)
 }
 
 // newImageTagger creates an imageTagger. Call SetAllTags and SetFavoriteTags
@@ -152,14 +164,14 @@ func (it *imageTagger) SetFavoriteTags(tags []string) {
 	it.ts.SetFavoritesWithStars(tags)
 }
 
-// ShowForImage opens the panel for the image with hash. If the panel was
-// already open for a different image the selected list is reset first so
-// the new image's tags are fetched and displayed.
+// ShowForImage opens the panel for the image with hash. If the panel holds a
+// different image's tags the selected list is reset first so the new image's
+// tags are fetched and displayed.
 func (it *imageTagger) ShowForImage(hash string) {
-	if it.hash != hash {
-		it.hash = hash
+	if it.panelHash != hash {
+		it.panelHash = hash
 		it.appliedTags = nil
-		it.ts.ClearSelected()
+		it.ts.SetSelected(nil)
 		it.loadCurrentTags()
 	}
 	it.Panel.Show()
@@ -179,7 +191,7 @@ func (it *imageTagger) HidePanel() {
 // Toggle opens the panel when hidden or closes it when visible.
 // hash is the content hash of the image the user is currently viewing.
 func (it *imageTagger) Toggle(hash string) {
-	if it.Panel.Visible() && it.hash == hash {
+	if it.Panel.Visible() && it.panelHash == hash {
 		it.HidePanel()
 	} else {
 		it.ShowForImage(hash)
@@ -188,24 +200,28 @@ func (it *imageTagger) Toggle(hash string) {
 
 // SetCurrentHash records which image hash is currently displayed without
 // opening the panel. This lets Toggle open for the correct image on the
-// first tap even if the panel has never been shown before.
+// first tap even if the panel has never been shown before. When the panel
+// IS open, it switches to the new image's tags immediately.
 func (it *imageTagger) SetCurrentHash(hash string) {
 	if it.hash == hash {
 		return
 	}
 	it.hash = hash
-	// If the panel is open, switch it to the new image immediately.
-	if it.Panel.Visible() {
+	if it.Panel.Visible() && it.panelHash != hash {
+		it.panelHash = hash
 		it.appliedTags = nil
-		it.ts.ClearSelected()
+		it.ts.SetSelected(nil)
 		it.loadCurrentTags()
 	}
 }
 
-// loadCurrentTags fetches the tag triples for it.hash from tie in a goroutine
-// and pre-populates the selected list so the user can see (and remove) them.
+// loadCurrentTags fetches the tag triples for it.panelHash from tie in a
+// goroutine and pre-populates the selected list so the user can see (and
+// remove) them. SetSelected is used instead of AddSelected: the tags come
+// FROM tie, so OnSelectedChanged must not fire (each partial AddSelected
+// state would diff as spurious deletes/adds against appliedTags).
 func (it *imageTagger) loadCurrentTags() {
-	hash := it.hash
+	hash := it.panelHash
 	if hash == "" {
 		return
 	}
@@ -217,13 +233,11 @@ func (it *imageTagger) loadCurrentTags() {
 		}
 		tags := client.RowValues(row, "tag")
 		fyne.Do(func() {
-			if it.hash != hash {
+			if it.panelHash != hash {
 				return // stale: user navigated to a different image
 			}
 			it.appliedTags = append([]string(nil), tags...)
-			for _, tag := range tags {
-				it.ts.AddSelected(tagselection.NewTagItemData(tag))
-			}
+			it.ts.SetSelected(tags)
 		})
 	}()
 }
@@ -232,10 +246,10 @@ func (it *imageTagger) loadCurrentTags() {
 // included+excluded tags. It diffs newTags against the appliedTags snapshot
 // and persists the additions/removals to tie.
 func (it *imageTagger) syncTags(newTags []string) {
-	if it.hash == "" {
+	if it.panelHash == "" {
 		return
 	}
-	hash := it.hash
+	hash := it.panelHash
 
 	var added, removed []string
 	for _, t := range newTags {
@@ -258,13 +272,14 @@ func (it *imageTagger) syncTags(newTags []string) {
 	}
 
 	go func() {
-		var failed []string
+		var failed, addedOK []string
 		for _, tag := range added {
 			if _, err := it.tc.Add(hash, "tag", tag); err != nil {
 				fmt.Printf("imageTagger: error adding tag %q: %v\n", tag, err)
 				failed = append(failed, tag)
 				continue
 			}
+			addedOK = append(addedOK, tag)
 			// Register in the global "tags"/"all" index so the tag shows up
 			// in the sidebar and future image-tagger sessions.
 			if _, err := it.tc.Add("tags", "all", tag); err != nil {
@@ -278,6 +293,13 @@ func (it *imageTagger) syncTags(newTags []string) {
 			}
 		}
 
+		// Let the sidebar add newly registered tags to its search trie
+		// without a full reload (which would clear the search selection).
+		if len(addedOK) > 0 && it.OnTagsAdded != nil {
+			cb := it.OnTagsAdded
+			fyne.Do(func() { cb(addedOK) })
+		}
+
 		// If any operations failed, re-fetch tags from tie to reconcile the UI.
 		if len(failed) > 0 {
 			row, err := it.tc.Get(hash)
@@ -287,15 +309,12 @@ func (it *imageTagger) syncTags(newTags []string) {
 			}
 			trueTags := client.RowValues(row, "tag")
 			fyne.Do(func() {
-				if it.hash != hash {
+				if it.panelHash != hash {
 					return // stale: user navigated away
 				}
 				// Rebuild the selected list to match tie's ground truth.
-				it.ts.ClearSelected()
 				it.appliedTags = append([]string(nil), trueTags...)
-				for _, tag := range trueTags {
-					it.ts.AddSelected(tagselection.NewTagItemData(tag))
-				}
+				it.ts.SetSelected(trueTags)
 				// TODO: Show error dialog to user (requires window reference)
 				fmt.Printf("imageTagger: reconciled after %d failed tag operations\n", len(failed))
 			})

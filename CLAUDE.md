@@ -93,6 +93,10 @@ Applied automatically in both main programs after `LoadConfig` if
 ### Image Cleanup
 `showGallery()` releases full-size images (`fyneImage.Image = nil`) when
 returning to the gallery view to free memory immediately.
+`LoadImageToCache` detects a released cached view on its next hit and
+reloads it (`loadOrPlaceholder`); `setImage` updates the existing
+`canvas.Image` in place because the widget renderer caches the object at
+creation — replacing it would leave the released blank image on screen.
 
 ---
 
@@ -390,6 +394,7 @@ module changes. `onApply()` is then called (→ `reloadTags`).
 | `ClearFavorites()` | Empty quick-pick list and Refresh |
 | `ClearSelected()` | Empty selected-tag list and Refresh |
 | `AddSelected(*TagItemData)` | Move tag to selected set; fires `OnSelectedChanged` |
+| `SetSelected([]string)` | Replace selected list + Refresh, WITHOUT firing `OnSelectedChanged` (for externally loaded state, e.g. tags fetched from tie) |
 | `SelectedTags() ([]string, []string)` | Returns (included, excluded) tag slices |
 | `SetListLabel(string)` | Change the bold label above the quick-pick list |
 | `SetFavoriteMaxRows(n)` | Cap visible rows in the quick-pick list (0 = uncapped) |
@@ -436,7 +441,19 @@ semantics from the sidebar:
 **Persistence:** `syncTags(newTags)` diffs `newTags` against the
 `appliedTags` snapshot and calls `tc.Add` / `tc.Delete` in a goroutine.
 Newly added tags are also registered via `tc.Add("tags","all",tag)` so
-they appear in the sidebar and future tagger sessions.
+they appear in the sidebar and future tagger sessions, and are fired to the
+sidebar via `OnTagsAdded` (wired in `makeTagSidebar`) so its search trie and
+full-list snapshot update without a selection-clearing reload.
+
+**State tracking:** `it.hash` is the currently VIEWED image (updated by
+`SetCurrentHash` whether the panel is open or not); `it.panelHash` is the
+image whose tags are LOADED in the panel. `ShowForImage`/`SetCurrentHash`
+reload the panel whenever `panelHash` differs from the image being shown —
+using a single field for both made the panel keep the previous image's tags
+after navigation. `loadCurrentTags` and the reconcile path populate the
+widget with `SetSelected` (never `AddSelected` loops: those fire
+`OnSelectedChanged` per tag and each partial state diffs into spurious tie
+delete/add writes).
 
 **Layout wiring:** `viewer.OnImageChange` appends a persistent
 `taggerOverlay = container.NewBorder(nil, tagger.Panel, nil, nil)` to
@@ -463,10 +480,11 @@ tagger's search trie up to date without a separate network request.
 | `SetAllTags([]string)` | Replace search trie + favorites list |
 | `SetFavoriteTags([]string)` | Replace the starred-tag set and refresh the ☆/★ buttons |
 | `Toggle(hash)` | Open panel for hash, or close if already open for that hash |
-| `ShowForImage(hash)` | Open panel; fetches current tags from tie if hash changed |
+| `ShowForImage(hash)` | Open panel; fetches current tags from tie if `panelHash` changed |
 | `HidePanel()` | Hide panel without clearing state; fires `OnHide` |
 | `SetCurrentHash(hash)` | Track current image hash; if panel is open, switches it |
 | `OnHide func()` | Called after the panel hides; used to restore keyboard focus on desktop |
+| `OnTagsAdded func([]string)` | Called on the UI goroutine with tags successfully written to tie; the sidebar uses it to grow its search trie |
 
 ---
 

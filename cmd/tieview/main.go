@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -249,6 +250,29 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 	var allFavorites []string
 	var allFavoritesLabel string
 
+	// Tags added to images via the tagger are registered in tie's
+	// "tags"/"all" index by syncTags, which then fires OnTagsAdded on the UI
+	// goroutine. Add genuinely new tags to the sidebar's search trie (and
+	// the full-list snapshot) without a reload — reloadTags would clear the
+	// user's current search selection.
+	if tagger != nil {
+		tagger.OnTagsAdded = func(tags []string) {
+			changed := false
+			for _, tag := range tags {
+				if !slices.Contains(allTags, tag) {
+					allTags = append(allTags, tag)
+					changed = true
+				}
+				ts.AddTag(tag)
+			}
+			// In the "no favorites configured" fallback the quick-pick list
+			// shows every tag; refresh it to include the new arrivals.
+			if changed && allFavoritesLabel == "All tags" {
+				ts.SetFavorites(allTags)
+			}
+		}
+	}
+
 	// reloadTags clears the widget state and re-fetches tags from tc.
 	// Safe to call at any time; the network fetch runs in a goroutine.
 	reloadTags := func() {
@@ -273,32 +297,32 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 				for _, tag := range allTags {
 					ts.AddTag(tag)
 				}
-			// Capture the actual tie favorites before the sidebar fallback
-			// so the tagger's ☆/★ state reflects the real relation, not the
-			// "show everything" substitute used when no favorites are configured.
-			actualFavorites := client.RowValues(row, "favorite")
-			allFavorites = actualFavorites
-			if len(allFavorites) == 0 {
-				// No favorites configured: list every tag so the sidebar
-				// isn't empty until something is typed in the search box.
-				allFavorites = allTags
-				allFavoritesLabel = "All tags"
-			} else {
-				allFavoritesLabel = "Favorites"
-			}
-			ts.SetListLabel(allFavoritesLabel)
-			ts.SetFavorites(allFavorites)
-			if tagger != nil {
-				tagger.SetAllTags(allTags)
-				tagger.SetFavoriteTags(actualFavorites)
-			}
-		})
-	}()
-}
+				// Capture the actual tie favorites before the sidebar fallback
+				// so the tagger's ☆/★ state reflects the real relation, not the
+				// "show everything" substitute used when no favorites are configured.
+				actualFavorites := client.RowValues(row, "favorite")
+				allFavorites = actualFavorites
+				if len(allFavorites) == 0 {
+					// No favorites configured: list every tag so the sidebar
+					// isn't empty until something is typed in the search box.
+					allFavorites = allTags
+					allFavoritesLabel = "All tags"
+				} else {
+					allFavoritesLabel = "Favorites"
+				}
+				ts.SetListLabel(allFavoritesLabel)
+				ts.SetFavorites(allFavorites)
+				if tagger != nil {
+					tagger.SetAllTags(allTags)
+					tagger.SetFavoriteTags(actualFavorites)
+				}
+			})
+		}()
+	}
 
-reloadTags() // initial load
+	reloadTags() // initial load
 
-ts.OnSelectedChanged = func() {
+	ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
 		readFromTie(viewer, tc, in, ex, "tag", browseDir)
 		viewer.ChangeGallery()

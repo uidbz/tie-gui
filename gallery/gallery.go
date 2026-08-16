@@ -407,6 +407,12 @@ func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
 		viewer.cache[info.Path] = img
 		return img
 	} else {
+		// A cached view may have had its bitmap released when returning to
+		// the gallery (showGallery frees it to cut memory). Reload it,
+		// otherwise the previously seen image comes back blank.
+		if x.fyneImage == nil || x.fyneImage.Image == nil {
+			x.loadOrPlaceholder()
+		}
 		return x
 	}
 }

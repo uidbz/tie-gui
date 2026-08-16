@@ -164,14 +164,9 @@ func NewImageView(info *ImageInfo, size fyne.Size, hideRegion bool, w fyne.Windo
 		touches:         make(map[int]fyne.Position),
 		platform:        platform,
 	}
-	if err := iv.LoadImage(); err != nil {
-		// A failed decode leaves fyneImage nil and the renderer's Layout
-		// would panic on fyneImage.Resize; show the loading placeholder
-		// instead so the view stays usable.
-		if img, _, perr := Decode(bytes.NewReader(loading)); perr == nil {
-			iv.setImage(img)
-		}
-	}
+	// A failed decode leaves fyneImage nil and the renderer's Layout would
+	// panic on fyneImage.Resize; loadOrPlaceholder keeps the view usable.
+	iv.loadOrPlaceholder()
 	iv.refreshBilinear.Stop()
 	// go func() {
 	// 	for {
@@ -340,13 +335,32 @@ func (iv *ImageView) downscaleForMobile(img image.Image) image.Image {
 	return imaging.Fit(img, maxEdge, maxEdge, imaging.Linear)
 }
 
-// setImage replaces the displayed image and records its dimensions.
+// setImage replaces the displayed image and records its dimensions. When a
+// canvas.Image already exists it is updated in place instead of replaced:
+// the widget renderer caches the object at creation, so swapping in a new
+// canvas.Image would leave the old (released/blank) one on screen.
 func (iv *ImageView) setImage(img image.Image) {
-	iv.fyneImage = canvas.NewImageFromImage(img)
-	iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
-	iv.fyneImage.FillMode = canvas.ImageFillContain
+	if iv.fyneImage != nil {
+		iv.fyneImage.Image = img
+		iv.fyneImage.Refresh()
+	} else {
+		iv.fyneImage = canvas.NewImageFromImage(img)
+		iv.fyneImage.ScaleMode = canvas.ImageScaleFastest
+		iv.fyneImage.FillMode = canvas.ImageFillContain
+	}
 	iv.imgWidth = img.Bounds().Max.X
 	iv.imgHeight = img.Bounds().Max.Y
+}
+
+// loadOrPlaceholder loads the view's image, falling back to the loading
+// placeholder on decode failure so fyneImage is never nil (the renderer's
+// Layout would panic on a nil image).
+func (iv *ImageView) loadOrPlaceholder() {
+	if err := iv.LoadImage(); err != nil {
+		if img, _, perr := Decode(bytes.NewReader(loading)); perr == nil {
+			iv.setImage(img)
+		}
+	}
 }
 
 func (iv *ImageView) Resize(size fyne.Size) {
