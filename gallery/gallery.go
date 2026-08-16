@@ -291,8 +291,12 @@ func (viewer *Gallery) showGalleryMenu() {
 
 func (viewer *Gallery) LoadGallery() {
 	viewer.loading.Wait()
+	// Snapshot the slice header on the calling (UI) goroutine: a later tag
+	// query swaps viewer.imageFiles from its own goroutine, and reading the
+	// header inside the spawned goroutine would race with that swap.
+	imageFiles := viewer.imageFiles
 	go func() {
-		viewer.layout.PlaceTiles(viewer.imageFiles)
+		viewer.layout.PlaceTiles(imageFiles)
 	}()
 	if viewer.bottomBar == nil {
 		prevPage := widget.NewHyperlink("Prev", nil)
@@ -456,8 +460,11 @@ func (viewer *Gallery) SaveImage() {
 
 func (viewer *Gallery) NextImage() *ImageInfo {
 	viewer.loading.Wait()
+	if len(viewer.imageFiles) == 0 {
+		return nil
+	}
 	nextImg := viewer.currentIndex + 1
-	if nextImg == len(viewer.imageFiles) {
+	if nextImg >= len(viewer.imageFiles) {
 		nextImg = len(viewer.imageFiles) - 1
 	}
 	return viewer.imageFiles[nextImg]
@@ -465,9 +472,15 @@ func (viewer *Gallery) NextImage() *ImageInfo {
 
 func (viewer *Gallery) PrevImage() *ImageInfo {
 	viewer.loading.Wait()
+	if len(viewer.imageFiles) == 0 {
+		return nil
+	}
 	nextImg := viewer.currentIndex - 1
 	if nextImg < 0 {
 		nextImg = 0
+	}
+	if nextImg >= len(viewer.imageFiles) {
+		nextImg = len(viewer.imageFiles) - 1
 	}
 	return viewer.imageFiles[nextImg]
 }
@@ -580,6 +593,9 @@ func (viewer *Gallery) InitHotkeys() {
 }
 
 func (viewer *Gallery) ChangeImage(info *ImageInfo) {
+	if info == nil {
+		return
+	}
 	if info.OnOpen != nil {
 		info.OnOpen()
 		return
@@ -597,11 +613,6 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 	if viewer.scroll != nil {
 		viewer.savedScrollOffset = viewer.scroll.Offset
 	}
-	go func() {
-		if next := viewer.NextImage(); !next.InputIsVideo {
-			viewer.LoadImageToCache(next)
-		}
-	}()
 	img.fillWindow = true
 	img.container = viewer.Content
 	img.hotkeys = viewer.hotkeys
@@ -610,6 +621,13 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 	viewer.CurrentImage.Objects = []fyne.CanvasObject{img}
 	if info.order != -1 {
 		viewer.currentIndex = info.order
+	}
+	// Prefetch the next image off-thread. NextImage is evaluated here, on
+	// the calling (UI) goroutine, after currentIndex is updated: reading
+	// imageFiles/currentIndex from a background goroutine races with tag
+	// queries swapping viewer.imageFiles and can index out of range.
+	if next := viewer.NextImage(); next != nil && !next.InputIsVideo {
+		go func() { viewer.LoadImageToCache(next) }()
 	}
 	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
 	viewer.Content.Refresh()
