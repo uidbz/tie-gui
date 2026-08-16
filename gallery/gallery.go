@@ -69,16 +69,17 @@ type Gallery struct {
 	// Internal Wiring — Do Not Access Directly
 	// ═══════════════════════════════════════════════════════════════════════
 
-	gallery       *fyne.Container
-	imageFiles    []*ImageInfo
-	layout        *TileLayout
-	window        fyne.Window
-	app           fyne.App
-	platform      *Platform
-	currentIndex  int
-	currentPath   string
-	cache         map[string]*ImageView
-	scroll        *container.Scroll
+	gallery           *fyne.Container
+	imageFiles        []*ImageInfo
+	layout            *TileLayout
+	window            fyne.Window
+	app               fyne.App
+	platform          *Platform
+	currentIndex      int
+	currentPath       string
+	cache             map[string]*ImageView
+	scroll            *container.Scroll
+	savedScrollOffset fyne.Position
 	hotkeys       []Hotkey
 	loading       sync.WaitGroup
 	galleryLoaded bool
@@ -519,6 +520,11 @@ func (viewer *Gallery) InitHotkeys() {
 			viewer.LoadGallery()
 		}
 		viewer.CreateView()
+		// Restore the scroll position that was active before entering the
+		// single-image view.
+		if viewer.scroll != nil {
+			viewer.scroll.ScrollToOffset(viewer.savedScrollOffset)
+		}
 		viewer.window.SetTitle("imgview")
 		viewer.window.SetContent(viewer.Content)
 	}
@@ -586,6 +592,11 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
 	viewer.CurrentImageView = img
+	// Save the gallery scroll position so it can be restored when the user
+	// navigates back from the single-image view.
+	if viewer.scroll != nil {
+		viewer.savedScrollOffset = viewer.scroll.Offset
+	}
 	go func() {
 		if next := viewer.NextImage(); !next.InputIsVideo {
 			viewer.LoadImageToCache(next)
