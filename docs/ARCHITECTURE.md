@@ -135,14 +135,16 @@ for each row:
 **Key insight:** Row height is determined by the sum of aspect ratios of tiles in that row. This ensures all tiles in a row have the same height while maintaining their aspect ratios.
 
 **Thumbnail Loading:**
-- Placeholder tiles created immediately (loading.png)
+- Placeholder tiles created immediately (loading.png, decoded once per page)
 - ImageInfo instances sent to `imagesToLoad` channel
 - Worker pool (default 8 goroutines) drains channel
-- Each worker: calls GetThumbnail → NewImageTile → updates grid
-- Grid refreshes every 20 images or 500ms after last load
+- Each worker: calls GetThumbnail → NewImageTile → forwards to `results` channel
+- A single `tileUpdater` goroutine batches write-backs into one relayout per
+  flush (~120 ms trailing or 32 tiles) — never `grid.Refresh()`, which would
+  delete and re-upload every visible tile texture on the next frame
 
 **Caching:**
-- `cachedTiles map[string]*Tile` — session-scoped in-memory cache
+- `tileCache` — session-scoped in-memory LRU (500 tiles desktop, 150 mobile; mutex-protected)
 - Cache key is CustomReader.Path() (hash for tie, filepath for local)
 - Cache hits skip thumbnail decoding entirely
 
@@ -225,6 +227,25 @@ type VideoStreamer interface {
 ```go
 type DimensionProvider interface {
     Dimensions() (width, height int)
+}
+```
+
+**PreviewProvider** — Browsable collection (tie dir/archive): supplies preview
+readers for the tile thumbnail and swipe cycling; called lazily on loader
+goroutines:
+```go
+type PreviewProvider interface {
+    Previews() ([]CustomReader, error)
+}
+```
+
+**CoverProvider** — Ready-made cover thumbnail for a collection tile without
+enumerating the collection (e.g. server-cached tie archive cover); the gallery
+stores a generated first preview via StoreCoverThumbnail on a miss:
+```go
+type CoverProvider interface {
+    CoverThumbnail() (io.ReadSeeker, error)
+    StoreCoverThumbnail(jpegBytes []byte)
 }
 ```
 
@@ -335,12 +356,14 @@ platform := NewPlatform()  // Detects via fyne.CurrentDevice().IsMobile()
 **Thumbnail loading:**
 - Configurable worker count (default 8)
 - Workers drain `imagesToLoad` channel
-- Each worker: GetThumbnail → decode → create tile → `fyne.Do(update grid)`
-- Grid refresh batched (every 20 images or 500ms)
+- Each worker: GetThumbnail → decode → create tile → send to `results` channel
+- `tileUpdater` goroutine batches tile swaps into one `fyne.Do` + relayout
+  per flush (~120 ms trailing or 32 tiles)
 
 **Thread safety:**
 - `imagesToLoad` channel coordinates workers
-- `cachedTiles` map: no mutex needed (only accessed on UI thread)
+- `tileCache`: mutex-protected (accessed from loader workers)
+- `layout.tiles` / `grid.Objects`: written only on the UI thread (inside `fyne.Do`)
 - Network clients: must be safe for concurrent reads
 
 ### Network Calls
@@ -363,16 +386,18 @@ go func() {
 
 ### Three-Level Cache
 
-**1. Session in-memory cache** (`TileLayout.cachedTiles`)
-- Holds decoded thumbnails for current session
+**1. Session in-memory cache** (`TileLayout.tileCache`)
+- Holds decoded thumbnail tiles for the current session
+- LRU eviction: 500 tiles desktop, 150 mobile
 - Key: CustomReader.Path()
-- Invalidated: never (session lifetime)
 - Benefit: instant cache hits for navigation
 
 **2. Local disk cache** (imgview)
 - Location: ThumbnailDir config (default `~/.cache/imgview`)
 - Structure: `<xx>/<yy>/<zz>/<64-char-hash>` (3-level hex prefix)
 - Format: JPEG quality 90, 2× TileWidth
+- Variants: folder-badged collection previews use a `<hash>d` suffix; video
+  frames use a `v<sha256(path)>` key with `-N` per frame index
 - Invalidated: manual cleanup only
 - Benefit: fast startup on revisited directories
 
@@ -380,6 +405,9 @@ go func() {
 - Storage: tie `(imageHash, "thumbnail", thumbHash)` relation
 - Generated on first view, fetched on subsequent views
 - Dimensions stored: `(imageHash, "dimensions", "WxH")`
+- Archive covers use the same relation on the archive hash (CoverProvider):
+  the tile's initial view fetches the small cover instead of downloading the
+  whole archive blob
 - Shared across all tieview clients
 - Benefit: network-cached thumbnails, no local storage
 

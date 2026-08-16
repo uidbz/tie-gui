@@ -18,6 +18,7 @@ This repository provides two complementary image viewer applications built on a 
 - **Justified row layout** — Images grouped into rows with consistent height, no horizontal gaps, preserving aspect ratios
 - **Fast pagination** — Efficient handling of large collections (500+ images per page)
 - **Archive support** — Read images from zip, rar, tar, cbr, and other common formats
+- **Collection previews** — Folder/archive tiles show a content thumbnail with a folder badge; swipe horizontally on a tile to cycle through its images; video tiles cycle through up to 10 extracted frames
 - **Video integration** — libmpv player for video files with streaming support (tieview)
 - **Mobile support** — Touch gestures, pinch-zoom, platform-optimized rendering
 
@@ -40,25 +41,40 @@ This repository provides two complementary image viewer applications built on a 
 ### Build from Source
 
 **Requirements:**
-- Go 1.18 or later
+- Go 1.25 or later
 - C compiler (gcc or clang)
-- Fyne dependencies — see [Fyne Getting Started](https://developer.fyne.io/started)
+- Fyne dependencies — see [Fyne Getting Started](https://developer.fyne.io/started) (on Debian/Ubuntu: `gcc libgl1-mesa-dev xorg-dev`)
+- **libmpv** (optional) — required for video playback and video thumbnails (on Debian/Ubuntu: `libmpv-dev`). Build with `-tags nompv` to disable video support entirely.
+
+**Clone (note the submodule):**
+
+imgview builds against a modified Fyne fork, vendored as a **git submodule** at `third_party/fyne` (the `imgview` branch of [github.com/uidbz/fyne](https://github.com/uidbz/fyne): GLVideo video embedding, Android system-bar control, longer desktop texture-cache lifetime). `go.mod` points at it via a `replace` directive, so the submodule must be checked out:
+
+```sh
+git clone --recurse-submodules https://git.sr.ht/~uid/imgview
+cd imgview
+
+# …or, after a plain clone:
+git submodule update --init
+```
 
 **Build:**
 ```sh
-git clone https://git.sr.ht/~uid/imgview
-cd imgview
 go build ./cmd/imgview   # local filesystem viewer
-go build ./cmd/tieview   # tie network viewer
+go build ./cmd/tieview   # tie network viewer (tie is a pinned dependency, fetched automatically)
 
 # Wayland build:
 go build -tags wayland ./cmd/imgview
+
+# Build without libmpv (no video playback/thumbnails):
+go build -tags nompv ./cmd/imgview ./cmd/tieview
 ```
+
+> **Note:** `go install git.sr.ht/~uid/imgview/cmd/imgview@latest` does **not** work — the `replace` directive points into the git submodule, which module-proxy downloads do not contain. Build from a clone as above.
 
 **Install:**
 ```sh
-go install git.sr.ht/~uid/imgview/cmd/imgview@latest
-go install git.sr.ht/~uid/imgview/cmd/tieview@latest
+go install ./cmd/imgview ./cmd/tieview   # from within the clone; installs to $GOBIN
 ```
 
 **Test:**
@@ -107,6 +123,7 @@ tieview -host fast -tag recent
 - Image tagging panel (tap image or swipe up on mobile)
 - Profile switching (manage multiple tie instances)
 - Cached thumbnail storage in tie metadata
+- Server-cached archive cover thumbnails — the first image inside an archive is extracted once, then shared by every machine
 
 ## Configuration
 
@@ -139,14 +156,16 @@ ThumbnailDir = "~/.cache/imgview"  # Local thumbnail cache
 | `Q`, `Esc` | Quit |
 | `Down`, `J` | Scroll down |
 | `Up`, `K` | Scroll up |
-| `PageUp` | Previous page |
-| `PageDown` | Next page |
+| `Backspace` | Parent directory |
+| `N` | Toggle filename labels |
+
+Pages are switched via the page links in the bottom bar or the large **Load Next Page ▼** button at the end of the grid.
 
 ### Single Image View
 
 | Key | Action |
 |-----|--------|
-| `Esc`, `Backspace` | Return to gallery |
+| `Esc` | Return to gallery |
 | `Right`, `J` | Next image |
 | `Left`, `K` | Previous image |
 | `Up`, `H` | Rotate left |
@@ -166,6 +185,8 @@ ThumbnailDir = "~/.cache/imgview"  # Local thumbnail cache
 | Pinch (mobile) | Zoom |
 | Swipe (mobile) | Navigate images |
 | Double-click/tap | Toggle fullscreen |
+| Horizontal swipe on a folder/archive tile | Cycle through its images |
+| Horizontal swipe on a video tile | Cycle through frame previews |
 
 **Mobile-specific:**
 - Android Back button returns to gallery
@@ -192,7 +213,7 @@ imgview/
 │   └── config.go       # Configuration management
 ├── tagselection/       # Tag picker widget (tieview)
 ├── mpvplayer/          # libmpv video player integration
-├── third_party/fyne/   # Vendored Fyne fork
+├── third_party/fyne/   # Vendored Fyne fork (git submodule, "imgview" branch)
 └── docs/               # Technical documentation
 ```
 

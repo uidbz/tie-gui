@@ -18,23 +18,34 @@
 | `tagselection/` | Tag-picker widget used by tieview sidebar |
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
 | `mpvplayer/` | libmpv video player window |
-| `third_party/fyne/` | Vendored fork of the Fyne GUI framework (replace directive in go.mod) |
+| `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
-The tie module lives at `../tie` (sibling directory) and is referenced via a
-`replace` directive in `go.mod`. It is **not** a read-only dependency — both
-repos are under active development together.
+The tie module is a pinned dependency (`v0.4.2`) fetched from the Go module
+proxy; no local checkout is needed. (It was previously referenced via a
+`replace` directive to a sibling `../tie` checkout — removed when v0.4.2 was
+tagged.)
+
+The Fyne fork submodule must be checked out before building:
+`git clone --recurse-submodules …` or `git submodule update --init`. The
+fork adds: `canvas.GLVideo` (libmpv video embedding), Android system-bar
+toggle via `SetFullScreen`, and platform-dependent texture-cache lifetimes
+(see below).
 
 ---
 
 ## Build
 
 ```sh
-go build ./cmd/imgview   # local viewer
-go build ./cmd/tieview   # tie-backed viewer
+git submodule update --init   # first time only: fetch the Fyne fork
+go build ./cmd/imgview        # local viewer
+go build ./cmd/tieview        # tie-backed viewer
+go build -tags nompv ./cmd/imgview ./cmd/tieview   # without libmpv (no video)
 go test ./...
 ```
 
-Both binaries require CGo (Fyne depends on OpenGL / system graphics). The
+Both binaries require CGo (Fyne depends on OpenGL / system graphics). Video
+playback and video thumbnails require libmpv (`-lmpv`); the `nompv` build tag
+(and Android) select a stub implementation in `mpvplayer/mpv_stub.go`. The
 `migrated_fynedo` build tag is implicit in the vendored Fyne fork.
 
 ---
@@ -202,6 +213,7 @@ preventing layout reflow as thumbnails load.
 - `minHeight float32` — total pixel height of all rows; reported by `MinSize`
 - `tileCache *tileCache` — session-scoped LRU in-memory thumbnail cache
 - `imagesToLoad chan *ImageInfo` — work queue for loader goroutines
+- `results chan loadedTile` — finished tiles from workers; the `tileUpdater` goroutine batches them into one relayout per flush (~120 ms trailing / 32 tiles)
 
 ### `gallery.Tile` (`gallery/tilelayout.go`)
 - `width, height float32` — thumbnail pixel dims (= original aspect ratio)
@@ -214,6 +226,7 @@ preventing layout reflow as thumbnails load.
 - `CustomReader CustomReader` — tie or archive reader
 - `OnOpen func()` — if non-nil, replaces default image display (used for directories)
 - `ThumbnailIsScaled bool` — set when thumbnail is already at tileWidth*2
+- `PreviewPaths` / `PreviewReaders` / `previewIndex` — collection & video swipe previews (see "Directory/archive/video tiles: preview swipe")
 
 ### `gallery.Gallery` (`gallery/gallery.go`)
 - Renamed from `Viewer` in Phase 1 refactoring
@@ -354,6 +367,9 @@ selected tags, clears the trie, clears favorites, then re-runs the
 `makeTagSidebar` also receives a `*imageTagger`. Whenever the tag list is
 (re-)fetched, `tagger.SetAllTags(allTags)` is called so the image tagger's
 search trie stays in sync with the sidebar's list without a second network request.
+The reverse direction is wired too: the tagger's `OnTagsAdded` callback (fired
+after successful tie writes) lets the sidebar grow its trie and full-list
+snapshot without a selection-clearing reload.
 
 ---
 
@@ -638,4 +654,11 @@ for _, tag := range tags { ts.AddFavorite(tag) }   // no Refresh here!
 
 // Correct — SetFavorites does one Refresh at the end:
 ts.SetFavorites(tags)
+```
+
+The same applies to the selected list when loading external state (image
+tagger): use `SetSelected` — it fires no `OnSelectedChanged`, so partial
+states never diff into spurious tie writes:
+```go
+ts.SetSelected(tagsFromTie)
 ```

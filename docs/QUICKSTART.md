@@ -4,54 +4,57 @@ Get imgview/tieview running in 5 minutes.
 
 ## Prerequisites
 
-- **Go 1.18+** — Check with `go version`
+- **Go 1.25+** — Check with `go version`
 - **C compiler** — gcc (Linux), MinGW (Windows), or Xcode (macOS)
 - **Fyne dependencies** — See platform-specific requirements below
+- **libmpv** *(optional)* — for video playback and video thumbnails; without it, build with `-tags nompv`
 
 ### Linux (Debian/Ubuntu)
 
 ```sh
-sudo apt-get install gcc libgl1-mesa-dev xorg-dev
+sudo apt-get install gcc libgl1-mesa-dev xorg-dev libmpv-dev
 ```
 
 ### Linux (Fedora/RHEL)
 
 ```sh
 sudo dnf install gcc mesa-libGL-devel libXcursor-devel libXrandr-devel \
-                 libXinerama-devel libXi-devel libXxf86vm-devel
+                 libXinerama-devel libXi-devel libXxf86vm-devel mpv-devel
 ```
 
 ### macOS
 
 ```sh
 xcode-select --install
+brew install mpv   # optional, for video support
 ```
 
 ### Windows
 
-Install MinGW-w64 from [mingw-w64.org](https://mingw-w64.org) or TDM-GCC.
+Install MinGW-w64 from [mingw-w64.org](https://mingw-w64.org) or TDM-GCC. (Video support needs a libmpv DLL; most Windows users should build with `-tags nompv`.)
 
 ---
 
 ## Installation
 
-### Option 1: Install Latest Release
+### Build from Source
+
+imgview builds against a modified Fyne fork, vendored as a **git submodule** at `third_party/fyne` — `go install ...@latest` from the module proxy does not work, so build from a clone:
 
 ```sh
-go install git.sr.ht/~uid/imgview/cmd/imgview@latest
-go install git.sr.ht/~uid/imgview/cmd/tieview@latest
-```
-
-### Option 2: Build from Source
-
-```sh
-# Clone repository
-git clone https://git.sr.ht/~uid/imgview
+# Clone repository including the fyne fork submodule (required)
+git clone --recurse-submodules https://git.sr.ht/~uid/imgview
 cd imgview
+
+# …or fetch the submodule after a plain clone:
+git submodule update --init
 
 # Build both applications
 go build ./cmd/imgview
 go build ./cmd/tieview
+
+# Without libmpv (no video support):
+go build -tags nompv ./cmd/imgview ./cmd/tieview
 
 # Run tests
 go test ./...
@@ -152,8 +155,8 @@ DefaultHeight = 800
 # Customize keyboard shortcuts
 NextImage = ["Right", "J"]
 PreviousImage = ["Left", "K"]
-ShowGallery = ["Escape", "Backspace"]
-ToggleFullScreen = ["F"]
+ShowGallery = ["Escape"]
+FullScreen = ["F"]
 ```
 
 See [gallery/config.toml](../gallery/config.toml) for all options.
@@ -169,8 +172,9 @@ imgview ~/Pictures/Vacation2024
 ```
 
 **Tips:**
-- Navigate subdirectories by clicking folder tiles
-- `PageUp/PageDown` for large collections
+- Folder/archive tiles show a content thumbnail with a folder badge — click to open
+- **Swipe horizontally** on a folder/archive tile to preview its other images; on a video tile to cycle frame captures
+- Use the bottom-bar page links for large collections
 - `S` to zoom to original size
 - `X` to fit to window
 
@@ -220,9 +224,11 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 |-----|--------|
 | `J`, `Down` | Scroll down |
 | `K`, `Up` | Scroll up |
-| `PageDown` | Next page |
-| `PageUp` | Previous page |
+| `Backspace` | Parent directory |
+| `N` | Toggle filename labels |
 | `Q`, `Esc` | Quit |
+
+(Pages are switched via the bottom-bar page links or the **Load Next Page ▼** button.)
 
 ### Image View
 
@@ -236,7 +242,7 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 | `X` | Fit to window |
 | `F` | Fullscreen |
 | `B` | Toggle filtering |
-| `Esc`, `Backspace` | Gallery |
+| `Esc` | Gallery |
 
 ### Mouse/Touch
 
@@ -253,11 +259,17 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 
 ### Build Errors
 
+**Error:** `replacement directory ./third_party/fyne does not exist`
+- **Fix:** The Fyne fork is a git submodule: `git submodule update --init`
+
 **Error:** `gcc: command not found`
 - **Fix:** Install C compiler (see Prerequisites)
 
 **Error:** `Package 'gl' not found`
 - **Fix:** Install OpenGL development headers (see Prerequisites)
+
+**Error:** `cannot find -lmpv` / `Package 'mpv' not found`
+- **Fix:** Install libmpv development files (see Prerequisites), or build without video support: `go build -tags nompv ./cmd/imgview`
 
 **Error:** `undefined reference to XCreateWindow`
 - **Fix:** Install X11 development headers (see Prerequisites)
@@ -321,12 +333,13 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 │ GALLERY VIEW              │ IMAGE VIEW                  │
 │   J/Down    Scroll down   │   J/Right   Next image      │
 │   K/Up      Scroll up     │   K/Left    Previous image  │
-│   PageDown  Next page     │   H/Up      Rotate left     │
-│   PageUp    Prev page     │   L/Down    Rotate right    │
+│   Backspace Parent dir    │   H/Up      Rotate left     │
+│   N         Filenames     │   L/Down    Rotate right    │
 │   Q/Esc     Quit          │   S         Original size   │
 │                           │   X         Fit window      │
-│                           │   F         Fullscreen      │
-│                           │   Esc       Back to gallery │
+│  Swipe left/right on a    │   F         Fullscreen      │
+│  folder/archive/video     │   Esc       Back to gallery │
+│  tile: cycle preview      │                             │
 ├─────────────────────────────────────────────────────────┤
 │ COMMAND LINE                                            │
 │   imgview [path]          View directory or image       │

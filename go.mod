@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	fyne.io/fyne/v2 v2.8.0
 	git.sr.ht/~uid/conf v1.1.5
-	git.sr.ht/~uid/tie v0.4.1
+	git.sr.ht/~uid/tie v0.4.2
 	github.com/disintegration/imaging v1.6.2
 	github.com/dsoprea/go-exif/v3 v3.0.1
 	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.1.0.20260707082822-2a407d02d01a
@@ -77,5 +77,3 @@ require (
 )
 
 replace fyne.io/fyne/v2 => ./third_party/fyne
-
-replace git.sr.ht/~uid/tie => ../tie
