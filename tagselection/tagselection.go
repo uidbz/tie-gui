@@ -163,7 +163,13 @@ func NewSearchItem(ts *TagSelection) *SearchItem {
 		clearing = true // stops OnChanged from reopening the dropdown
 		si.entry.Clear()
 		hide()
-		ts.window.Canvas().Focus(si.entry)
+		if ts.KeepSearchFocus {
+			ts.window.Canvas().Focus(si.entry)
+		} else {
+			// Release focus so typed keys reach window-level hotkeys again
+			// (clicking a result row moved focus to the result list).
+			ts.window.Canvas().Unfocus()
+		}
 		ts.Refresh()
 	}
 
@@ -211,7 +217,11 @@ func NewSearchItem(ts *TagSelection) *SearchItem {
 	}
 	txtSearch.onEscape = func() {
 		hide()
-		ts.window.Canvas().Focus(txtSearch)
+		if ts.KeepSearchFocus {
+			ts.window.Canvas().Focus(txtSearch)
+		} else {
+			ts.window.Canvas().Unfocus()
+		}
 	}
 	// onFocusLost is intentionally NOT wired to hide().
 	//
@@ -435,6 +445,12 @@ type TagSelection struct {
 	// rendered. The sidebar sets this to true (for tag filtering); the image
 	// tagger leaves it false (applied tags have no include/exclude distinction).
 	ShowIncludeExclude bool
+	// KeepSearchFocus controls whether the search entry keeps keyboard focus
+	// after a dropdown selection or Escape. The image tagger sets this to
+	// true so the user can immediately type the next query; the sidebar
+	// leaves it false so focus is released and window-level gallery hotkeys
+	// keep working after a tag is picked.
+	KeepSearchFocus bool
 	starredSet         map[string]bool // tags whose star button shows ★
 	tags               *trie.Trie
 	selectedList       *AutoExpandingList

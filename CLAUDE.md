@@ -420,6 +420,7 @@ module changes. `onApply()` is then called (→ `reloadTags`).
 | `OnNewTag func(tag string)` | Called when user presses Enter with typed text but no row highlighted; nil in sidebar, set by image tagger |
 | `OnStar func(tag string, starred bool)` | Called when user clicks ☆/★ on a quick-pick item; nil in sidebar, set by image tagger |
 | `ShowStars bool` | When true, quick-pick items show a ☆/★ toggle button; must be set before first render |
+| `KeepSearchFocus bool` | When true, the search entry keeps keyboard focus after a dropdown selection or Escape (image tagger: lets the user type the next query). Sidebar leaves it false so focus is released and window-level gallery hotkeys keep working; the sidebar additionally calls `window.Canvas().Unfocus()` in `OnSelectedChanged` because Fyne List/Check widgets grab focus on tap |
 
 **Critical:** `ClearFavorites()` calls `Refresh`. If you then call `AddFavorite`
 in a loop without a final `Refresh`, the list stays visually blank. Always use
