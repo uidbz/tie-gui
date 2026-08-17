@@ -23,7 +23,7 @@ type tieFSNode struct {
 }
 
 // tieFSTree backs a widget.Tree with the tie path-based virtual filesystem
-// (the file:/... hierarchy, read through client.ReadTieDir — the same data
+// (the tie:/... hierarchy, read through client.ReadTieDir — the same data
 // the FUSE mount exposes). Directories are branches, image files are
 // leaves. Tree node IDs are slash paths relative to the tie root ("/",
 // "/music/album"); a file leaf's ID is its directory's path joined with its

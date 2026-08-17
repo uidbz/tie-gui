@@ -71,9 +71,9 @@ func TestChildUIDs(t *testing.T) {
 	fs := &tieFSTree{
 		dirs: map[string]*client.Directory{
 			"/": {SubDirs: []client.SubDirectory{
-				{Paths: []string{"file:/"}},
-				{Paths: []string{"file:/videos"}},
-				{Paths: []string{"file:/music"}},
+				{Paths: []string{"tie:/"}},
+				{Paths: []string{"tie:/videos"}},
+				{Paths: []string{"tie:/music"}},
 			}, Files: []client.File{
 				{Uid: "deadbeef", Filename: "cover.jpg", TieType: client.TieImageFile},
 				{Uid: "cafef00d", Filename: "song.flac", TieType: client.TieAudioFile},
