@@ -1,4 +1,4 @@
-//go:build !nompv && !android
+//go:build !nompv
 
 package mpvplayer
 
@@ -14,7 +14,8 @@ void *goGetProcAddress(void *ctx, char *name);
 void goRenderUpdate(void *ctx);
 
 // Trampoline used as mpv's get_proc_address: mpv passes a plain C string; we
-// hand it to Go, which resolves it via GLFW.
+// hand it to Go, which resolves it via the platform GL loader (GLFW on
+// desktop, EGL/dlsym on Android).
 static void *get_proc_address_bridge(void *ctx, const char *name) {
     return goGetProcAddress(ctx, (char *)name);
 }
@@ -92,8 +93,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
-
-	"github.com/go-gl/glfw/v3.4/glfw"
 )
 
 // MPVPlayer drives a libmpv instance and renders its video into an OpenGL FBO
@@ -126,8 +125,11 @@ func NewMPVPlayer(file string) (*MPVPlayer, error) {
 		C.mpv_terminate_destroy(h)
 		return nil, err
 	}
-	setOption(h, "hwdec", "auto-safe")
 	setOption(h, "vo", "libmpv")
+	setOption(h, "hwdec", platformHwdec())
+	if ao := platformAO(); ao != "" {
+		setOption(h, "ao", ao)
+	}
 
 	p := &MPVPlayer{mpv: h, file: file, stop: make(chan struct{}), done: make(chan struct{})}
 	p.self = cgo.NewHandle(p)
@@ -324,7 +326,7 @@ func mpvCommand(h *C.mpv_handle, args ...string) {
 
 //export goGetProcAddress
 func goGetProcAddress(ctx unsafe.Pointer, name *C.char) unsafe.Pointer {
-	return unsafe.Pointer(glfw.GetProcAddress(C.GoString(name)))
+	return glProcAddress(C.GoString(name))
 }
 
 //export goRenderUpdate

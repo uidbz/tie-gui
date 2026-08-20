@@ -45,7 +45,12 @@ go test ./...
 
 Both binaries require CGo (Fyne depends on OpenGL / system graphics). Video
 playback and video thumbnails require libmpv (`-lmpv`); the `nompv` build tag
-(and Android) select a stub implementation in `mpvplayer/mpv_stub.go`. The
+selects a stub implementation in `mpvplayer/mpv_stub.go`. Android builds are
+now libmpv-backed too (arm64-v8a) — see `docs/ANDROID.md` and
+`third_party/android-libs/` for the vendored cross-compiled libraries and
+`build-android.sh` / `bundle-native-libs.sh` for the APK wiring; `mpv.go`
+compiles under `!nompv` (not `!android`), with EGL vs GLFW glue split into
+`mpvplayer/platform_android.go` / `platform_desktop.go`. The
 `migrated_fynedo` build tag is implicit in the vendored Fyne fork.
 
 ---

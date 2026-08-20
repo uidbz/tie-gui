@@ -6,3 +6,7 @@ package/*
 /tieview
 /imgview.debug
 *.apk
+*.apk.idsig
+
+# Cross-compiled libmpv + ffmpeg for Android; regenerate with ./vendor-android-libs.sh
+/third_party/android-libs/

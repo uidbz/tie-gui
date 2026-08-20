@@ -1,22 +1,27 @@
 #!/bin/bash
 # Build imgview and tieview as Android APKs using `fyne package`.
 #
-# Video playback (libmpv) is compiled out on Android automatically: the mpv
-# files carry a `!android` build constraint and a no-op stub takes their place
-# (see mpvplayer/mpv_stub.go). This is the "fast path" build - it produces
-# working APKs without any native libmpv. See docs/ANDROID.md for what a full
-# libmpv-backed video build would require.
+# This is the full, libmpv-backed build: in-app video playback and real video
+# thumbnails work on Android, matching desktop. It links against a libmpv (plus
+# ffmpeg) cross-compiled for arm64-v8a and vendored under
+# third_party/android-libs/ (see docs/ANDROID.md for how those were produced).
+# After `fyne package` links the app, bundle-native-libs.sh injects the native
+# .so files into the APK's lib/arm64-v8a/ and re-signs it.
+#
+# For a libmpv-free build (no video, no native libs to bundle), pass
+# NOMPV=1 — it adds `-tags nompv` and skips the bundling step.
 #
 # Requirements:
 #   - the fyne command: go install fyne.io/fyne/v2/cmd/fyne@latest
 #   - Android SDK + NDK, with ANDROID_HOME / ANDROID_NDK_HOME set (or the
 #     defaults below adjusted to your machine)
 #   - the fyne fork submodule checked out: git submodule update --init
+#   - vendored native libs in third_party/android-libs/ (unless NOMPV=1)
 #
 # Usage:
-#   ./build-android.sh                    # build both APKs, arm64
+#   ./build-android.sh                    # build both APKs, arm64, with libmpv
 #   ./build-android.sh imgview            # build just one (imgview or tieview)
-#   TARGET=android ./build-android.sh     # all ABIs (needs 32-bit NDK support)
+#   NOMPV=1 ./build-android.sh            # libmpv-free build (no video)
 #   RELEASE=1 ./build-android.sh          # release build (signed)
 
 set -euo pipefail
@@ -25,11 +30,16 @@ cd "$(dirname "$0")"
 ROOT="$PWD"
 
 TARGET="${TARGET:-android/arm64}"
+NOMPV="${NOMPV:-0}"
 
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$HOME/downloads/android-ndk-r27d}"
+export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$HOME/src/mpv-android/buildscripts/sdk/android-ndk-r29}"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
+
+# Vendored native libs + headers for the libmpv-backed build.
+VENDOR="$ROOT/third_party/android-libs"
+ABI_DIR="$VENDOR/arm64-v8a"
 
 if ! command -v fyne >/dev/null 2>&1; then
     echo "error: 'fyne' command not found. Install it with:" >&2
@@ -42,6 +52,19 @@ fi
 if [ ! -f third_party/fyne/go.mod ]; then
     echo "fyne submodule missing; initializing..." >&2
     git submodule update --init --recursive
+fi
+
+# For the libmpv-backed build, point cgo at the vendored headers/libs so the
+# app .so links against libmpv (resolved at runtime from the APK lib dir).
+if [ "$NOMPV" != "1" ]; then
+    if [ ! -f "$ABI_DIR/libmpv.so" ]; then
+        echo "error: $ABI_DIR/libmpv.so not found." >&2
+        echo "  Vendor the native libs first: ./vendor-android-libs.sh" >&2
+        echo "  (see docs/ANDROID.md), or build without video: NOMPV=1 $0" >&2
+        exit 1
+    fi
+    export CGO_CFLAGS="-I$VENDOR/include ${CGO_CFLAGS:-}"
+    export CGO_LDFLAGS="-L$ABI_DIR ${CGO_LDFLAGS:-}"
 fi
 
 # app_id for each buildable command.
@@ -59,14 +82,23 @@ build() {
     local app="$1" id
     id="$(app_id "$app")"
 
-    local args=(package -os "$TARGET" -app-id "$id" -icon Icon.png)
+    local args=(package -os "$TARGET" --id "$id" -icon Icon.png)
+    if [ "$NOMPV" = "1" ]; then
+        args+=(-tags nompv)
+    fi
     if [ "${RELEASE:-0}" = "1" ]; then
         args+=(--release)
     fi
 
     echo "Building $app for $TARGET (this may take a while on first compile)..."
     ( cd "$ROOT/cmd/$app" && fyne "${args[@]}" )
+    local apk="$ROOT/cmd/$app/$app.apk"
     echo "  -> cmd/$app/$app.apk"
+
+    # Inject libmpv + ffmpeg .so into the APK and re-sign.
+    if [ "$NOMPV" != "1" ]; then
+        RELEASE="${RELEASE:-0}" "$ROOT/bundle-native-libs.sh" "$apk"
+    fi
 }
 
 if [ "$#" -ge 1 ]; then
