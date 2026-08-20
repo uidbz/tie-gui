@@ -89,28 +89,42 @@ func extractFrame(pathOrURL string, maxWidth, maxHeight int, seekTarget, seekMod
 	if h == nil {
 		return nil
 	}
-	defer C.mpv_terminate_destroy(h)
 
 	setOption(h, "vo", "libmpv")
 	setOption(h, "hwdec", "no") // force software decode; works on any system
 	setOption(h, "ao", "null")  // discard audio
 	if C.mpv_initialize(h) < 0 {
+		C.mpv_terminate_destroy(h)
 		return nil
 	}
 
 	rctx := C.create_sw_rctx(h)
 	if rctx == nil {
+		C.mpv_terminate_destroy(h)
 		return nil
 	}
-	defer C.mpv_render_context_free(rctx)
 
 	// Drain mpv events in a goroutine — mandatory to keep the pipeline
 	// flowing (without consumers, mpv's internal queue fills and stalls).
+	// The goroutine must be joined before the handle is destroyed: calling
+	// mpv_wait_event on a terminated handle locks mpv's already-destroyed
+	// internal mutex and aborts the process (HandleUsingDestroyedMutex).
 	fileStarted := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	drainDone := make(chan struct{})
 	go func() {
+		defer close(drainDone)
 		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			ev := C.mpv_wait_event(h, 0.05)
-			if ev == nil || ev.event_id == C.MPV_EVENT_SHUTDOWN {
+			if ev == nil {
+				continue
+			}
+			if ev.event_id == C.MPV_EVENT_SHUTDOWN {
 				return
 			}
 			// MPV_EVENT_START_FILE fires when mpv has opened and begun
@@ -122,6 +136,16 @@ func extractFrame(pathOrURL string, maxWidth, maxHeight int, seekTarget, seekMod
 				}
 			}
 		}
+	}()
+
+	// Tear down in order: stop and join the event-drain goroutine so no
+	// mpv_wait_event call can outlive the handle, then free the render
+	// context, then destroy the handle.
+	defer func() {
+		close(stop)
+		<-drainDone
+		C.mpv_render_context_free(rctx)
+		C.mpv_terminate_destroy(h)
 	}()
 
 	// Load the file/URL.

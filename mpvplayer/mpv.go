@@ -8,6 +8,7 @@ package mpvplayer
 #include <mpv/render.h>
 #include <mpv/render_gl.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 // Forward declarations of Go-exported callbacks.
 void *goGetProcAddress(void *ctx, char *name);
@@ -24,10 +25,14 @@ static void *get_proc_address_bridge(void *ctx, const char *name) {
 // function from Go, so we assemble the struct here.
 //
 // disp_type selects the optional native-display param: 1 = X11, 2 = Wayland, 0 = none.
-static mpv_render_param *make_gl_init_params(void *proc_ctx, int disp_type, void *disp) {
+// proc_ctx is a Go cgo.Handle passed as an integer (uintptr_t), never a Go
+// pointer: stuffing a cgo.Handle into a Go unsafe.Pointer that stays live
+// across this cgo call trips the Go stack scanner ("bad pointer ... : 0x1")
+// and aborts on the GL thread.
+static mpv_render_param *make_gl_init_params(uintptr_t proc_ctx, int disp_type, void *disp) {
     mpv_opengl_init_params *gl = calloc(1, sizeof(mpv_opengl_init_params));
     gl->get_proc_address = get_proc_address_bridge;
-    gl->get_proc_address_ctx = proc_ctx;
+    gl->get_proc_address_ctx = (void *)proc_ctx;
 
     mpv_render_param *params = calloc(5, sizeof(mpv_render_param));
     params[0].type = MPV_RENDER_PARAM_API_TYPE;
@@ -80,8 +85,8 @@ static int render_to_fbo(mpv_render_context *ctx, int fbo, int w, int h) {
     return mpv_render_context_render(ctx, params);
 }
 
-static void set_update_callback(mpv_render_context *ctx, void *go_ctx) {
-    mpv_render_context_set_update_callback(ctx, goRenderUpdate, go_ctx);
+static void set_update_callback(mpv_render_context *ctx, uintptr_t go_ctx) {
+    mpv_render_context_set_update_callback(ctx, goRenderUpdate, (void *)go_ctx);
 }
 */
 import "C"
@@ -161,7 +166,9 @@ func (p *MPVPlayer) SetOnUpdate(fn func()) { p.onUpdate = fn }
 
 func (p *MPVPlayer) ensureRender() error {
 	p.initOnce.Do(func() {
-		handle := unsafe.Pointer(uintptr(p.self))
+		// Keep the cgo.Handle in a C scalar (uintptr_t); storing it in a Go
+		// unsafe.Pointer across the cgo call below aborts on the GL thread.
+		handle := C.uintptr_t(p.self)
 		dispType, disp := nativeDisplay()
 		params := C.make_gl_init_params(handle, C.int(dispType), disp)
 		defer C.free_gl_init_params(params)

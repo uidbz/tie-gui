@@ -29,13 +29,19 @@ import (
 // because GetReader must return a seekable stream and content URIs are not
 // re-openable as os files.
 type uriReader struct {
-	uri  fyne.URI
-	data []byte
+	uri     fyne.URI
+	data    []byte
+	isVideo bool
 }
 
 func (r *uriReader) Path() string { return r.uri.String() }
 
 func (r *uriReader) DisplayName() string { return r.uri.Name() }
+
+// IsVideo implements gallery.VideoFile so ReadCustom marks the entry as a
+// video (placeholder thumbnail + player on tap) instead of decoding it as an
+// image.
+func (r *uriReader) IsVideo() bool { return r.isVideo }
 
 func (r *uriReader) GetReader() (io.ReadSeeker, error) {
 	if r.data == nil {
@@ -71,11 +77,58 @@ func readersFromFolder(dir fyne.ListableURI) ([]gallery.CustomReader, error) {
 
 	var readers []gallery.CustomReader
 	for _, u := range uris {
-		if imageExtensions[strings.ToLower(u.Extension())] {
+		switch {
+		case imageExtensions[strings.ToLower(u.Extension())]:
 			readers = append(readers, &uriReader{uri: u})
+		case gallery.IsVideoFromPath(u.Name()):
+			readers = append(readers, &uriReader{uri: u, isVideo: true})
 		}
 	}
 	return readers, nil
+}
+
+// openLocalVideo plays a local video entry with libmpv. Reader-backed entries
+// (Android SAF content:// URIs) can't be opened by libmpv directly, so their
+// bytes are copied to a temp file first; the file is removed when the player
+// window closes. Desktop entries carry a real filesystem path and play in
+// place.
+func openLocalVideo(a fyne.App, info *gallery.ImageInfo) {
+	src := info.Path
+	var tmpFile string
+	if info.InputIsReader {
+		r, err := info.CustomReader.GetReader()
+		if err != nil {
+			fmt.Println("Error reading video:", err)
+			return
+		}
+		tmp, err := os.CreateTemp("", "imgview-vid-*"+filepath.Ext(info.DisplayName))
+		if err != nil {
+			return
+		}
+		if _, err := r.Seek(0, io.SeekStart); err == nil {
+			io.Copy(tmp, r)
+		}
+		tmp.Close()
+		src = tmp.Name()
+		tmpFile = tmp.Name()
+	}
+
+	player, err := mpvplayer.NewMPVPlayer(src)
+	if err != nil {
+		fmt.Println("Error starting video player:", err)
+		if tmpFile != "" {
+			os.Remove(tmpFile)
+		}
+		return
+	}
+
+	fyne.Do(func() {
+		var onClose func()
+		if tmpFile != "" {
+			onClose = func() { os.Remove(tmpFile) }
+		}
+		gallery.OpenVideoWindow(a, player, info.DisplayName, onClose)
+	})
 }
 
 //go:embed Icon.png
@@ -145,16 +198,7 @@ func main() {
 		case t.Info.InputIsDir:
 			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
 		case t.Info.InputIsVideo:
-			go func() {
-				player, err := mpvplayer.NewMPVPlayer(t.Info.Path)
-				if err != nil {
-					fmt.Println("Error starting video player:", err)
-					return
-				}
-				fyne.Do(func() {
-					gallery.OpenVideoWindow(myApp, player, t.Info.Path, nil)
-				})
-			}()
+			go openLocalVideo(myApp, t.Info)
 		default:
 			t.Viewer.ChangeImage(t.Info)
 		}
