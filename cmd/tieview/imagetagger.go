@@ -120,9 +120,9 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 		go func() {
 			var err error
 			if isStarred {
-				_, err = it.tc.Add("tags", "favorite", tag)
+				err = it.tc.RegisterFavorite(tag)
 			} else {
-				_, err = it.tc.Delete("tags", "favorite", tag)
+				err = it.tc.UnregisterFavorite(tag)
 			}
 			if err != nil {
 				// Roll back the optimistic update on the UI goroutine

@@ -395,21 +395,21 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			ts.SetListLabel("Loading…")
 		})
 		go func() {
-			row, err := tc.Get("tags")
+			row, err := tc.Get(client.TieTags.String())
 			if err != nil {
 				fmt.Println("Error getting tags:", err)
 				fyne.Do(func() { ts.SetListLabel("Error loading tags") })
 				return
 			}
 			fyne.Do(func() {
-				allTags = client.RowValues(row, "all")
+				allTags = client.RowValues(row, client.TieAll.String())
 				for _, tag := range allTags {
 					ts.AddTag(tag)
 				}
 				// Capture the actual tie favorites before the sidebar fallback
 				// so the tagger's ☆/★ state reflects the real relation, not the
 				// "show everything" substitute used when no favorites are configured.
-				actualFavorites := client.RowValues(row, "favorite")
+				actualFavorites := client.RowValues(row, client.TieFavorite.String())
 				allFavorites = actualFavorites
 				if len(allFavorites) == 0 {
 					// No favorites configured: list every tag so the sidebar

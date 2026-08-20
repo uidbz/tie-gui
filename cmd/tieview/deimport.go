@@ -24,8 +24,8 @@ func deimportFile(tc *client.TieClient, hash string) error {
 
 	// Clean up the global tag registry for any tags that become orphaned.
 	for _, tag := range orphanedTags(tc, client.RowValues(row, "tag")) {
-		b.Delete("tags", "all", tag)
-		b.Delete("tags", "favorite", tag) // idempotent; noop if not a favourite
+		b.Delete(client.TieTags.String(), client.TieAll.String(), tag)
+		b.Delete(client.TieTags.String(), client.TieFavorite.String(), tag) // idempotent; noop if not a favourite
 	}
 
 	_, err = tc.Batch(b)
@@ -63,8 +63,8 @@ func deimportDir(tc *client.TieClient, uid client.DirUID) error {
 		}
 	}
 	for _, tag := range orphanedTags(tc, client.RowValues(dirRow, "tag")) {
-		b.Delete("tags", "all", tag)
-		b.Delete("tags", "favorite", tag)
+		b.Delete(client.TieTags.String(), client.TieAll.String(), tag)
+		b.Delete(client.TieTags.String(), client.TieFavorite.String(), tag)
 	}
 	_, err = tc.Batch(b)
 	return err
