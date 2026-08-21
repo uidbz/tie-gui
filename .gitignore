@@ -10,3 +10,6 @@ package/*
 
 # Cross-compiled libmpv + ffmpeg for Android; regenerate with ./vendor-android-libs.sh
 /third_party/android-libs/
+
+# mpv-android buildscripts checkout + cross-compile tree (build-libmpv-android.sh)
+/build/

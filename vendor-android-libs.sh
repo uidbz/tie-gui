@@ -20,8 +20,24 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
 
-MPV_PREFIX="${MPV_PREFIX:-$HOME/src/mpv-android/buildscripts/prefix/arm64}"
-ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$HOME/src/mpv-android/buildscripts/sdk/android-ndk-r29}"
+# Discover the NDK generically unless MPV_PREFIX/ANDROID_NDK_HOME are set.
+source "$ROOT/android-env.sh"
+
+# The mpv-android build prefix. Default to a checkout under this repo's build
+# dir (created by build-libmpv-android.sh), then the classic ~/src location.
+if [ -z "${MPV_PREFIX:-}" ]; then
+    for cand in \
+        "$ROOT/build/mpv-android/buildscripts/prefix/arm64" \
+        "$HOME/src/mpv-android/buildscripts/prefix/arm64"; do
+        if [ -f "$cand/lib/libmpv.so" ]; then MPV_PREFIX="$cand"; break; fi
+    done
+    MPV_PREFIX="${MPV_PREFIX:-$ROOT/build/mpv-android/buildscripts/prefix/arm64}"
+fi
+
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+    echo "error: Android NDK not found. Set ANDROID_NDK_HOME to your NDK root." >&2
+    exit 1
+fi
 
 DST="$ROOT/third_party/android-libs"
 ABI_DIR="$DST/arm64-v8a"

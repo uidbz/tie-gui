@@ -18,11 +18,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Discover the Android SDK generically (for the adb fallback below).
+source "$(dirname "$0")/android-env.sh"
+
 # Locate adb: prefer PATH, then a standard Android SDK location.
 if command -v adb >/dev/null 2>&1; then
     ADB="adb"
-elif [ -x "${ANDROID_HOME:-$HOME/android-sdk}/platform-tools/adb" ]; then
-    ADB="${ANDROID_HOME:-$HOME/android-sdk}/platform-tools/adb"
+elif [ -n "${ANDROID_HOME:-}" ] && [ -x "$ANDROID_HOME/platform-tools/adb" ]; then
+    ADB="$ANDROID_HOME/platform-tools/adb"
 else
     echo "error: adb not found. Install platform-tools or set ANDROID_HOME." >&2
     exit 1

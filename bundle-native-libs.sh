@@ -21,6 +21,12 @@ APK="${1:?usage: bundle-native-libs.sh <path-to.apk>}"
 cd "$(dirname "$0")"
 ROOT="$PWD"
 
+# Ensure ANDROID_HOME (zipalign/apksigner) and a working JAVA_HOME/PATH are set
+# even when this script is run standalone. apksigner and keytool are Java tools;
+# on systems whose default `java` wrapper is misconfigured, android-env.sh
+# repairs JAVA_HOME and puts a working JDK first on PATH.
+source "$ROOT/android-env.sh"
+
 ABI_DIR="$ROOT/third_party/android-libs/arm64-v8a"
 
 if [ ! -d "$ABI_DIR" ]; then

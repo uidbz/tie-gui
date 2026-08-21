@@ -14,6 +14,7 @@
 #   ./build-install-android.sh                  # build & install both APKs, arm64
 #   ./build-install-android.sh tieview          # build & install just tieview
 #   TARGET=android ./build-install-android.sh   # all ABIs (needs 32-bit NDK)
+#   NOMPV=1 ./build-install-android.sh          # libmpv-free build (no video)
 #   RELEASE=1 ./build-install-android.sh        # release build (signed)
 #   DEVICE=2ab30210670b7ece ./build-install-android.sh  # specific device
 #   LAUNCH=1 ./build-install-android.sh         # also launch each app after install
@@ -25,9 +26,14 @@ ROOT="$PWD"
 
 TARGET="${TARGET:-android/arm64}"
 
-export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
-export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$HOME/downloads/android-ndk-r27d}"
+# Discover the Android SDK/NDK generically (see android-env.sh). Override by
+# exporting ANDROID_HOME / ANDROID_NDK_HOME before running this script.
+source "$ROOT/android-env.sh"
+
+if [ -z "${ANDROID_HOME:-}" ]; then
+    echo "error: Android SDK not found. Set ANDROID_HOME to your SDK root." >&2
+    exit 1
+fi
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -53,20 +59,6 @@ app_id() {
     esac
 }
 
-build() {
-    local app="$1" id
-    id="$(app_id "$app")"
-
-    local args=(package --os "$TARGET" --appID "$id" --icon Icon.png)
-    if [ "${RELEASE:-0}" = "1" ]; then
-        args+=(--release)
-    fi
-
-    echo "Building $app for $TARGET (this may take a while on first compile)..."
-    ( cd "$ROOT/cmd/$app" && fyne "${args[@]}" )
-    echo "  -> cmd/$app/$app.apk"
-}
-
 # Build the requested app(s)
 APPS_TO_BUILD=()
 if [ "$#" -ge 1 ]; then
@@ -75,8 +67,13 @@ else
     APPS_TO_BUILD=(imgview tieview)
 fi
 
+# Delegate the build phase to build-android.sh so the libmpv CGo wiring
+# (CGO_CFLAGS/CGO_LDFLAGS pointing at third_party/android-libs, plus the
+# bundle-native-libs.sh step) stays in a single place. Passing TARGET/NOMPV/
+# RELEASE through the environment keeps behavior identical.
 for app in "${APPS_TO_BUILD[@]}"; do
-    build "$app"
+    TARGET="$TARGET" NOMPV="${NOMPV:-0}" RELEASE="${RELEASE:-0}" \
+        "$ROOT/build-android.sh" "$app"
 done
 
 echo

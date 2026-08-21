@@ -32,10 +32,21 @@ ROOT="$PWD"
 TARGET="${TARGET:-android/arm64}"
 NOMPV="${NOMPV:-0}"
 
-export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
-export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$HOME/src/mpv-android/buildscripts/sdk/android-ndk-r29}"
+# Discover the Android SDK/NDK generically (see android-env.sh). Override by
+# exporting ANDROID_HOME / ANDROID_NDK_HOME before running this script.
+source "$ROOT/android-env.sh"
+
+if [ -z "${ANDROID_HOME:-}" ]; then
+    echo "error: Android SDK not found. Set ANDROID_HOME to your SDK root." >&2
+    exit 1
+fi
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+    echo "error: Android NDK not found. Set ANDROID_NDK_HOME to your NDK root." >&2
+    exit 1
+fi
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
+echo "Using Android SDK: $ANDROID_HOME"
+echo "Using Android NDK: $ANDROID_NDK_HOME"
 
 # Vendored native libs + headers for the libmpv-backed build.
 VENDOR="$ROOT/third_party/android-libs"
