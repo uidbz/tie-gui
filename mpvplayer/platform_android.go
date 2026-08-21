@@ -3,10 +3,17 @@
 package mpvplayer
 
 /*
-#cgo LDFLAGS: -lEGL -ldl
+#cgo LDFLAGS: -lEGL -ldl -lavcodec
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <EGL/egl.h>
+
+// av_jni_set_java_vm lives in the vendored libavcodec; ffmpeg's headers are not
+// shipped, so declare the prototype directly. Registering the process JavaVM is
+// a prerequisite for MediaCodec hardware decoding (h264_mediacodec) and for the
+// render API's MediaCodec hwdec interop — without it the decoder init fails with
+// "No Java virtual machine has been registered".
+extern int av_jni_set_java_vm(void *vm, void *log_ctx);
 
 static void *gl_proc_address(const char *name) {
     // Prefer symbols already loaded into the process: Fyne's mobile driver
@@ -18,10 +25,19 @@ static void *gl_proc_address(const char *name) {
         return p;
     return (void *)eglGetProcAddress(name);
 }
+
+static int set_java_vm(void *vm) {
+    return av_jni_set_java_vm(vm, NULL);
+}
 */
 import "C"
 
-import "unsafe"
+import (
+	"sync"
+	"unsafe"
+
+	"fyne.io/fyne/v2/driver"
+)
 
 // glProcAddress resolves an OpenGL ES function pointer for mpv's render API.
 func glProcAddress(name string) unsafe.Pointer {
@@ -35,11 +51,27 @@ func glProcAddress(name string) unsafe.Pointer {
 // by MediaCodec rather than a display-server GPU-interop path.
 func nativeDisplay() (int, unsafe.Pointer) { return 0, nil }
 
-// platformHwdec forces software decode on Android. MediaCodec hardware decode
-// (hwdec=mediacodec[-copy]) additionally requires the ffmpeg jni bridge to be
-// handed the JavaVM via av_jni_set_java_vm, which Fyne's mobile driver does not
-// currently expose — enabling it without that fails to initialise the decoder.
-func platformHwdec() string { return "no" }
+// platformHwdec uses MediaCodec hardware decoding in copy-back mode: frames are
+// decoded on the GPU/DSP then copied to system memory, so the libmpv render VO
+// uploads them through the same texture path as software frames (no Surface or
+// zero-copy interop needed). Requires registerJavaVM to have run first.
+func platformHwdec() string { return "mediacodec-copy" }
+
+var javaVMOnce sync.Once
+
+// registerJavaVM hands the process JavaVM to ffmpeg so the MediaCodec decoder
+// can attach to it. driver.RunNative surfaces the JVM pointer that Fyne's mobile
+// driver captured in JNI_OnLoad. Idempotent; safe to call from any goroutine.
+func registerJavaVM() {
+	javaVMOnce.Do(func() {
+		driver.RunNative(func(ctx any) error {
+			if ac, ok := ctx.(*driver.AndroidContext); ok && ac.VM != 0 {
+				C.set_java_vm(unsafe.Pointer(ac.VM))
+			}
+			return nil
+		})
+	})
+}
 
 // platformAO uses OpenSL ES, the audio output broadly available across Android
 // versions.

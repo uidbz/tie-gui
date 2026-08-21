@@ -136,6 +136,7 @@ func NewMPVPlayer(file string) (*MPVPlayer, error) {
 		return nil, err
 	}
 	setOption(h, "vo", "libmpv")
+	registerJavaVM()
 	setOption(h, "hwdec", platformHwdec())
 	if ao := platformAO(); ao != "" {
 		setOption(h, "ao", ao)

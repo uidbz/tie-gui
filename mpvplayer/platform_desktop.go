@@ -20,3 +20,7 @@ func platformHwdec() string { return "auto-safe" }
 
 // platformAO returns "" on desktop so mpv chooses its default audio output.
 func platformAO() string { return "" }
+
+// registerJavaVM is a no-op on desktop; the JavaVM bridge only matters for
+// Android MediaCodec decoding.
+func registerJavaVM() {}
