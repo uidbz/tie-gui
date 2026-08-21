@@ -15,7 +15,7 @@ libmpv, so we vendor a cross-compiled one and bundle it into the APK:
   factored into per-platform files: `mpvplayer/platform_desktop.go`
   (`//go:build !nompv && !android`, GLFW resolver) and
   `mpvplayer/platform_android.go` (`//go:build android && !nompv`, EGL resolver
-  via `eglGetProcAddress`, `hwdec=no` software decode, `ao=opensles`).
+  via `eglGetProcAddress`, `hwdec=mediacodec-copy` hardware decode, `ao=opensles`).
 - `mpvplayer/mpv_stub.go` (`//go:build nompv`) provides the same public API as
   no-ops for libmpv-free builds. `NewMPVPlayer` returns an error and the frame
   extractors return `nil`, which callers handle by falling back to a placeholder
@@ -146,8 +146,12 @@ platform-specific proc-address function:
   native display.
 - `platform_android.go` (`android`) resolves via `eglGetProcAddress`
   (`dlsym(RTLD_DEFAULT, ...)` fallback), passes no native display, and selects
-  `hwdec=no` (software decode — hardware MediaCodec would need
-  `av_jni_set_java_vm`, which Fyne's driver doesn't expose) and `ao=opensles`.
+  `hwdec=mediacodec-copy` (hardware decode) and `ao=opensles`. MediaCodec needs
+  the process JavaVM registered with ffmpeg via `av_jni_set_java_vm`; the VM
+  pointer is surfaced from the mobile driver's `JNI_OnLoad` through
+  `fyne/v2/driver.RunNative` (see the `mediacodec-copy` commit). Frames are
+  decoded on the GPU/DSP then copied to system memory, so the existing texture
+  upload path is unchanged (no Surface / zero-copy interop).
 
 `RenderInto(fbo, w, h)` (`render_to_fbo`) uses `MPV_RENDER_PARAM_OPENGL_FBO`, so
 mpv binds the supplied framebuffer and renders into it itself. The software frame
@@ -195,6 +199,5 @@ unzip -l cmd/imgview/imgview.apk | grep lib/arm64-v8a
 - **Other ABIs.** Only `arm64-v8a` is built/vendored. `armeabi-v7a` and
   `x86_64` (emulator) would each need their own cross-compile and a bundling
   tweak.
-- **Hardware decode.** `hwdec=no` (software) is used; MediaCodec needs the JVM
-  handle wired through Fyne's driver.
-- **On-device verification** of playback and audio is pending.
+- **On-device verification** of audio output is pending (video playback with
+  `mediacodec-copy` hardware decode is verified on a Note9).

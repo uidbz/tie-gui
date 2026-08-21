@@ -82,6 +82,64 @@ go install ./cmd/imgview ./cmd/tieview   # from within the clone; installs to $G
 go test ./...
 ```
 
+### Build without video playback
+
+Video playback and video thumbnails require **libmpv** (`-lmpv`). To build
+without it — no libmpv headers/libraries needed at all — add `-tags nompv`.
+Video files then fall back to a placeholder thumbnail and cannot be played:
+
+```sh
+go build -tags nompv ./cmd/imgview ./cmd/tieview   # desktop, no video
+NOMPV=1 ./build-android.sh                          # Android, no video (see below)
+```
+
+### Build & install the Android APK
+
+Both apps package as arm64-v8a APKs with in-app libmpv video playback
+(hardware MediaCodec decode). See [docs/ANDROID.md](docs/ANDROID.md) for the
+internals.
+
+**Requirements:**
+- `fyne` CLI — `go install fyne.io/fyne/v2/cmd/fyne@latest`
+- Android SDK + NDK, with `ANDROID_HOME` and `ANDROID_NDK_HOME` set (the build
+  scripts fall back to `~/android-sdk` and a bundled NDK path — adjust for your
+  machine)
+- The Fyne fork submodule checked out (`git submodule update --init`)
+- For the libmpv build: cross-compiled native libs under
+  `third_party/android-libs/`. These are **not committed** (large, gitignored);
+  generate them once with `./vendor-android-libs.sh` after building libmpv+ffmpeg
+  via the [mpv-android](https://github.com/mpv-android/mpv-android) buildscripts
+  (see [docs/ANDROID.md](docs/ANDROID.md)). Skip this entirely with `NOMPV=1`.
+- `adb` on a connected device to install
+
+**Build the APK(s)** — output lands at `cmd/imgview/imgview.apk` /
+`cmd/tieview/tieview.apk`:
+
+```sh
+git submodule update --init          # first time only: fetch the Fyne fork
+./build-android.sh                   # both APKs, arm64-v8a, with libmpv video
+./build-android.sh imgview           # just one app
+NOMPV=1 ./build-android.sh           # libmpv-free build (no video, no native libs needed)
+RELEASE=1 ./build-android.sh         # signed release build (set KEYSTORE/KEYSTORE_PASS/KEY_ALIAS)
+```
+
+**Install on a connected device** (uses `adb install -r`):
+
+```sh
+./install-android.sh                 # install both APKs
+./install-android.sh imgview         # just one
+DEVICE=<serial> ./install-android.sh # target a specific device (see: adb devices)
+LAUNCH=1 ./install-android.sh        # also launch each app after install
+```
+
+**Build and install in one step:**
+
+```sh
+./build-install-android.sh           # build + install both
+./build-install-android.sh tieview   # just one
+LAUNCH=1 ./build-install-android.sh  # build, install, launch
+```
+
 ## Usage
 
 ### imgview — Local Filesystem Viewer
