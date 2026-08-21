@@ -39,11 +39,16 @@ static mpv_render_param *make_gl_init_params(uintptr_t proc_ctx, int disp_type, 
     params[0].data = MPV_RENDER_API_TYPE_OPENGL;
     params[1].type = MPV_RENDER_PARAM_OPENGL_INIT_PARAMS;
     params[1].data = gl;
-    static int yes = 1;
-    params[2].type = MPV_RENDER_PARAM_ADVANCED_CONTROL;
-    params[2].data = &yes;
 
-    int idx = 3;
+    // ADVANCED_CONTROL is intentionally NOT enabled. It makes the client
+    // responsible for frame pacing via a dedicated vsync-locked render thread
+    // that drives mpv_render_context_update()/report_swap(). Our renders are
+    // driven by Fyne's on-demand paint pipeline instead, so with advanced
+    // control mpv never registered the first frame as presented and stalled in
+    // playback startup (clock frozen at 0, VO source stuck at 0x0). In the
+    // default mode a plain mpv_render_context_render() presents the frame and
+    // unblocks startup; the core's audio clock then drives redraw callbacks.
+    int idx = 2;
     if (disp != NULL) {
         if (disp_type == 1) {
             params[idx].type = MPV_RENDER_PARAM_X11_DISPLAY;
@@ -135,6 +140,7 @@ func NewMPVPlayer(file string) (*MPVPlayer, error) {
 	if ao := platformAO(); ao != "" {
 		setOption(h, "ao", ao)
 	}
+	requestLogMessages(h, "error")
 
 	p := &MPVPlayer{mpv: h, file: file, stop: make(chan struct{}), done: make(chan struct{})}
 	p.self = cgo.NewHandle(p)
@@ -156,6 +162,12 @@ func (p *MPVPlayer) eventLoop() {
 		}
 		switch ev.event_id {
 		case C.MPV_EVENT_NONE:
+		case C.MPV_EVENT_LOG_MESSAGE:
+			msg := (*C.mpv_event_log_message)(ev.data)
+			fmt.Printf("[mpv/%s] %s: %s",
+				C.GoString(msg.prefix),
+				C.GoString(msg.level),
+				C.GoString(msg.text))
 		case C.MPV_EVENT_SHUTDOWN:
 			return
 		}
@@ -309,6 +321,12 @@ func setOption(h *C.mpv_handle, name, value string) {
 	defer C.free(unsafe.Pointer(cn))
 	defer C.free(unsafe.Pointer(cv))
 	C.mpv_set_option_string(h, cn, cv)
+}
+
+func requestLogMessages(h *C.mpv_handle, level string) {
+	cl := C.CString(level)
+	defer C.free(unsafe.Pointer(cl))
+	C.mpv_request_log_messages(h, cl)
 }
 
 func checkMPV(status C.int) error {
