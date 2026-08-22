@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,6 +14,10 @@ import (
 
 	"git.sr.ht/~uid/imgview/gallery"
 )
+
+// errCachedFail marks a directory listing that failed earlier this session;
+// see readDir.
+var errCachedFail = errors.New("cached earlier failure")
 
 // tieFSNode is a file leaf of the tie filesystem tree: the tie File entry
 // plus the path of the directory that listed it (a content hash can appear
@@ -205,23 +210,36 @@ func (t *tieFSTree) showListing(dir client.Directory, selectHash string) {
 }
 
 // readDir returns the (cached) listing of the directory at dirPath. A path
-// not tied to any DirUID yields an empty listing.
+// not tied to any DirUID yields an empty listing. Failures are cached too:
+// otherwise a dead server makes the tree widget re-query in a tight loop on
+// every refresh (the tree re-asks childUIDs per layout pass), spamming the
+// dead server and starving the UI. The cache is per-session, so a profile
+// switch (or a restart) retries against the new server automatically.
 func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 	t.mu.Lock()
 	d, ok := t.dirs[dirPath]
 	t.mu.Unlock()
 	if ok {
+		if d == nil {
+			return client.Directory{}, errCachedFail
+		}
 		return *d, nil
 	}
 
 	uid, err := t.tie.DirUIDFromPath(dirPath)
 	if err != nil {
+		t.mu.Lock()
+		t.dirs[dirPath] = nil
+		t.mu.Unlock()
 		return client.Directory{}, err
 	}
 	var dir client.Directory
 	if uid != "" {
 		dir, err = client.ReadTieDir(t.tie, uid)
 		if err != nil {
+			t.mu.Lock()
+			t.dirs[dirPath] = nil
+			t.mu.Unlock()
 			return client.Directory{}, err
 		}
 	}

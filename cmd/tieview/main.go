@@ -142,15 +142,22 @@ func main() {
 	// quick-access content.
 	if viewer.Platform().IsMobile() {
 		// Try /DCIM/Camera first (typical Android camera directory), then /DCIM,
-		// then fall back to root if neither exists.
-		dir := "/DCIM/Camera"
-		if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
-			dir = "/DCIM"
+		// then fall back to root if neither exists. DirUIDFromPath and showDir
+		// are network calls, so they must not run on the main thread: with a
+		// dead server the timeout-less tie HTTP client would hang startup
+		// (ANR) for minutes. ChangeGallery below runs via fyne.Do once the
+		// listing is in.
+		go func() {
+			dir := "/DCIM/Camera"
 			if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
-				dir = "/"
+				dir = "/DCIM"
+				if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
+					dir = "/"
+				}
 			}
-		}
-		fsTree.showDir(dir, "")
+			fsTree.showDir(dir, "")
+			fyne.Do(viewer.ChangeGallery)
+		}()
 	} else {
 		readFromTie(viewer, tieClient, []string{*tieTag}, nil, "tag", browseDir)
 		// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
