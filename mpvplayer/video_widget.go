@@ -33,11 +33,21 @@ type videoController interface {
 type Video struct {
 	widget.BaseWidget
 
-	player  videoController
-	video   *canvas.GLVideo
-	playBtn *widget.Button
-	seek    *widget.Slider
-	timeLbl *widget.Label
+	player   videoController
+	video    *canvas.GLVideo
+	playBtn  *widget.Button
+	fsBtn    *widget.Button
+	seek     *widget.Slider
+	timeLbl  *widget.Label
+	controls *fyne.Container
+
+	fullscreen bool // true while the owning window is fullscreen; enables tap-to-toggle controls
+	iconPaused bool // last play/pause icon state shown, to avoid redundant SetIcon churn
+
+	// OnFullscreen, if set, is called when the fullscreen button is tapped. The
+	// owner (gallery) drives the actual window fullscreen toggle and reports the
+	// new state back via SetFullscreen.
+	OnFullscreen func()
 
 	stop         chan struct{}
 	seeking      bool          // true while the user drags the slider, to suppress feedback
@@ -58,6 +68,11 @@ func NewVideo(player videoController) *Video {
 	v.video.SetMinSize(fyne.NewSize(320, 180))
 
 	v.playBtn = widget.NewButtonWithIcon("", theme.MediaPauseIcon(), v.togglePlay)
+	v.fsBtn = widget.NewButtonWithIcon("", theme.ViewFullScreenIcon(), func() {
+		if v.OnFullscreen != nil {
+			v.OnFullscreen()
+		}
+	})
 	v.timeLbl = widget.NewLabel("0:00 / 0:00")
 
 	v.seek = widget.NewSlider(0, 1)
@@ -115,12 +130,22 @@ func (v *Video) refreshLoop() {
 }
 
 func (v *Video) togglePlay() {
-	paused := v.player.TogglePause()
+	v.setPlayIcon(v.player.TogglePause())
+}
+
+// setPlayIcon shows the play icon while paused (including at EOF, where tapping
+// it restarts the video) and the pause icon while playing. It only touches the
+// button when the state actually changes to avoid per-tick refresh churn.
+func (v *Video) setPlayIcon(paused bool) {
+	if paused == v.iconPaused && v.playBtn.Icon != nil {
+		return
+	}
 	if paused {
 		v.playBtn.SetIcon(theme.MediaPlayIcon())
 	} else {
 		v.playBtn.SetIcon(theme.MediaPauseIcon())
 	}
+	v.iconPaused = paused
 }
 
 // tick refreshes the seek bar and time label roughly twice a second.
@@ -133,6 +158,7 @@ func (v *Video) tick() {
 			return
 		case <-t.C:
 			pos, dur := v.player.Position(), v.player.Duration()
+			paused := v.player.IsPaused()
 			fyne.Do(func() {
 				v.timeLbl.SetText(formatTime(pos) + " / " + formatTime(dur))
 				if dur > 0 && !v.seeking {
@@ -140,6 +166,7 @@ func (v *Video) tick() {
 					v.seek.SetValue(pos / dur)
 					v.settingSeek = false
 				}
+				v.setPlayIcon(paused)
 			})
 		}
 	}
@@ -156,9 +183,46 @@ func (v *Video) Close() {
 }
 
 func (v *Video) CreateRenderer() fyne.WidgetRenderer {
-	controls := container.NewBorder(nil, nil, v.playBtn, v.timeLbl, v.seek)
-	content := container.NewBorder(nil, controls, nil, nil, v.video)
+	right := container.NewHBox(v.timeLbl, v.fsBtn)
+	v.controls = container.NewBorder(nil, nil, v.playBtn, right, v.seek)
+	content := container.NewBorder(nil, v.controls, nil, nil, v.video)
 	return widget.NewSimpleRenderer(content)
+}
+
+// Tapped toggles controls visibility while fullscreen. In windowed mode the
+// controls stay put (a tap on the video surface does nothing); taps on the
+// play/fullscreen buttons and seek slider are consumed by those widgets and
+// never reach here.
+func (v *Video) Tapped(*fyne.PointEvent) {
+	if !v.fullscreen || v.controls == nil {
+		return
+	}
+	if v.controls.Visible() {
+		v.controls.Hide()
+	} else {
+		v.controls.Show()
+	}
+}
+
+// SetFullscreen records the fullscreen state so Tapped knows whether to toggle
+// controls, and updates the button icon. Leaving fullscreen always restores the
+// controls so windowed mode never hides them.
+func (v *Video) SetFullscreen(fs bool) {
+	v.fullscreen = fs
+	if fs {
+		v.fsBtn.SetIcon(theme.ViewRestoreIcon())
+	} else {
+		v.fsBtn.SetIcon(theme.ViewFullScreenIcon())
+		if v.controls != nil {
+			v.controls.Show()
+		}
+	}
+}
+
+// TogglePlay flips play/pause; exported so callers (e.g. a spacebar hotkey) can
+// drive playback without a pointer event.
+func (v *Video) TogglePlay() {
+	v.togglePlay()
 }
 
 func formatTime(seconds float64) string {

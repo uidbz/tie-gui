@@ -136,6 +136,9 @@ func NewMPVPlayer(file string) (*MPVPlayer, error) {
 		return nil, err
 	}
 	setOption(h, "vo", "libmpv")
+	// Pause on the last frame at EOF instead of unloading the file, so duration
+	// stays valid and the video can be restarted (see TogglePause).
+	setOption(h, "keep-open", "yes")
 	registerJavaVM()
 	setOption(h, "hwdec", platformHwdec())
 	if ao := platformAO(); ao != "" {
@@ -221,12 +224,24 @@ func (p *MPVPlayer) Pause() { p.setPropertyFlag("pause", true) }
 
 func (p *MPVPlayer) TogglePause() bool {
 	paused := !p.IsPaused()
+	// Resuming a video that already reached its end (kept loaded via
+	// keep-open=yes) would otherwise stay stuck at EOF; restart from the top.
+	if !paused && p.AtEOF() {
+		p.SeekTo(0)
+	}
 	p.setPropertyFlag("pause", paused)
 	return paused
 }
 
 func (p *MPVPlayer) IsPaused() bool {
 	v, err := p.getPropertyFlag("pause")
+	return err == nil && v
+}
+
+// AtEOF reports whether playback has reached the end of the file (the file
+// stays loaded because of keep-open=yes).
+func (p *MPVPlayer) AtEOF() bool {
+	v, err := p.getPropertyFlag("eof-reached")
 	return err == nil && v
 }
 

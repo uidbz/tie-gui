@@ -92,7 +92,7 @@ func readersFromFolder(dir fyne.ListableURI) ([]gallery.CustomReader, error) {
 // bytes are copied to a temp file first; the file is removed when the player
 // window closes. Desktop entries carry a real filesystem path and play in
 // place.
-func openLocalVideo(a fyne.App, info *gallery.ImageInfo) {
+func openLocalVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 	src := info.Path
 	var tmpFile string
 	if info.InputIsReader {
@@ -127,7 +127,7 @@ func openLocalVideo(a fyne.App, info *gallery.ImageInfo) {
 		if tmpFile != "" {
 			onClose = func() { os.Remove(tmpFile) }
 		}
-		gallery.OpenVideoWindow(a, player, info.DisplayName, onClose)
+		viewer.ShowVideo(player, info.DisplayName, onClose)
 	})
 }
 
@@ -198,7 +198,7 @@ func main() {
 		case t.Info.InputIsDir:
 			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
 		case t.Info.InputIsVideo:
-			go openLocalVideo(myApp, t.Info)
+			go openLocalVideo(t.Viewer, t.Info)
 		default:
 			t.Viewer.ChangeImage(t.Info)
 		}

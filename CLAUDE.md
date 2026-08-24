@@ -12,7 +12,6 @@
 | `gallery/imageinfo.go` | Per-item data model (extracted from tilelayout.go in Phase 1) |
 | `gallery/helper.go` | File-type detection utilities (extracted from imageview.go in Phase 1) |
 | `gallery/apphelper.go` | Shared app bootstrap helpers (Phase 4) |
-| `gallery/videohelper.go` | Video window creation helpers (Phase 4) |
 | `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) |
 | `gallery/extension.go` | Extension interface documentation (Phase 6) |
 | `tagselection/` | Tag-picker widget used by tieview sidebar |
@@ -584,9 +583,17 @@ helpers:
 - **`NormalizeConfigPath(path)`** — appends `.toml` suffix if needed.
 - **`FocusImageViewOnDesktop(window, viewer)`** — focuses image view on desktop,
   skips on mobile (soft keyboard avoidance). Used in `OnImageChange` handlers.
-- **`OpenVideoWindow(app, player, displayPath, onClose)`** — creates video
-  player window with standard layout (800x520, close intercept, optional
-  cleanup). Used by both mains for consistent video window behavior.
+
+Video is played **in the main window** via `Gallery.ShowVideo(player,
+displayName, onClose)` (`gallery/gallery.go`), mirroring `ChangeImage`'s
+in-window content swap — it does not spawn a separate window. The
+`mpvplayer.Video` widget carries a fullscreen button (`OnFullscreen` callback →
+`Gallery.toggleVideoFullscreen`) and toggles its controls bar on tap while
+fullscreen (`Video.Tapped` / `SetFullscreen`). Mobile auto-enters fullscreen on
+open. `Gallery.showGallery` (also the Q/Escape/Back handler) closes the player,
+runs `onClose` (temp-file cleanup), and restores the grid. Desktop
+Escape/Q/fullscreen/Space keys are routed through `Gallery.KeyPress` while a
+video is showing.
 
 ## Platform abstraction (`gallery/platform.go`, Phase 5)
 

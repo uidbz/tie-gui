@@ -64,7 +64,7 @@ func main() {
 
 	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		if t.Info.InputIsVideo {
-			go openTieVideo(myApp, t.Info)
+			go openTieVideo(t.Viewer, t.Info)
 			return
 		}
 		t.Viewer.ChangeImage(t.Info)
@@ -496,7 +496,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 // openTieVideo opens a libmpv video player window for a tie video entry.
 // It streams directly from the filehost URL when available; otherwise it
 // falls through to downloading the content to a temporary file.
-func openTieVideo(a fyne.App, info *gallery.ImageInfo) {
+func openTieVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 	var src string
 	var tmpFile string
 
@@ -536,6 +536,6 @@ func openTieVideo(a fyne.App, info *gallery.ImageInfo) {
 		if tmpFile != "" {
 			onClose = func() { os.Remove(tmpFile) }
 		}
-		gallery.OpenVideoWindow(a, player, info.Path, onClose)
+		viewer.ShowVideo(player, info.Path, onClose)
 	})
 }

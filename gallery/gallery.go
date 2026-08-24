@@ -18,6 +18,8 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+
+	"git.sr.ht/~uid/imgview/mpvplayer"
 )
 
 type Gallery struct {
@@ -93,6 +95,8 @@ type Gallery struct {
 	currentPage   int
 	maxPages      int
 	isFullscreen  bool
+	currentVideo  *mpvplayer.Video // non-nil while a video plays in the main window
+	videoOnClose  func()           // cleanup (e.g. temp-file removal) run after the video closes
 }
 
 // NewGallery creates a Gallery instance but does not wire hotkeys or layout.
@@ -138,6 +142,39 @@ func (viewer *Gallery) Platform() *Platform {
 }
 
 func (viewer *Gallery) KeyPress(key *fyne.KeyEvent) {
+	// While a video plays it fills the main window; route keys to playback
+	// controls and skip the grid/image hotkeys (which reference no video state).
+	if viewer.currentVideo != nil {
+		bindings := viewer.config.Image
+		if key.Name == fyne.KeySpace {
+			viewer.currentVideo.TogglePlay()
+			return
+		}
+		// Android/iOS hardware back returns to the grid.
+		if key.Name == "Back" {
+			viewer.showGallery()
+			return
+		}
+		for _, x := range bindings.FullScreen {
+			if key.Name == fyne.KeyName(x) {
+				viewer.toggleVideoFullscreen()
+				return
+			}
+		}
+		for _, x := range bindings.ShowGallery {
+			if key.Name == fyne.KeyName(x) {
+				viewer.showGallery()
+				return
+			}
+		}
+		for _, x := range bindings.Quit {
+			if key.Name == fyne.KeyName(x) {
+				viewer.showGallery()
+				return
+			}
+		}
+		return
+	}
 	for _, x := range viewer.layout.hotkeys {
 		if key.Name == x.Name {
 			x.Function()
@@ -518,29 +555,7 @@ func (viewer *Gallery) InitHotkeys() {
 			viewer.CurrentImageView.OriginalSize()
 		}})
 	}
-	showGallery := func() {
-		if viewer.platform.ShouldExitFullscreenOnGalleryView() && viewer.isFullscreen {
-			viewer.isFullscreen = false
-			viewer.window.SetFullScreen(false)
-		}
-		// Release the current full-size image to free memory when returning to gallery
-		if viewer.CurrentImageView != nil && viewer.CurrentImageView.fyneImage != nil {
-			viewer.CurrentImageView.fullImage = nil
-			viewer.CurrentImageView.fyneImage.Image = nil
-			viewer.CurrentImageView.fyneImage.Refresh()
-		}
-		if !viewer.galleryLoaded {
-			viewer.LoadGallery()
-		}
-		viewer.CreateView()
-		// Restore the scroll position that was active before entering the
-		// single-image view.
-		if viewer.scroll != nil {
-			viewer.scroll.ScrollToOffset(viewer.savedScrollOffset)
-		}
-		viewer.window.SetTitle("imgview")
-		viewer.window.SetContent(viewer.Content)
-	}
+	showGallery := viewer.showGallery
 	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, showGallery})
 	}
@@ -590,6 +605,75 @@ func (viewer *Gallery) InitHotkeys() {
 			viewer.SaveImage()
 		}})
 	}
+}
+
+// showGallery returns to the gallery grid from the single-image or video view,
+// releasing playback/image resources and restoring the prior scroll position.
+func (viewer *Gallery) showGallery() {
+	if viewer.platform.ShouldExitFullscreenOnGalleryView() && viewer.isFullscreen {
+		viewer.isFullscreen = false
+		viewer.window.SetFullScreen(false)
+	}
+	// Stop and release a playing video before returning to the grid.
+	if viewer.currentVideo != nil {
+		viewer.currentVideo.Close()
+		viewer.currentVideo = nil
+		if viewer.videoOnClose != nil {
+			viewer.videoOnClose()
+			viewer.videoOnClose = nil
+		}
+	}
+	// Release the current full-size image to free memory when returning to gallery
+	if viewer.CurrentImageView != nil && viewer.CurrentImageView.fyneImage != nil {
+		viewer.CurrentImageView.fullImage = nil
+		viewer.CurrentImageView.fyneImage.Image = nil
+		viewer.CurrentImageView.fyneImage.Refresh()
+	}
+	if !viewer.galleryLoaded {
+		viewer.LoadGallery()
+	}
+	viewer.CreateView()
+	// Restore the scroll position that was active before entering the
+	// single-image view.
+	if viewer.scroll != nil {
+		viewer.scroll.ScrollToOffset(viewer.savedScrollOffset)
+	}
+	viewer.window.SetTitle("imgview")
+	viewer.window.SetContent(viewer.Content)
+}
+
+// ShowVideo plays a video in the main window (mirroring ChangeImage's in-window
+// swap) instead of spawning a separate window. On mobile it auto-enters
+// fullscreen. onClose, if non-nil, runs after the player is closed (temp-file
+// cleanup). Must be called on the UI goroutine.
+func (viewer *Gallery) ShowVideo(player *mpvplayer.MPVPlayer, displayName string, onClose func()) {
+	v := mpvplayer.NewVideo(player)
+	viewer.currentVideo = v
+	viewer.videoOnClose = onClose
+	v.OnFullscreen = viewer.toggleVideoFullscreen
+	if viewer.scroll != nil {
+		viewer.savedScrollOffset = viewer.scroll.Offset
+	}
+	viewer.window.SetTitle("Video: " + displayName)
+	viewer.Content.Objects = []fyne.CanvasObject{v}
+	viewer.Content.Refresh()
+	if viewer.platform.ShouldAutoFullscreen() && !viewer.isFullscreen {
+		viewer.isFullscreen = true
+		viewer.window.SetFullScreen(true)
+		v.SetFullscreen(true)
+	}
+}
+
+// toggleVideoFullscreen toggles OS window fullscreen for the video view and
+// informs the widget so tap-to-toggle-controls activates. Kept separate from
+// ToggleFullscreen, which dereferences CurrentImageView (nil during video).
+func (viewer *Gallery) toggleVideoFullscreen() {
+	if viewer.currentVideo == nil {
+		return
+	}
+	viewer.isFullscreen = !viewer.isFullscreen
+	viewer.window.SetFullScreen(viewer.isFullscreen)
+	viewer.currentVideo.SetFullscreen(viewer.isFullscreen)
 }
 
 func (viewer *Gallery) ChangeImage(info *ImageInfo) {
