@@ -40,6 +40,12 @@ type Gallery struct {
 	// OnSwipeUp is called when the user swipes upward on the image view.
 	// Preferred over OnTapped on mobile to avoid conflicts with pinch-zoom.
 	OnSwipeUp func()
+	// OnSwipeLeft / OnSwipeRight are called when the user swipes horizontally on
+	// the gallery grid (mobile only): left = finger moves left, right = finger
+	// moves right. They let the embedding app page between the grid and an
+	// adjacent view (e.g. a play queue). Vertical scrolling is preserved.
+	OnSwipeLeft  func()
+	OnSwipeRight func()
 	// OnTileSecondaryTapped is called when a gallery tile receives a secondary
 	// tap (right-click). Set by the caller to implement context actions such as
 	// de-import. Receives the full Tile so the caller can inspect Info.
@@ -242,12 +248,20 @@ func (viewer *Gallery) CreateView() {
 	if viewer.scroll == nil {
 		viewer.scroll = container.NewScroll(viewer.gallery)
 	}
+	// On mobile, overlay the grid with a horizontal-swipe catcher so the app can
+	// page to an adjacent view; it forwards vertical drags back to the scroller.
+	// The callbacks are read late (they may be wired after CreateView), so the
+	// overlay is added whenever the platform uses drag gestures.
+	grid := fyne.CanvasObject(viewer.scroll)
+	if viewer.platform != nil && viewer.platform.UsesMobileDragGestures() {
+		grid = container.NewStack(viewer.scroll, newGridSwipeOverlay(viewer))
+	}
 	if viewer.Sidebar != nil {
-		split := container.NewHSplit(viewer.Sidebar, viewer.scroll)
+		split := container.NewHSplit(viewer.Sidebar, grid)
 		split.SetOffset(0.2)
 		mainPage = split
 	} else {
-		mainPage = viewer.scroll
+		mainPage = grid
 	}
 
 	// Lazily create the sidebar toggle button the first time a sidebar is
