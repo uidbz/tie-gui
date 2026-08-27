@@ -13,6 +13,10 @@ type ImageInfo struct {
 	DirPath string
 	// DisplayName is the text shown below the tile (dirname for dirs, filename otherwise).
 	DisplayName string
+	// Subtitle, when non-empty, is shown on a second line below DisplayName in
+	// a lighter (non-bold) style; DisplayName is then rendered bold. Used for
+	// e.g. an album title over its artist. Wired from a Subtitler CustomReader.
+	Subtitle string
 	// PreviewPaths holds the image paths shown on a directory/archive tile:
 	// absolute file paths for directories, member paths (read via archiveFile)
 	// for archives. The tile displays PreviewPaths[previewIndex]; swiping

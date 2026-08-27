@@ -95,7 +95,8 @@ type Tile struct {
 	Info      *ImageInfo
 	tabFn     func(t *Tile)
 	nameLabel *widget.Label
-	layout    *TileLayout // reference for showLabels state
+	subLabel  *widget.Label // optional second line (e.g. artist), nil when unused
+	layout    *TileLayout   // reference for showLabels state
 	// swipeOverlay covers directory/archive tiles (PreviewPaths != nil) and
 	// turns horizontal drags into preview cycling; nil for regular images.
 	swipeOverlay *dirSwipeOverlay
@@ -256,10 +257,17 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 	gap := layout.config.General.TileGap
 	targetH := layout.config.General.TileWidth
 
-	// Extra height below each tile image for the optional filename label.
+	// Extra height below each tile image for the optional filename label, or
+	// two lines when any tile carries a subtitle (title + artist).
 	extraH := float32(0)
 	if layout.showLabels {
 		extraH = labelHeight
+		for _, t := range layout.tiles {
+			if t != nil && t.subLabel != nil {
+				extraH = 2 * labelHeight
+				break
+			}
+		}
 	}
 
 	// layout.tiles is reset and refilled by PlaceTiles independently of the
@@ -364,13 +372,15 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 func (layout *TileLayout) ToggleLabels() {
 	layout.showLabels = !layout.showLabels
 	for _, t := range layout.tiles {
-		if t.nameLabel == nil {
-			continue
-		}
-		if layout.showLabels {
-			t.nameLabel.Show()
-		} else {
-			t.nameLabel.Hide()
+		for _, lbl := range []*widget.Label{t.nameLabel, t.subLabel} {
+			if lbl == nil {
+				continue
+			}
+			if layout.showLabels {
+				lbl.Show()
+			} else {
+				lbl.Hide()
+			}
 		}
 	}
 	fyne.Do(func() {
@@ -1040,15 +1050,29 @@ func (layout *TileLayout) newImageTileFromImage(decoded image.Image, info *Image
 	t.Content = img
 	t.tabFn = tabFn
 
-	// Create name label using the entry's display name.
+	// Create name label using the entry's display name. When the entry has a
+	// subtitle, the name renders bold with the subtitle below it in normal
+	// weight (e.g. album title over artist).
 	if info.DisplayName != "" {
 		lbl := widget.NewLabel(info.DisplayName)
 		lbl.Alignment = fyne.TextAlignCenter
 		lbl.Truncation = fyne.TextTruncateEllipsis
+		if info.Subtitle != "" {
+			lbl.TextStyle = fyne.TextStyle{Bold: true}
+		}
 		if !layout.showLabels {
 			lbl.Hide()
 		}
 		t.nameLabel = lbl
+	}
+	if info.Subtitle != "" {
+		sub := widget.NewLabel(info.Subtitle)
+		sub.Alignment = fyne.TextAlignCenter
+		sub.Truncation = fyne.TextTruncateEllipsis
+		if !layout.showLabels {
+			sub.Hide()
+		}
+		t.subLabel = sub
 	}
 
 	t.ExtendBaseWidget(t)
@@ -1240,15 +1264,26 @@ func (ta *Tile) CreateRenderer() fyne.WidgetRenderer {
 	if ta.nameLabel != nil {
 		r.objects = append(r.objects, ta.nameLabel)
 	}
+	if ta.subLabel != nil {
+		r.objects = append(r.objects, ta.subLabel)
+	}
 	return r
 }
 
 func (r *TileRenderer) Layout(size fyne.Size) {
 	imgH := size.Height
 	if r.tile.nameLabel != nil && r.tile.nameLabel.Visible() {
-		imgH = size.Height - labelHeight
+		lines := float32(1)
+		if r.tile.subLabel != nil {
+			lines = 2
+		}
+		imgH = size.Height - lines*labelHeight
 		r.tile.nameLabel.Resize(fyne.NewSize(size.Width, labelHeight))
 		r.tile.nameLabel.Move(fyne.NewPos(0, imgH))
+		if r.tile.subLabel != nil {
+			r.tile.subLabel.Resize(fyne.NewSize(size.Width, labelHeight))
+			r.tile.subLabel.Move(fyne.NewPos(0, imgH+labelHeight))
+		}
 	}
 	r.tile.Content.Resize(fyne.NewSize(size.Width, imgH))
 	r.tile.Content.Move(fyne.NewPos(0, 0))
@@ -1266,6 +1301,9 @@ func (r *TileRenderer) Refresh() {
 	r.tile.Content.Refresh()
 	if r.tile.nameLabel != nil {
 		r.tile.nameLabel.Refresh()
+	}
+	if r.tile.subLabel != nil {
+		r.tile.subLabel.Refresh()
 	}
 }
 

@@ -326,6 +326,17 @@ func (viewer *Gallery) showGalleryMenu() {
 	popUpMenu.ShowAtPosition(menuPos)
 }
 
+// ToggleLabels shows or hides the name label under each tile, the programmatic
+// equivalent of the bottom-bar menu's "Show filenames" item. Embedding apps
+// can call it once after Init to default labels on (e.g. an album cover wall,
+// where the title is essential). Safe to call before any tiles exist: the flag
+// is flipped and subsequently created tiles honor it.
+func (viewer *Gallery) ToggleLabels() {
+	if viewer.layout != nil {
+		viewer.layout.ToggleLabels()
+	}
+}
+
 func (viewer *Gallery) LoadGallery() {
 	viewer.loading.Wait()
 	// Snapshot the slice header on the calling (UI) goroutine: a later tag
@@ -855,6 +866,14 @@ type DisplayNamer interface {
 	DisplayName() string
 }
 
+// Subtitler is an optional CustomReader interface for entries that have a
+// secondary label line (e.g. an album's artist under its title). When it
+// returns a non-empty string, the tile shows two rows: DisplayName in bold on
+// top and the subtitle in normal weight below.
+type Subtitler interface {
+	Subtitle() string
+}
+
 // Openable is an optional CustomReader behavior for entries that are not
 // viewable images (e.g. a directory): Open replaces the default image
 // display when the entry is opened.
@@ -941,6 +960,9 @@ func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 				}
 			}
 			info.DisplayName = base
+		}
+		if st, ok := r.(Subtitler); ok {
+			info.Subtitle = st.Subtitle()
 		}
 		if o, ok := r.(Openable); ok {
 			info.OnOpen = o.Open
