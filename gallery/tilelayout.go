@@ -100,6 +100,9 @@ type Tile struct {
 	// swipeOverlay covers directory/archive tiles (PreviewPaths != nil) and
 	// turns horizontal drags into preview cycling; nil for regular images.
 	swipeOverlay *dirSwipeOverlay
+	// dragOverlay covers the whole tile when the viewer enables tile dragging
+	// (OnTileDragged set, desktop); it forwards taps and drives the drag hooks.
+	dragOverlay *tileDragOverlay
 }
 
 func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gallery, tabFn func(t *Tile)) *TileLayout {
@@ -1189,6 +1192,78 @@ func (o *dirSwipeOverlay) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(o.bg)
 }
 
+// tileDragThreshold is the pointer travel (px) before a press on a tile is
+// treated as a drag rather than a click, so small jitters still open the entry.
+const tileDragThreshold = 6
+
+// tileDragOverlay is a transparent full-tile catcher attached when the viewer
+// enables tile dragging (OnTileDragged set, desktop). It forwards taps and the
+// secondary tap so the entry still opens/menus, and turns a press-and-drag into
+// the viewer's OnTileDrag* hooks with the pointer's absolute position for
+// cross-widget drop hit-testing. Regular image tiles carry no other overlay, so
+// this one owns their gestures; it is never attached on preview tiles (which use
+// dirSwipeOverlay) or on mobile.
+type tileDragOverlay struct {
+	widget.BaseWidget
+	tile    *Tile
+	bg      *canvas.Rectangle
+	started bool
+	accum   fyne.Position
+	last    fyne.Position
+}
+
+func newTileDragOverlay(t *Tile) *tileDragOverlay {
+	o := &tileDragOverlay{tile: t, bg: canvas.NewRectangle(color.Transparent)}
+	o.ExtendBaseWidget(o)
+	return o
+}
+
+func (o *tileDragOverlay) Tapped(ev *fyne.PointEvent)          { o.tile.Tapped(ev) }
+func (o *tileDragOverlay) TappedSecondary(ev *fyne.PointEvent) { o.tile.TappedSecondary(ev) }
+
+func (o *tileDragOverlay) Dragged(ev *fyne.DragEvent) {
+	o.last = ev.AbsolutePosition
+	v := o.tile.Viewer
+	if v == nil || v.OnTileDragged == nil {
+		return
+	}
+	if !o.started {
+		o.accum.X += ev.Dragged.DX
+		o.accum.Y += ev.Dragged.DY
+		if abs32(o.accum.X) < tileDragThreshold && abs32(o.accum.Y) < tileDragThreshold {
+			return // still within the click tolerance
+		}
+		o.started = true
+		if v.OnTileDragStart != nil {
+			v.OnTileDragStart(o.tile)
+		}
+	}
+	v.OnTileDragged(o.tile, ev.AbsolutePosition)
+}
+
+func (o *tileDragOverlay) DragEnd() {
+	started := o.started
+	o.started = false
+	o.accum = fyne.Position{}
+	if !started {
+		return
+	}
+	if v := o.tile.Viewer; v != nil && v.OnTileDragEnd != nil {
+		v.OnTileDragEnd(o.tile, o.last)
+	}
+}
+
+func (o *tileDragOverlay) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(o.bg)
+}
+
+func abs32(f float32) float32 {
+	if f < 0 {
+		return -f
+	}
+	return f
+}
+
 func (layout *TileLayout) InitHotkeys() {
 	layout.hotkeys = []Hotkey{}
 	bindings := layout.config.Gallery
@@ -1261,6 +1336,15 @@ func (ta *Tile) CreateRenderer() fyne.WidgetRenderer {
 	if ta.swipeOverlay != nil {
 		r.objects = append(r.objects, ta.swipeOverlay)
 	}
+	// A plain image tile (no preview swipe overlay) carries a full-tile drag
+	// catcher when the viewer opts into tile dragging on desktop.
+	if ta.dragOverlay == nil && ta.swipeOverlay == nil && ta.Viewer != nil &&
+		ta.Viewer.OnTileDragged != nil && !ta.Viewer.Platform().IsMobile() {
+		ta.dragOverlay = newTileDragOverlay(ta)
+	}
+	if ta.dragOverlay != nil {
+		r.objects = append(r.objects, ta.dragOverlay)
+	}
 	if ta.nameLabel != nil {
 		r.objects = append(r.objects, ta.nameLabel)
 	}
@@ -1290,6 +1374,10 @@ func (r *TileRenderer) Layout(size fyne.Size) {
 	if r.tile.swipeOverlay != nil {
 		r.tile.swipeOverlay.Resize(fyne.NewSize(size.Width, imgH))
 		r.tile.swipeOverlay.Move(fyne.NewPos(0, 0))
+	}
+	if r.tile.dragOverlay != nil {
+		r.tile.dragOverlay.Resize(fyne.NewSize(size.Width, imgH))
+		r.tile.dragOverlay.Move(fyne.NewPos(0, 0))
 	}
 }
 

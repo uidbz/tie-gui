@@ -51,6 +51,18 @@ type Gallery struct {
 	// de-import. Receives the full Tile so the caller can inspect Info.
 	OnTileSecondaryTapped func(*Tile)
 
+	// OnTileDragStart / OnTileDragged / OnTileDragEnd, when OnTileDragged is set,
+	// enable dragging a tile onto another widget (e.g. dropping an album cover
+	// into a play queue). They fire only on desktop: setting OnTileDragged makes
+	// each non-preview tile carry a transparent drag catcher that forwards taps
+	// (so tapping still opens the entry) but turns a drag into these callbacks.
+	// Dragged/DragEnd receive the pointer's absolute position for cross-widget
+	// hit-testing (Fyne has no cross-widget drop target). The consumer draws its
+	// own drag cue and decides what a drop means.
+	OnTileDragStart func(*Tile)
+	OnTileDragged   func(*Tile, fyne.Position)
+	OnTileDragEnd   func(*Tile, fyne.Position)
+
 	// ═══════════════════════════════════════════════════════════════════════
 	// Extension API — Public Fields
 	// ═══════════════════════════════════════════════════════════════════════
