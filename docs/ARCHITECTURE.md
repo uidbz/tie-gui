@@ -1,6 +1,6 @@
 # Architecture Overview
 
-This document provides a technical overview of the imgview/tieview architecture, design patterns, and implementation details.
+This document provides a technical overview of the imgview/tie-view architecture, design patterns, and implementation details.
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ This document provides a technical overview of the imgview/tieview architecture,
 ┌─────────────────────────────────────────────────────────────┐
 │                    Application Layer                         │
 │  ┌────────────────────┐        ┌────────────────────┐       │
-│  │   cmd/imgview      │        │   cmd/tieview      │       │
+│  │   cmd/imgview      │        │   cmd/tie-view      │       │
 │  │ ┌────────────────┐ │        │ ┌────────────────┐ │       │
 │  │ │ File system    │ │        │ │ Tie client     │ │       │
 │  │ │ Archive reader │ │        │ │ Tag sidebar    │ │       │
@@ -93,8 +93,8 @@ The `Gallery` struct is the main controller coordinating the gallery view and si
 viewer := gallery.NewGallery(app, window, config, tileOnclick)
 
 // Customize between creation and initialization
-viewer.Sidebar = makeSidebar(...)         // tieview only
-viewer.Thumbnailer = makeThumbnailer()    // tieview only
+viewer.Sidebar = makeSidebar(...)         // tie-view only
+viewer.Thumbnailer = makeThumbnailer()    // tie-view only
 viewer.OnImageChange = func(info) { ... } // both
 
 // Complete initialization (wires hotkeys, creates layout)
@@ -196,7 +196,7 @@ type CustomReader interface {
 
 **Implementations:**
 - `ImageInfo` (gallery) — local files (default)
-- `tieReader` (cmd/tieview) — tie network blobs
+- `tieReader` (cmd/tie-view) — tie network blobs
 - `uriReader` (cmd/imgview) — Android content:// URIs
 - `archiveReader` (gallery) — archive members
 
@@ -260,7 +260,7 @@ type Thumbnailer interface {
 ```
 
 **Default behavior:** Local disk cache in ThumbnailDir
-**tieview behavior:** Fetch from tie metadata or generate and persist
+**tie-view behavior:** Fetch from tie metadata or generate and persist
 
 ### Callback Extension Points
 
@@ -401,14 +401,14 @@ go func() {
 - Invalidated: manual cleanup only
 - Benefit: fast startup on revisited directories
 
-**3. Tie metadata cache** (tieview)
+**3. Tie metadata cache** (tie-view)
 - Storage: tie `(imageHash, "thumbnail", thumbHash)` relation
 - Generated on first view, fetched on subsequent views
 - Dimensions stored: `(imageHash, "dimensions", "WxH")`
 - Archive covers use the same relation on the archive hash (CoverProvider):
   the tile's initial view fetches the small cover instead of downloading the
   whole archive blob
-- Shared across all tieview clients
+- Shared across all tie-view clients
 - Benefit: network-cached thumbnails, no local storage
 
 ### Content Addressing
@@ -518,11 +518,11 @@ go func() {
 - Never crash on bad content
 
 **Applications:** Surface errors to user
-- Network failures → error dialog (tieview)
+- Network failures → error dialog (tie-view)
 - File not found → error dialog (imgview)
-- Tag sync failures → rollback UI + reconcile (tieview)
+- Tag sync failures → rollback UI + reconcile (tie-view)
 
-### Reconciliation Pattern (tieview)
+### Reconciliation Pattern (tie-view)
 
 **Optimistic updates with reconciliation:**
 ```go

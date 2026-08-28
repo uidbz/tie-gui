@@ -19,7 +19,7 @@ import (
 	"git.sr.ht/~uid/tie/io/getlib"
 	"git.sr.ht/~uid/tie/io/putlib"
 
-	"git.sr.ht/~uid/imgview/gallery"
+	"github.com/uidbz/tie-gui/gallery"
 )
 
 // httpClientForHost honors the host's Insecure flag (self-signed

@@ -18,8 +18,8 @@ import (
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 
-	"git.sr.ht/~uid/imgview/gallery"
-	"git.sr.ht/~uid/imgview/mpvplayer"
+	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/mpvplayer"
 	// "github.com/pkg/profile"
 )
 

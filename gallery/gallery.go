@@ -19,7 +19,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 
-	"git.sr.ht/~uid/imgview/mpvplayer"
+	"github.com/uidbz/tie-gui/mpvplayer"
 )
 
 type Gallery struct {
@@ -123,8 +123,8 @@ type Gallery struct {
 //
 // The two-step construction pattern exists because applications need to
 // customize the Gallery between creation and initialization:
-//   - tieview sets Sidebar to the tag filter panel
-//   - tieview sets Thumbnailer to the filehost thumbnailer
+//   - tie-view sets Sidebar to the tag filter panel
+//   - tie-view sets Thumbnailer to the filehost thumbnailer
 //   - Both mains set OnImageChange, OnTapped, etc.
 //
 // These fields must be set before Init() is called because Init() wires hotkeys
@@ -133,8 +133,8 @@ type Gallery struct {
 // Example usage:
 //
 //	viewer := gallery.NewGallery(app, window, config, tileOnclick)
-//	viewer.Sidebar = makeSidebar(...)        // tieview only
-//	viewer.Thumbnailer = makeThumbnailer()   // tieview only
+//	viewer.Sidebar = makeSidebar(...)        // tie-view only
+//	viewer.Thumbnailer = makeThumbnailer()   // tie-view only
 //	viewer.OnImageChange = func(info) { ... }
 //	viewer.Init()  // Wires hotkeys, creates layout
 func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick func(t *Tile)) *Gallery {

@@ -18,9 +18,9 @@ import (
 	"git.sr.ht/~uid/conf"
 	"git.sr.ht/~uid/tie/client"
 
-	"git.sr.ht/~uid/imgview/gallery"
-	"git.sr.ht/~uid/imgview/mpvplayer"
-	"git.sr.ht/~uid/imgview/tagselection"
+	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/mpvplayer"
+	"github.com/uidbz/tie-gui/tagselection"
 	// "github.com/pkg/profile"
 )
 

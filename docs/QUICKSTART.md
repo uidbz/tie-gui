@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get imgview/tieview running in 5 minutes.
+Get imgview/tie-view running in 5 minutes.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ imgview builds against a modified Fyne fork, vendored as a **git submodule** at 
 
 ```sh
 # Clone repository including the fyne fork submodule (required)
-git clone --recurse-submodules https://git.sr.ht/~uid/imgview
+git clone --recurse-submodules https://github.com/uidbz/tie-gui
 cd imgview
 
 # …or fetch the submodule after a plain clone:
@@ -51,24 +51,24 @@ git submodule update --init
 
 # Build both applications
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 
 # Without libmpv (no video support):
-go build -tags nompv ./cmd/imgview ./cmd/tieview
+go build -tags nompv ./cmd/imgview ./cmd/tie-view
 
 # Run tests
 go test ./...
 
 # Optional: Install to $GOPATH/bin
 go install ./cmd/imgview
-go install ./cmd/tieview
+go install ./cmd/tie-view
 ```
 
 ### Verify Installation
 
 ```sh
 imgview --help   # Should show usage
-tieview --help   # Should show usage
+tie-view --help   # Should show usage
 ```
 
 ---
@@ -99,19 +99,19 @@ imgview ~/Downloads/comics.cbr
 - `Left/Right` arrows to navigate images
 - `Q` or `Esc` in gallery to quit
 
-### tieview — Network Content (Requires tie)
+### tie-view — Network Content (Requires tie)
 
-**Note:** tieview requires a [tie](https://git.sr.ht/~uid/tie) daemon. Skip this section if you don't have tie set up.
+**Note:** tie-view requires a [tie](https://git.sr.ht/~uid/tie) daemon. Skip this section if you don't have tie set up.
 
 ```sh
 # Query by tag
-tieview -tag favorite
+tie-view -tag favorite
 
 # Multiple tags (AND)
-tieview -tag vacation -tag 2024
+tie-view -tag vacation -tag 2024
 
 # Custom config
-tieview -config production.toml -tag work
+tie-view -config production.toml -tag work
 ```
 
 **Expected:** Gallery window opens showing images matching tag query.
@@ -186,17 +186,17 @@ imgview ~/Comics/manga.cbz
 
 **Supported formats:** zip, rar, tar, 7z, cbr, cbz
 
-### Tag-Based Image Organization (tieview)
+### Tag-Based Image Organization (tie-view)
 
 ```sh
 # Find untagged images
-tieview -tag untagged
+tie-view -tag untagged
 
 # Exclude tag (images NOT tagged 'archived')
-tieview -tag !archived
+tie-view -tag !archived
 
 # Complex query
-tieview -tag work -tag 2024 -tag !draft
+tie-view -tag work -tag 2024 -tag !draft
 ```
 
 **Workflow:**
@@ -251,7 +251,7 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 | Scroll wheel | Zoom |
 | Drag | Pan |
 | Double-click | Fullscreen |
-| Right-click tile (tieview) | De-import |
+| Right-click tile (tie-view) | De-import |
 
 ---
 
@@ -282,7 +282,7 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 **Thumbnails not caching**
 - **Fix:** Check `ThumbnailDir` path in config. Ensure write permissions.
 
-**tieview: connection refused**
+**tie-view: connection refused**
 - **Fix:** Ensure tie daemon is running. Check config file path with `-config`.
 
 **Window too small on HiDPI**
@@ -306,7 +306,7 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 ### For Users
 
 - Customize keyboard shortcuts in config file
-- Set up tieview with your tie instance
+- Set up tie-view with your tie instance
 - Enable thumbnail caching for faster browsing
 
 ### For Developers
@@ -344,7 +344,7 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 │ COMMAND LINE                                            │
 │   imgview [path]          View directory or image       │
 │   imgview -c cfg.toml     Use custom config             │
-│   tieview -tag name       Query by tag                  │
+│   tie-view -tag name       Query by tag                  │
 ├─────────────────────────────────────────────────────────┤
 │ CONFIG: ~/.config/imgview/config.toml                   │
 │ CACHE:  ~/.cache/imgview/                               │

@@ -1,4 +1,4 @@
-module git.sr.ht/~uid/imgview
+module github.com/uidbz/tie-gui
 
 go 1.25.0
 

@@ -1,6 +1,6 @@
 # Documentation Index
 
-Comprehensive technical documentation for the imgview/tieview project.
+Comprehensive technical documentation for the imgview/tie-view project.
 
 ## Getting Started
 
@@ -49,8 +49,8 @@ Comprehensive technical documentation for the imgview/tieview project.
   - Gallery layout algorithm
   - Thumbnail pipeline
   - Navigation and fullscreen
-  - Tag sidebar (tieview)
-  - Image tagger (tieview)
+  - Tag sidebar (tie-view)
+  - Image tagger (tie-view)
   - Config options
   - Threading model
   - Common patterns

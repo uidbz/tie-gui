@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and install imgview and/or tieview APKs on Android in one step.
+# Build and install imgview and/or tie-view APKs on Android in one step.
 #
 # Combines build-android.sh and install-android.sh: builds the APK(s), then
 # immediately installs them on a connected Android device.
@@ -12,7 +12,7 @@
 #
 # Usage:
 #   ./build-install-android.sh                  # build & install both APKs, arm64
-#   ./build-install-android.sh tieview          # build & install just tieview
+#   ./build-install-android.sh tie-view          # build & install just tie-view
 #   TARGET=android ./build-install-android.sh   # all ABIs (needs 32-bit NDK)
 #   NOMPV=1 ./build-install-android.sh          # libmpv-free build (no video)
 #   RELEASE=1 ./build-install-android.sh        # release build (signed)
@@ -54,8 +54,8 @@ fi
 app_id() {
     case "$1" in
         imgview) echo "sr.ht.uid.imgview" ;;
-        tieview) echo "sr.ht.uid.tieview" ;;
-        *) echo "error: unknown app '$1' (expected imgview or tieview)" >&2; exit 1 ;;
+        tie-view) echo "sr.ht.uid.tieview" ;;
+        *) echo "error: unknown app '$1' (expected imgview or tie-view)" >&2; exit 1 ;;
     esac
 }
 
@@ -64,7 +64,7 @@ APPS_TO_BUILD=()
 if [ "$#" -ge 1 ]; then
     APPS_TO_BUILD=("$1")
 else
-    APPS_TO_BUILD=(imgview tieview)
+    APPS_TO_BUILD=(imgview tie-view)
 fi
 
 # Delegate the build phase to build-android.sh so the libmpv CGo wiring

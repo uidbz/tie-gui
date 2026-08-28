@@ -125,7 +125,7 @@ a phased way forward so future sessions can execute with confidence.
 ## Part 2 — Roadmap (phased, ordered by leverage)
 
 Each phase is independently shippable and leaves the tree green
-(`go build ./cmd/imgview && go build ./cmd/tieview && go test ./...`).
+(`go build ./cmd/imgview && go build ./cmd/tie-view && go test ./...`).
 
 ### Phase 1 — Naming & file structure (mechanical, high clarity)
 
@@ -163,7 +163,7 @@ Each phase is independently shippable and leaves the tree green
   trie on every selection change; handle `caseMap` collisions; fix stale
   comments.
 - Critical files: `tagselection/tagselection.go`, `tagselection/trie/trie.go`,
-  `cmd/tieview/imagetagger.go`, `cmd/tieview/main.go` (`makeTagSidebar`).
+  `cmd/tie-view/imagetagger.go`, `cmd/tie-view/main.go` (`makeTagSidebar`).
 
 ### Phase 3 — Decouple gallery internals
 
@@ -189,7 +189,7 @@ Each phase is independently shippable and leaves the tree green
 - Factor the shared `-config`/`-c` `.toml` flag logic.
 - Factor the duplicated mobile-focus-guard `OnImageChange` block.
 - Factor the video-open window logic into one helper both mains call.
-- Critical files: `cmd/imgview/main.go`, `cmd/tieview/main.go`, new shared
+- Critical files: `cmd/imgview/main.go`, `cmd/tie-view/main.go`, new shared
   helper in `gallery/`.
 
 ### Phase 5 — Isolate the platform seam
@@ -202,7 +202,7 @@ Each phase is independently shippable and leaves the tree green
 - Keep it a runtime seam (per agreed direction: unified codebase), just
   consolidated in one place instead of ~10 sites.
 - Critical files: `gallery/imageview.go`, `gallery/gallery.go`,
-  `cmd/imgview/main.go`, `cmd/tieview/main.go`.
+  `cmd/imgview/main.go`, `cmd/tie-view/main.go`.
 
 ### Phase 6 — Library API hardening (finish "two apps, one library")
 
@@ -224,7 +224,7 @@ explicitly a behavior fix (Phase 2 error handling):
 
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 

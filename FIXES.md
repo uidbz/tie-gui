@@ -185,7 +185,7 @@ All existing tests pass:
 ```bash
 go test ./gallery/...
 # PASS
-# ok  	git.sr.ht/~uid/imgview/gallery	0.056s
+# ok  	github.com/uidbz/tie-gui/gallery	0.056s
 ```
 
 ## Related Files Changed

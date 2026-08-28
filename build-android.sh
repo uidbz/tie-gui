@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build imgview and tieview as Android APKs using `fyne package`.
+# Build imgview and tie-view as Android APKs using `fyne package`.
 #
 # This is the full, libmpv-backed build: in-app video playback and real video
 # thumbnails work on Android, matching desktop. It links against a libmpv (plus
@@ -20,7 +20,7 @@
 #
 # Usage:
 #   ./build-android.sh                    # build both APKs, arm64, with libmpv
-#   ./build-android.sh imgview            # build just one (imgview or tieview)
+#   ./build-android.sh imgview            # build just one (imgview or tie-view)
 #   NOMPV=1 ./build-android.sh            # libmpv-free build (no video)
 #   RELEASE=1 ./build-android.sh          # release build (signed)
 
@@ -82,8 +82,8 @@ fi
 app_id() {
     case "$1" in
         imgview) echo "sr.ht.uid.imgview" ;;
-        tieview) echo "sr.ht.uid.tieview" ;;
-        *) echo "error: unknown app '$1' (expected imgview or tieview)" >&2; exit 1 ;;
+        tie-view) echo "sr.ht.uid.tieview" ;;
+        *) echo "error: unknown app '$1' (expected imgview or tie-view)" >&2; exit 1 ;;
     esac
 }
 
@@ -116,7 +116,7 @@ if [ "$#" -ge 1 ]; then
     build "$1"
 else
     build imgview
-    build tieview
+    build tie-view
 fi
 
 echo

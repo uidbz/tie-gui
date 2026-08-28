@@ -73,7 +73,7 @@ imgview/
 **Build:**
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 
@@ -128,7 +128,7 @@ Both are working well in current form. Only pursue if specific benefits justify 
 1. Implement `CustomReader` interface (GetReader, Path)
 2. Optionally implement `Openable`, `VideoFile`, etc.
 3. Wire into application main
-4. Example: see `tieReader` in `cmd/tieview/tie.go`
+4. Example: see `tieReader` in `cmd/tie-view/tie.go`
 
 **Adding new platform behavior:**
 1. Add method to `Platform` struct (`gallery/platform.go`)
@@ -144,7 +144,7 @@ Both are working well in current form. Only pursue if specific benefits justify 
 
 **Verification checklist:**
 ```sh
-go build ./cmd/imgview && go build ./cmd/tieview && go test ./...
+go build ./cmd/imgview && go build ./cmd/tie-view && go test ./...
 # Manual: launch both apps, test gallery + single-image view
 ```
 

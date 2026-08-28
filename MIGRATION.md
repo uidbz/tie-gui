@@ -158,7 +158,7 @@ Build with the `migrated_fynedo` tag to assert the fyne.Do threading model
 (without it fyne prints a migration warning on startup):
 
 ```bash
-go build -tags migrated_fynedo ./cmd/imgview ./cmd/tieview
+go build -tags migrated_fynedo ./cmd/imgview ./cmd/tie-view
 ```
 
 The build script has been updated to include this tag automatically.

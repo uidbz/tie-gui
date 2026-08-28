@@ -5,7 +5,7 @@ import (
 
 	"git.sr.ht/~uid/tie/client"
 
-	"git.sr.ht/~uid/imgview/gallery"
+	"github.com/uidbz/tie-gui/gallery"
 )
 
 func tieRow(types []string, mediaType string) client.Row {

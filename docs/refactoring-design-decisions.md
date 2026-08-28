@@ -279,7 +279,7 @@ unchanged.
 
 **Why keep the method names?**
 
-The methods are part of the public API (called by `cmd/tieview/main.go` and
+The methods are part of the public API (called by `cmd/tie-view/main.go` and
 `imagetagger.go`). Renaming them would break callers and require updates to
 CLAUDE.md's API table. The method names are also semantically correct:
 `SetFavorites(tags)` means "set the tags shown in the quick-pick area,"
@@ -412,7 +412,7 @@ replacements.
 **Gallery rename impact:** `NewViewer` → `NewGallery` and `*gallery.Viewer` →
 `*gallery.Gallery` are API breaks for external callers. However:
 - The project is not published as a library (no external consumers).
-- Both `cmd/imgview` and `cmd/tieview` are in-tree and were updated in the
+- Both `cmd/imgview` and `cmd/tie-view` are in-tree and were updated in the
   same commit.
 - If this were a library, the rename would be a major version bump (v2.0.0).
 

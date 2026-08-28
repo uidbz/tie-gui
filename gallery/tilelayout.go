@@ -27,7 +27,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/widget"
 
-	"git.sr.ht/~uid/imgview/mpvplayer"
+	"github.com/uidbz/tie-gui/mpvplayer"
 )
 
 //go:embed loading.png

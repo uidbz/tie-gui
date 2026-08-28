@@ -1,16 +1,16 @@
-# imgview / tieview
+# imgview / tie-view
 
 **High-performance image viewers with justified gallery layout and extensible architecture**
 
 [![Website](https://img.shields.io/badge/website-imgview.app-blue)](https://imgview.app)
-[![License](https://img.shields.io/badge/license-see%20repository-lightgrey)](https://git.sr.ht/~uid/imgview)
+[![License](https://img.shields.io/badge/license-see%20repository-lightgrey)](https://github.com/uidbz/tie-gui)
 
 ## Overview
 
 This repository provides two complementary image viewer applications built on a shared, extensible gallery library:
 
 - **imgview** — Local filesystem viewer with directory browsing, archive support (zip, rar, tar, cbr, etc.), and video playback
-- **tieview** — Network-based viewer for [tie](https://git.sr.ht/~uid/tie) content repositories with tag filtering, virtual filesystem navigation, and cached thumbnails
+- **tie-view** — Network-based viewer for [tie](https://git.sr.ht/~uid/tie) content repositories with tag filtering, virtual filesystem navigation, and cached thumbnails
 
 ### Key Features
 
@@ -19,7 +19,7 @@ This repository provides two complementary image viewer applications built on a 
 - **Fast pagination** — Efficient handling of large collections (500+ images per page)
 - **Archive support** — Read images from zip, rar, tar, cbr, and other common formats
 - **Collection previews** — Folder/archive tiles show a content thumbnail with a folder badge; swipe horizontally on a tile to cycle through its images; video tiles cycle through up to 10 extracted frames
-- **Video integration** — libmpv player for video files with streaming support (tieview)
+- **Video integration** — libmpv player for video files with streaming support (tie-view)
 - **Mobile support** — Touch gestures, pinch-zoom, platform-optimized rendering
 
 **Extension Architecture:**
@@ -51,7 +51,7 @@ This repository provides two complementary image viewer applications built on a 
 imgview builds against a modified Fyne fork, vendored as a **git submodule** at `third_party/fyne` (the `imgview` branch of [github.com/uidbz/fyne](https://github.com/uidbz/fyne): GLVideo video embedding, Android system-bar control, longer desktop texture-cache lifetime). `go.mod` points at it via a `replace` directive, so the submodule must be checked out:
 
 ```sh
-git clone --recurse-submodules https://git.sr.ht/~uid/imgview
+git clone --recurse-submodules https://github.com/uidbz/tie-gui
 cd imgview
 
 # …or, after a plain clone:
@@ -61,20 +61,20 @@ git submodule update --init
 **Build:**
 ```sh
 go build ./cmd/imgview   # local filesystem viewer
-go build ./cmd/tieview   # tie network viewer (tie is a pinned dependency, fetched automatically)
+go build ./cmd/tie-view   # tie network viewer (tie is a pinned dependency, fetched automatically)
 
 # Wayland build:
 go build -tags wayland ./cmd/imgview
 
 # Build without libmpv (no video playback/thumbnails):
-go build -tags nompv ./cmd/imgview ./cmd/tieview
+go build -tags nompv ./cmd/imgview ./cmd/tie-view
 ```
 
-> **Note:** `go install git.sr.ht/~uid/imgview/cmd/imgview@latest` does **not** work — the `replace` directive points into the git submodule, which module-proxy downloads do not contain. Build from a clone as above.
+> **Note:** `go install github.com/uidbz/tie-gui/cmd/imgview@latest` does **not** work — the `replace` directive points into the git submodule, which module-proxy downloads do not contain. Build from a clone as above.
 
 **Install:**
 ```sh
-go install ./cmd/imgview ./cmd/tieview   # from within the clone; installs to $GOBIN
+go install ./cmd/imgview ./cmd/tie-view   # from within the clone; installs to $GOBIN
 ```
 
 **Test:**
@@ -89,7 +89,7 @@ without it — no libmpv headers/libraries needed at all — add `-tags nompv`.
 Video files then fall back to a placeholder thumbnail and cannot be played:
 
 ```sh
-go build -tags nompv ./cmd/imgview ./cmd/tieview   # desktop, no video
+go build -tags nompv ./cmd/imgview ./cmd/tie-view   # desktop, no video
 NOMPV=1 ./build-android.sh                          # Android, no video (see below)
 ```
 
@@ -113,7 +113,7 @@ internals.
 - `adb` on a connected device to install
 
 **Build the APK(s)** — output lands at `cmd/imgview/imgview.apk` /
-`cmd/tieview/tieview.apk`:
+`cmd/tie-view/tie-view.apk`:
 
 ```sh
 git submodule update --init          # first time only: fetch the Fyne fork
@@ -136,7 +136,7 @@ LAUNCH=1 ./install-android.sh        # also launch each app after install
 
 ```sh
 ./build-install-android.sh           # build + install both
-./build-install-android.sh tieview   # just one
+./build-install-android.sh tie-view   # just one
 LAUNCH=1 ./build-install-android.sh  # build, install, launch
 ```
 
@@ -159,22 +159,22 @@ imgview -config ~/.config/imgview/my-config.toml /path/to/images
 imgview -c my-config /path/to/images  # short form
 ```
 
-### tieview — Network Content Viewer
+### tie-view — Network Content Viewer
 
 ```sh
 # Query images by tag
-tieview -tag favorite
-tieview -tag vacation -tag 2024
+tie-view -tag favorite
+tie-view -tag vacation -tag 2024
 
 # Use specific tie config
-tieview -config production.toml -tag work
-tieview -c prod -tag work  # short form
+tie-view -config production.toml -tag work
+tie-view -c prod -tag work  # short form
 
 # Use specific filehost
-tieview -host fast -tag recent
+tie-view -host fast -tag recent
 ```
 
-**tieview features:**
+**tie-view features:**
 - Tag filtering with include/exclude semantics
 - Co-tag refinement (faceted search)
 - Virtual filesystem navigation
@@ -248,7 +248,7 @@ Pages are switched via the page links in the bottom bar or the large **Load Next
 
 **Mobile-specific:**
 - Android Back button returns to gallery
-- Swipe up on image opens tag panel (tieview)
+- Swipe up on image opens tag panel (tie-view)
 - Soft keyboard suppression for optimal viewing
 
 ## Architecture
@@ -259,7 +259,7 @@ Pages are switched via the page links in the bottom bar or the large **Load Next
 imgview/
 ├── cmd/
 │   ├── imgview/        # Local filesystem viewer entry point
-│   └── tieview/        # Tie network viewer entry point
+│   └── tie-view/        # Tie network viewer entry point
 ├── gallery/            # Shared library (rendering engine)
 │   ├── gallery.go      # Gallery controller
 │   ├── imageview.go    # Single-image display widget
@@ -269,7 +269,7 @@ imgview/
 │   ├── platform.go     # Mobile vs desktop abstraction
 │   ├── extension.go    # Extension API documentation
 │   └── config.go       # Configuration management
-├── tagselection/       # Tag picker widget (tieview)
+├── tagselection/       # Tag picker widget (tie-view)
 ├── mpvplayer/          # libmpv video player integration
 ├── third_party/fyne/   # Vendored Fyne fork (git submodule, "imgview" branch)
 └── docs/               # Technical documentation
@@ -316,7 +316,7 @@ See [docs/refactoring-progress.md](docs/refactoring-progress.md) for detailed ch
 **Testing:**
 ```sh
 go test ./...  # Unit tests
-go build ./cmd/imgview && go build ./cmd/tieview  # Build verification
+go build ./cmd/imgview && go build ./cmd/tie-view  # Build verification
 ```
 
 **Documentation:**
@@ -354,7 +354,7 @@ go build ./cmd/imgview && go build ./cmd/tieview  # Build verification
 - Decrease `Workers` if experiencing memory pressure
 - Enable GPU downscaling on mobile (automatic)
 
-**tieview connection issues:**
+**tie-view connection issues:**
 - Verify tie daemon is running and accessible
 - Check tie config file path and credentials
 - Use `-c /path/to/config.toml` to specify config explicitly
@@ -382,4 +382,4 @@ See repository for license information.
 ---
 
 **Website:** [imgview.app](https://imgview.app)  
-**Repository:** [git.sr.ht/~uid/imgview](https://git.sr.ht/~uid/imgview)
+**Repository:** [github.com/uidbz/tie-gui](https://github.com/uidbz/tie-gui)

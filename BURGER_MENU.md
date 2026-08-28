@@ -160,5 +160,5 @@ items = append(items, fyne.NewMenuItem("Refresh thumbnails", func() {
 - The menu button is created once in `CreateView()` and reused
 - Menu items are rebuilt on each open (allows dynamic labels)
 - Popup dismisses automatically when user clicks outside
-- No changes needed to cmd/imgview or cmd/tieview mains
+- No changes needed to cmd/imgview or cmd/tie-view mains
 - Works with existing platform detection (mobile vs desktop)

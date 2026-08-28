@@ -37,7 +37,7 @@ document tracks completed work.
 
 **Callers updated:**
 - `cmd/imgview/main.go` — all `gallery.NewViewer` / `*gallery.Viewer`
-- `cmd/tieview/main.go`, `tree.go`, `tie.go` — same
+- `cmd/tie-view/main.go`, `tree.go`, `tie.go` — same
 - `gallery/imageviewer_test.go` — test constructor call
 
 ### Rationale
@@ -56,7 +56,7 @@ each file now has a single, clear responsibility.
 
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 
@@ -187,7 +187,7 @@ tag set, not just filtering. No change needed.
 All four commits:
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 
@@ -305,7 +305,7 @@ shape than before Phase 3 started.
 
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 
@@ -405,7 +405,7 @@ cleanup logic via the onClose callback.
 **Verification:**
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 
@@ -466,7 +466,7 @@ logic.
 
 **Changes:**
 - Added `Platform()` accessor to Gallery for external access
-- **cmd/tieview/main.go:** Tagger tap/swipe choice uses
+- **cmd/tie-view/main.go:** Tagger tap/swipe choice uses
   `ShouldUseTapForAction()`, OnHide focus uses `ShouldFocusImageView()`
 - **cmd/imgview/main.go:** Folder picker check uses `IsMobile()`
 
@@ -487,7 +487,7 @@ field.
 **Verification:**
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 
@@ -589,7 +589,7 @@ post-refactoring structure.
 **Verification:**
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 
@@ -631,7 +631,7 @@ and ready for future development.
 After each phase:
 ```sh
 go build ./cmd/imgview
-go build ./cmd/tieview
+go build ./cmd/tie-view
 go test ./...
 ```
 

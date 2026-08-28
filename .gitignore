@@ -3,7 +3,7 @@
 fyne-cross/*
 package/*
 /imgview
-/tieview
+/tie-view
 /imgview.debug
 *.apk
 *.apk.idsig

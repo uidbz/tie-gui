@@ -11,7 +11,7 @@ import (
 
 	"fyne.io/fyne/v2/canvas"
 
-	"git.sr.ht/~uid/imgview/tagselection/trie"
+	"github.com/uidbz/tie-gui/tagselection/trie"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"

@@ -1,11 +1,11 @@
-# imgview / tieview — LLM Reference
+# imgview / tie-view — LLM Reference
 
 ## Repository layout
 
 | Path | What |
 |------|------|
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
-| `cmd/tieview/` | tie-network image viewer entry point |
+| `cmd/tie-view/` | tie-network image viewer entry point |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
 | `gallery/imageview.go` | Single-image display widget |
@@ -14,7 +14,7 @@
 | `gallery/apphelper.go` | Shared app bootstrap helpers (Phase 4) |
 | `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) |
 | `gallery/extension.go` | Extension interface documentation (Phase 6) |
-| `tagselection/` | Tag-picker widget used by tieview sidebar |
+| `tagselection/` | Tag-picker widget used by tie-view sidebar |
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
 | `mpvplayer/` | libmpv video player window |
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
@@ -37,8 +37,8 @@ toggle via `SetFullScreen`, and platform-dependent texture-cache lifetimes
 ```sh
 git submodule update --init   # first time only: fetch the Fyne fork
 go build ./cmd/imgview        # local viewer
-go build ./cmd/tieview        # tie-backed viewer
-go build -tags nompv ./cmd/imgview ./cmd/tieview   # without libmpv (no video)
+go build ./cmd/tie-view        # tie-backed viewer
+go build -tags nompv ./cmd/imgview ./cmd/tie-view   # without libmpv (no video)
 go test ./...
 ```
 
@@ -179,7 +179,7 @@ tiles on desktop, 150 on mobile.
 (JPEG only) → `ScaleImage(decoded, tileWidth*2)` (imaging **Linear** filter,
 not Lanczos) → JPEG quality 90 → write cache.
 
-**Remote (`tieview`):** `filehostThumbnailer.GetThumbnail` →
+**Remote (`tie-view`):** `filehostThumbnailer.GetThumbnail` →
 1. Check `tr.thumbHash` (pre-populated from query expand) → `GET filehost/<thumbHash>`
 2. On miss: download full blob → decode → scale → encode → `PUT filehost/upload/<thumbHash>` → `Set(imageHash, "thumbnail", thumbHash)` → `Set(imageHash, "dimensions", "WxH")`
 
@@ -193,7 +193,7 @@ into the same image's plain thumbnail.
 
 ## Image dimensions in tie metadata
 
-When tieview generates a thumbnail it writes:
+When tie-view generates a thumbnail it writes:
 - `(imageHash, "thumbnail", thumbHash)` — content address of the thumbnail blob
 - `(imageHash, "dimensions", "WxH")` — original image pixel dimensions, e.g. `"3840x2160"`
 
@@ -318,21 +318,21 @@ required because no widget is focused in the gallery grid on desktop.
 - **☰ Menu button** (bottom-right): Opens popup menu with options
   - Show/Hide filenames
   - (Future: more options)
-- **◀/▶ Toggle** (bottom-left, tieview only): Show/hide tag sidebar
+- **◀/▶ Toggle** (bottom-left, tie-view only): Show/hide tag sidebar
 - **Pagination** (bottom-center): Page navigation links and "Load Next Page" button at end of gallery
 
 **Default**: Filename labels are OFF by default (saves ~22px vertical space per row). Use ☰ menu → "Show filenames" to enable.
 
 ---
 
-## tieview navigation model
+## tie-view navigation model
 
 Directory entries are `tieDirReader` instances implementing `Openable`. Tapping
 one calls `browseDir(uid)` → `fsTree.showDirUID(uid, "")` — the virtual
 filesystem sidebar tree navigates, not the gallery grid. Both `tieDirReader`
 and `tieArchiveReader` also implement `PreviewProvider`, so their tiles show
 a content thumbnail (first image inside, folder-badged) and support swipe
-cycling; the static `folderIcon` in `cmd/tieview/folder.go` remains only as
+cycling; the static `folderIcon` in `cmd/tie-view/folder.go` remains only as
 the fallback for empty or unreadable collections.
 
 `tieArchiveReader` additionally implements `CoverProvider`: the tile's
@@ -343,7 +343,7 @@ miss the first member is extracted once (one full download) and uploaded as
 the cover via `StoreCoverThumbnail`, so the slow path runs once ever per
 archive and is shared by every machine. Full-archive downloads (cover misses
 and swipe cycling) are capped at 2 concurrent via `archiveFetchSem` in
-`cmd/tieview/tie.go` — each blob is held in memory for swipe cycling.
+`cmd/tie-view/tie.go` — each blob is held in memory for swipe cycling.
 
 Tag-based navigation uses `readFromTie(viewer, tc, include, exclude, "tag", browseDir)`.
 The query uses `Expand: true` so thumbnail hashes and image dimensions arrive
@@ -351,7 +351,7 @@ inline with no extra round-trips.
 
 ---
 
-## Tag sidebar (`cmd/tieview/main.go` — `makeTagSidebar`)
+## Tag sidebar (`cmd/tie-view/main.go` — `makeTagSidebar`)
 
 **Initial load:** `tc.Get("tags")` returns two relations:
 - `"all"` — every tag ever applied in the collection
@@ -377,7 +377,7 @@ snapshot without a selection-clearing reload.
 
 ---
 
-## Settings profiles (`cmd/tieview/settings.go`)
+## Settings profiles (`cmd/tie-view/settings.go`)
 
 Profiles are stored as a JSON array under the `"tie.profiles"` Preferences key.
 Active profile name under `"tie.activeProfile"`. Legacy flat keys
@@ -432,7 +432,7 @@ in a loop without a final `Refresh`, the list stays visually blank. Always use
 
 ---
 
-## Image tagger (`cmd/tieview/imagetagger.go`)
+## Image tagger (`cmd/tie-view/imagetagger.go`)
 
 `imageTagger` is a floating panel that overlays the single-image view and
 lets the user add and remove tags for the displayed image.
@@ -509,7 +509,7 @@ tagger's search trie up to date without a separate network request.
 
 ---
 
-## `tieReader` (`cmd/tieview/tie.go`)
+## `tieReader` (`cmd/tie-view/tie.go`)
 
 ```go
 type tieReader struct {

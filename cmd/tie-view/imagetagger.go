@@ -13,7 +13,7 @@ import (
 
 	"git.sr.ht/~uid/tie/client"
 
-	"git.sr.ht/~uid/imgview/tagselection"
+	"github.com/uidbz/tie-gui/tagselection"
 )
 
 // imageTagger is a floating panel that overlays the single-image view and

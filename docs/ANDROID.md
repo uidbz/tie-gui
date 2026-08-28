@@ -1,6 +1,6 @@
 # Android builds
 
-imgview and tieview both build as Android APKs with in-app libmpv video
+imgview and tie-view both build as Android APKs with in-app libmpv video
 playback (arm64-v8a). `./build-android.sh` links against a cross-compiled
 libmpv+ffmpeg vendored in `third_party/android-libs/` and bundles those native
 libraries into the APK. A libmpv-free build is available via `NOMPV=1`.
@@ -231,7 +231,7 @@ native `.so` files into the APK's `lib/arm64-v8a/`, `zipalign`, and re-sign
 (`fyne package`'s signature is invalidated by the edit). The debug key
 (`~/.android/debug.keystore`) is used unless `RELEASE=1` with `KEYSTORE` /
 `KEYSTORE_PASS` / `KEY_ALIAS` is set. The generated manifest already grants
-`INTERNET`, which tieview needs for streaming via `StreamURL()`.
+`INTERNET`, which tie-view needs for streaming via `StreamURL()`.
 
 Verify a built APK contains the libs and the app links libmpv:
 
