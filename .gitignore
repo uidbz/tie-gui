@@ -4,9 +4,14 @@ fyne-cross/*
 package/*
 /imgview
 /tie-view
+/tie-audio-player
+/cmd/tie-audio-player/tie-audio-player
 /imgview.debug
 *.apk
 *.apk.idsig
+
+# tie-audio-player test harness generated files
+/cmd/tie-audio-player/test-env/logs/
 
 # Cross-compiled libmpv + ffmpeg for Android; regenerate with ./vendor-android-libs.sh
 /third_party/android-libs/
