@@ -117,6 +117,12 @@ if [ "$NOMPV" != "1" ] && [ "$mpv_required" = "1" ]; then
     export CGO_LDFLAGS="-L$ABI_DIR ${CGO_LDFLAGS:-}"
 fi
 
+# apk_path: `fyne package` names the APK after the package's executable name,
+# converting hyphens to underscores (tie-view -> tie_view.apk).
+apk_path() {
+    echo "$ROOT/cmd/$1/${1//-/_}.apk"
+}
+
 # build <app> packages cmd/<app>/ into cmd/<app>/<app>.apk. fyne resolves the
 # icon relative to the package directory, so we run it from there.
 build() {
@@ -133,8 +139,9 @@ build() {
 
     echo "Building $app for $TARGET (this may take a while on first compile)..."
     ( cd "$ROOT/cmd/$app" && fyne "${args[@]}" )
-    local apk="$ROOT/cmd/$app/$app.apk"
-    echo "  -> cmd/$app/$app.apk"
+    local apk
+    apk="$(apk_path "$app")"
+    echo "  -> ${apk#$ROOT/}"
 
     # Inject libmpv + ffmpeg .so into the APK and re-sign.
     if [ "$NOMPV" != "1" ] && needs_mpv "$app"; then

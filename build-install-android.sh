@@ -105,7 +105,9 @@ install_app() {
     local app="$1"
     local id apk
     id="$(app_id "$app")"
-    apk="cmd/$app/$app.apk"
+    # `fyne package` converts hyphens to underscores in the APK name
+    # (tie-view -> tie_view.apk).
+    apk="cmd/$app/${app//-/_}.apk"
 
     if [ ! -f "$apk" ]; then
         echo "error: APK not found: $apk" >&2

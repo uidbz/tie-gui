@@ -1,9 +1,9 @@
 [Details]
-  Icon = "Icon.png"
-  Name = "tie-audio-player"
-  ID = "sr.ht.uid.tieaudioplayer"
-  Version = "1.0.0"
-  Build = 1
+Icon = "Icon.png"
+Name = "tie-audio-player"
+ID = "sr.ht.uid.tieaudioplayer"
+Version = "1.0.0"
+Build = 2
 
 [Migrations]
-  fyneDo = true
+fyneDo = true
