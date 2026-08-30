@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
-	"git.sr.ht/~uid/tie/client"
+	"github.com/uidbz/tie/client"
 )
 
 func TestBaseName(t *testing.T) {

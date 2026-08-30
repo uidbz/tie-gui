@@ -1,4 +1,8 @@
-# imgview / tie-view — LLM Reference
+# tie-gui — LLM Reference
+
+Monorepo of GUI clients for [tie](https://github.com/uidbz/tie) (triple store +
+content-addressed storage; data organized by tags). Most apps share a vendored
+Fyne fork — hence the monorepo.
 
 ## Repository layout
 
@@ -6,6 +10,9 @@
 |------|------|
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tie-view/` | tie-network image viewer entry point |
+| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted) |
+| `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui`, `widget/tablewidget` |
+| `cmd/tie-audio-player/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
 | `gallery/imageview.go` | Single-image display widget |
@@ -14,15 +21,20 @@
 | `gallery/apphelper.go` | Shared app bootstrap helpers (Phase 4) |
 | `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) |
 | `gallery/extension.go` | Extension interface documentation (Phase 6) |
-| `tagselection/` | Tag-picker widget used by tie-view sidebar |
+| `tagselection/` | Tag-picker widget used by tie-view sidebar, image tagger, and tie-fm tag panel |
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
 | `mpvplayer/` | libmpv video player window |
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
-The tie module is a pinned dependency (`v0.4.2`) fetched from the Go module
-proxy; no local checkout is needed. (It was previously referenced via a
-`replace` directive to a sibling `../tie` checkout — removed when v0.4.2 was
-tagged.)
+The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
+Go module proxy; no local checkout is needed. (It was previously referenced via
+a `replace` directive to a sibling `../tie` checkout — removed when v0.4.2 was
+tagged — and was imported as `git.sr.ht/~uid/tie` before the sourcehut→GitHub
+migration.)
+
+Note: the `gallery` library serves only `imgview` and `tie-view`; `tie-fm` and
+`tie-audio-player` have their own UI code and share only the `tagselection`
+widget (tie-fm) and the tie client dependency.
 
 The Fyne fork submodule must be checked out before building:
 `git clone --recurse-submodules …` or `git submodule update --init`. The
@@ -38,11 +50,13 @@ toggle via `SetFullScreen`, and platform-dependent texture-cache lifetimes
 git submodule update --init   # first time only: fetch the Fyne fork
 go build ./cmd/imgview        # local viewer
 go build ./cmd/tie-view        # tie-backed viewer
+go build ./cmd/tie-fm          # twin-panel file manager
+go build ./cmd/tie-audio-player  # tag-driven audio player
 go build -tags nompv ./cmd/imgview ./cmd/tie-view   # without libmpv (no video)
 go test ./...
 ```
 
-Both binaries require CGo (Fyne depends on OpenGL / system graphics). Video
+All binaries require CGo (Fyne depends on OpenGL / system graphics). Video
 playback and video thumbnails require libmpv (`-lmpv`); the `nompv` build tag
 selects a stub implementation in `mpvplayer/mpv_stub.go`. Android builds are
 now libmpv-backed too (arm64-v8a) — see `docs/ANDROID.md` and
@@ -51,6 +65,12 @@ now libmpv-backed too (arm64-v8a) — see `docs/ANDROID.md` and
 compiles under `!nompv` (not `!android`), with EGL vs GLFW glue split into
 `mpvplayer/platform_android.go` / `platform_desktop.go`. The
 `migrated_fynedo` build tag is implicit in the vendored Fyne fork.
+
+The Android scripts (`build-android.sh`, `install-android.sh`,
+`build-install-android.sh`) cover imgview, tie-view, and tie-audio-player. The
+audio player bundles no native libs (it's a pwplay-server remote client), so
+the scripts skip the libmpv vendored-libs check and the bundling step for it
+(`needs_mpv` gate in `build-android.sh`).
 
 ---
 

@@ -14,10 +14,10 @@ import (
 	"strconv"
 	"strings"
 
-	"git.sr.ht/~uid/tie/client"
-	"git.sr.ht/~uid/tie/io/archivelib"
-	"git.sr.ht/~uid/tie/io/getlib"
-	"git.sr.ht/~uid/tie/io/putlib"
+	"github.com/uidbz/tie/client"
+	"github.com/uidbz/tie/io/archivelib"
+	"github.com/uidbz/tie/io/getlib"
+	"github.com/uidbz/tie/io/putlib"
 
 	"github.com/uidbz/tie-gui/gallery"
 )

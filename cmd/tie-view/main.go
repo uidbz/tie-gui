@@ -15,8 +15,8 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
-	"git.sr.ht/~uid/conf"
-	"git.sr.ht/~uid/tie/client"
+	"github.com/uidbz/conf"
+	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/mpvplayer"

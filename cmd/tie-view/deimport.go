@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"git.sr.ht/~uid/tie/client"
+	"github.com/uidbz/tie/client"
 )
 
 // deimportFile removes every metadata triple for hash (filename, media-type,

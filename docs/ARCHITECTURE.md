@@ -1,6 +1,6 @@
 # Architecture Overview
 
-This document provides a technical overview of the imgview/tie-view architecture, design patterns, and implementation details.
+This document provides a technical overview of the tie-gui architecture — the shared gallery library behind imgview and tie-view, and the design patterns used across the clients (tie-fm, tie-audio-player).
 
 ## Table of Contents
 
@@ -20,17 +20,21 @@ This document provides a technical overview of the imgview/tie-view architecture
 ### High-Level Design
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Application Layer                         │
-│  ┌────────────────────┐        ┌────────────────────┐       │
-│  │   cmd/imgview      │        │   cmd/tie-view      │       │
-│  │ ┌────────────────┐ │        │ ┌────────────────┐ │       │
-│  │ │ File system    │ │        │ │ Tie client     │ │       │
-│  │ │ Archive reader │ │        │ │ Tag sidebar    │ │       │
-│  │ │ URI adapter    │ │        │ │ Image tagger   │ │       │
-│  │ └────────────────┘ │        │ └────────────────┘ │       │
-│  └────────────────────┘        └────────────────────┘       │
-└──────────────┬──────────────────────────┬───────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Application Layer                             │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐   │
+│  │  cmd/imgview     │  │  cmd/tie-view    │  │  cmd/tie-fm      │   │
+│  │ ┌──────────────┐ │  │ ┌──────────────┐ │  │ ┌──────────────┐ │   │
+│  │ │ File system  │ │  │ │ Tie client   │ │  │ │ Twin panels  │ │   │
+│  │ │ Archive      │ │  │ │ Tag sidebar  │ │  │ │ Tag panel    │ │   │
+│  │ │ reader       │ │  │ │ Image tagger │ │  │ │ fs providers │ │   │
+│  │ └──────────────┘ │  │ └──────────────┘ │  │ └──────────────┘ │   │
+│  └──────────────────┘  └──────────────────┘  └──────────────────┘   │
+│  ┌──────────────────┐                                               │
+│  │ cmd/tie-audio-   │  (cmd/tie-fm and cmd/tie-audio-player do not  │
+│  │    player        │   use the gallery library; tie-fm shares the  │
+│  └──────────────────┘   tagselection widget with tie-view)          │
+└──────────────┬───────────────────────────┬──────────────────────────┘
                │   Extension API           │
                │   (CustomReader,          │
                │    Thumbnailer, etc.)     │
@@ -51,6 +55,8 @@ This document provides a technical overview of the imgview/tie-view architecture
                         ┌─────────────┐
                         │    Fyne     │
                         │  Framework  │
+                        │ (vendored   │
+                        │    fork)    │
                         └─────────────┘
 ```
 
@@ -569,6 +575,5 @@ Used for: star toggles, tag add/remove
 ## Further Reading
 
 - [Extension API Documentation](../gallery/extension.go)
-- [Refactoring Progress](refactoring-progress.md)
-- [Design Decisions](refactoring-design-decisions.md)
+- [Memory & Performance Optimizations](OPTIMIZATIONS.md)
 - [CLAUDE.md](../CLAUDE.md) — Comprehensive codebase reference

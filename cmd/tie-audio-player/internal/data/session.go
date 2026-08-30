@@ -4,7 +4,7 @@ package data
 
 import (
 	pwclient "github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/pwplay/client"
-	tieclient "git.sr.ht/~uid/tie/client"
+	tieclient "github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/playback"

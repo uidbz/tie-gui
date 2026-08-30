@@ -44,24 +44,25 @@ imgview builds against a modified Fyne fork, vendored as a **git submodule** at 
 ```sh
 # Clone repository including the fyne fork submodule (required)
 git clone --recurse-submodules https://github.com/uidbz/tie-gui
-cd imgview
+cd tie-gui
 
 # …or fetch the submodule after a plain clone:
 git submodule update --init
 
-# Build both applications
+# Build the applications
 go build ./cmd/imgview
 go build ./cmd/tie-view
+go build ./cmd/tie-fm
+go build ./cmd/tie-audio-player
 
-# Without libmpv (no video support):
+# Without libmpv (no video support in imgview/tie-view):
 go build -tags nompv ./cmd/imgview ./cmd/tie-view
 
 # Run tests
 go test ./...
 
 # Optional: Install to $GOPATH/bin
-go install ./cmd/imgview
-go install ./cmd/tie-view
+go install ./cmd/...
 ```
 
 ### Verify Installation
@@ -101,7 +102,7 @@ imgview ~/Downloads/comics.cbr
 
 ### tie-view — Network Content (Requires tie)
 
-**Note:** tie-view requires a [tie](https://git.sr.ht/~uid/tie) daemon. Skip this section if you don't have tie set up.
+**Note:** tie-view requires a [tie](https://github.com/uidbz/tie) daemon. Skip this section if you don't have tie set up.
 
 ```sh
 # Query by tag
@@ -121,6 +122,36 @@ tie-view -config production.toml -tag work
 - Click image to view fullscreen
 - Tap image (or swipe up on mobile) to open tag panel
 - Add/remove tags, toggle favorites (★/☆)
+
+### tie-fm — File Manager
+
+```sh
+tie-fm
+```
+
+**Expected:** Twin-panel window. Browse local paths on one side and `tie:`
+locations on the other.
+
+**Features:**
+- Tag panel filters listings by include/exclude tags; switches to related
+  (co-occurring) tags once a filter is chosen
+- Select rows to view/edit their tags (directories are taggable too)
+- ☆/★ favorite tags, stored in the tie collection and shared with tie-view
+- Copy/move/delete with progress view; USB drives and MTP phones under
+  removable devices (Linux)
+
+**Removable-device dependencies (Linux, optional):**
+`libmtp-dev pkg-config` at build time; `udisks2` and
+`gvfs-backends gvfs-fuse` at runtime. Without them tie-fm still builds and
+runs — MTP devices simply report as unsupported.
+
+### tie-audio-player — Music in tie
+
+```sh
+tie-audio-player
+```
+
+**Expected:** Player window; browse the collection's audio by tag and play.
 
 ---
 
@@ -313,14 +344,12 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 
 - Read [ARCHITECTURE.md](ARCHITECTURE.md) for system design
 - See [gallery/extension.go](../gallery/extension.go) for extension API
-- Review [refactoring-progress.md](refactoring-progress.md) for recent improvements
 - Check [CLAUDE.md](../CLAUDE.md) for comprehensive codebase reference
 
 ### Getting Help
 
-- **Bug reports:** [Issue Tracker](https://todo.sr.ht/~uid/imgview)
+- **Bug reports:** [GitHub Issues](https://github.com/uidbz/tie-gui/issues)
 - **Questions:** Check existing issues or create new one
-- **Contributing:** See README.md development section
 
 ---
 

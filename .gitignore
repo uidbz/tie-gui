@@ -1,11 +1,15 @@
 *.kate-swp
 *.swp
+*.test
+*.out
 fyne-cross/*
 package/*
 /imgview
 /tie-view
+/tie-fm
 /tie-audio-player
 /cmd/tie-audio-player/tie-audio-player
+/cmd/tie-fm/tie-fm
 /imgview.debug
 *.apk
 *.apk.idsig

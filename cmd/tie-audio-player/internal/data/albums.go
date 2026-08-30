@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"git.sr.ht/~uid/tie/client"
-	"git.sr.ht/~uid/tie/io/getlib"
+	"github.com/uidbz/tie/client"
+	"github.com/uidbz/tie/io/getlib"
 )
 
 // PlaylistTag is the tie tag every saved playlist carries, so playlists are a

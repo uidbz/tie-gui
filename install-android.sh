@@ -1,16 +1,15 @@
 #!/bin/bash
-# Install imgview and/or tie-view APKs on a connected Android device via adb.
+# Install the tie-gui APKs on a connected Android device via adb.
 #
-# By default it installs both APKs produced by `build-android.sh`
-# (cmd/imgview/imgview.apk and cmd/tie-view/tie-view.apk). Pass an app name as
-# the first argument to install just one. Override the APK path via the APK
-# env var (only meaningful when installing a single app). Pass a device serial
-# via DEVICE (see `adb devices`).
+# By default it installs all APKs produced by `build-android.sh`
+# (cmd/<app>/<app>.apk). Pass an app name as the first argument to install just
+# one. Override the APK path via the APK env var (only meaningful when
+# installing a single app). Pass a device serial via DEVICE (see `adb devices`).
 #
 # Usage:
-#   ./install-android.sh                       # install both APKs
+#   ./install-android.sh                       # install all APKs
 #   ./install-android.sh imgview               # install just imgview
-#   ./install-android.sh tie-view               # install just tie-view
+#   ./install-android.sh tie-audio-player      # install just tie-audio-player
 #   DEVICE=2ab30210670b7ece ./install-android.sh
 #   LAUNCH=1 ./install-android.sh              # also launch each app after install
 
@@ -41,7 +40,8 @@ app_id() {
     case "$1" in
         imgview) echo "sr.ht.uid.imgview" ;;
         tie-view) echo "sr.ht.uid.tieview" ;;
-        *) echo "error: unknown app '$1' (expected imgview or tie-view)" >&2; exit 1 ;;
+        tie-audio-player) echo "sr.ht.uid.tieaudioplayer" ;;
+        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio-player)" >&2; exit 1 ;;
     esac
 }
 
@@ -71,6 +71,7 @@ if [ "$#" -ge 1 ]; then
 else
     install_app imgview
     install_app tie-view
+    install_app tie-audio-player
 fi
 
 echo "Done."

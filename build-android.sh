@@ -1,27 +1,32 @@
 #!/bin/bash
-# Build imgview and tie-view as Android APKs using `fyne package`.
+# Build the tie-gui apps as Android APKs using `fyne package`.
 #
-# This is the full, libmpv-backed build: in-app video playback and real video
-# thumbnails work on Android, matching desktop. It links against a libmpv (plus
-# ffmpeg) cross-compiled for arm64-v8a and vendored under
+# imgview and tie-view get the full, libmpv-backed build: in-app video playback
+# and real video thumbnails work on Android, matching desktop. They link against
+# a libmpv (plus ffmpeg) cross-compiled for arm64-v8a and vendored under
 # third_party/android-libs/ (see docs/ANDROID.md for how those were produced).
 # After `fyne package` links the app, bundle-native-libs.sh injects the native
 # .so files into the APK's lib/arm64-v8a/ and re-signs it.
 #
-# For a libmpv-free build (no video, no native libs to bundle), pass
-# NOMPV=1 — it adds `-tags nompv` and skips the bundling step.
+# tie-audio-player is a remote client (it controls a pwplay-server over HTTP),
+# so it needs no native libraries — a plain `fyne package` build. (When the
+# local libmpv playback backend lands there, it will join the bundling path.)
+#
+# For a libmpv-free build of the viewers (no video, no native libs to bundle),
+# pass NOMPV=1 — it adds `-tags nompv` and skips the bundling step.
 #
 # Requirements:
 #   - the fyne command: go install fyne.io/fyne/v2/cmd/fyne@latest
 #   - Android SDK + NDK, with ANDROID_HOME / ANDROID_NDK_HOME set (or the
 #     defaults below adjusted to your machine)
 #   - the fyne fork submodule checked out: git submodule update --init
-#   - vendored native libs in third_party/android-libs/ (unless NOMPV=1)
+#   - vendored native libs in third_party/android-libs/ (viewers only, unless NOMPV=1)
 #
 # Usage:
-#   ./build-android.sh                    # build both APKs, arm64, with libmpv
-#   ./build-android.sh imgview            # build just one (imgview or tie-view)
-#   NOMPV=1 ./build-android.sh            # libmpv-free build (no video)
+#   ./build-android.sh                    # build all APKs, arm64, with libmpv
+#   ./build-android.sh imgview            # build just one app
+#   ./build-android.sh tie-audio-player   # (no libmpv involved either way)
+#   NOMPV=1 ./build-android.sh            # libmpv-free viewer build (no video)
 #   RELEASE=1 ./build-android.sh          # release build (signed)
 
 set -euo pipefail
@@ -31,6 +36,40 @@ ROOT="$PWD"
 
 TARGET="${TARGET:-android/arm64}"
 NOMPV="${NOMPV:-0}"
+
+# app_id for each buildable command.
+app_id() {
+    case "$1" in
+        imgview) echo "sr.ht.uid.imgview" ;;
+        tie-view) echo "sr.ht.uid.tieview" ;;
+        tie-audio-player) echo "sr.ht.uid.tieaudioplayer" ;;
+        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio-player)" >&2; exit 1 ;;
+    esac
+}
+
+# needs_mpv: the viewers link libmpv and need the vendored native libs;
+# tie-audio-player is a remote client and bundles none.
+needs_mpv() {
+    case "$1" in
+        imgview|tie-view) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Decide which apps to build.
+if [ "$#" -ge 1 ]; then
+    APPS=("$@")
+else
+    APPS=(imgview tie-view tie-audio-player)
+fi
+
+# Does any requested app link libmpv?
+mpv_required=0
+for app in "${APPS[@]}"; do
+    if needs_mpv "$app"; then
+        mpv_required=1
+    fi
+done
 
 # Discover the Android SDK/NDK generically (see android-env.sh). Override by
 # exporting ANDROID_HOME / ANDROID_NDK_HOME before running this script.
@@ -67,7 +106,7 @@ fi
 
 # For the libmpv-backed build, point cgo at the vendored headers/libs so the
 # app .so links against libmpv (resolved at runtime from the APK lib dir).
-if [ "$NOMPV" != "1" ]; then
+if [ "$NOMPV" != "1" ] && [ "$mpv_required" = "1" ]; then
     if [ ! -f "$ABI_DIR/libmpv.so" ]; then
         echo "error: $ABI_DIR/libmpv.so not found." >&2
         echo "  Vendor the native libs first: ./vendor-android-libs.sh" >&2
@@ -77,15 +116,6 @@ if [ "$NOMPV" != "1" ]; then
     export CGO_CFLAGS="-I$VENDOR/include ${CGO_CFLAGS:-}"
     export CGO_LDFLAGS="-L$ABI_DIR ${CGO_LDFLAGS:-}"
 fi
-
-# app_id for each buildable command.
-app_id() {
-    case "$1" in
-        imgview) echo "sr.ht.uid.imgview" ;;
-        tie-view) echo "sr.ht.uid.tieview" ;;
-        *) echo "error: unknown app '$1' (expected imgview or tie-view)" >&2; exit 1 ;;
-    esac
-}
 
 # build <app> packages cmd/<app>/ into cmd/<app>/<app>.apk. fyne resolves the
 # icon relative to the package directory, so we run it from there.
@@ -107,17 +137,14 @@ build() {
     echo "  -> cmd/$app/$app.apk"
 
     # Inject libmpv + ffmpeg .so into the APK and re-sign.
-    if [ "$NOMPV" != "1" ]; then
+    if [ "$NOMPV" != "1" ] && needs_mpv "$app"; then
         RELEASE="${RELEASE:-0}" "$ROOT/bundle-native-libs.sh" "$apk"
     fi
 }
 
-if [ "$#" -ge 1 ]; then
-    build "$1"
-else
-    build imgview
-    build tie-view
-fi
+for app in "${APPS[@]}"; do
+    build "$app"
+done
 
 echo
 echo "APKs built:"

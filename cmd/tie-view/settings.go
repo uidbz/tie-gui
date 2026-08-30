@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 
-	"git.sr.ht/~uid/tie/client"
+	"github.com/uidbz/tie/client"
 )
 
 const (

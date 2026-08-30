@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"git.sr.ht/~uid/tie/client"
+	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/gallery"
 )

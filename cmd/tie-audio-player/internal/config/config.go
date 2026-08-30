@@ -5,8 +5,8 @@ package config
 import (
 	"strings"
 
-	"git.sr.ht/~uid/conf"
-	tieclient "git.sr.ht/~uid/tie/client"
+	"github.com/uidbz/conf"
+	tieclient "github.com/uidbz/tie/client"
 )
 
 const (

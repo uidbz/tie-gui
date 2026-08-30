@@ -3,7 +3,9 @@ ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: all install submodule imgview tie-view clean
+APPS := imgview tie-view tie-fm tie-audio-player
+
+.PHONY: all install submodule $(APPS) test clean
 
 all: install
 
@@ -12,16 +14,15 @@ submodule:
 	git submodule update --init --recursive
 
 install: submodule
-	go install ./cmd/imgview ./cmd/tie-view
-	@echo "Installed imgview and tie-view to $(GOBIN)"
+	go install $(addprefix ./cmd/,$(APPS))
+	@echo "Installed $(APPS) to $(GOBIN)"
 
-imgview: submodule
-	go install ./cmd/imgview
-	@echo "Installed imgview to $(GOBIN)"
+$(APPS): submodule
+	go install ./cmd/$@
+	@echo "Installed $@ to $(GOBIN)"
 
-tie-view: submodule
-	go install ./cmd/tie-view
-	@echo "Installed tie-view to $(GOBIN)"
+test:
+	go test ./...
 
 clean:
-	rm -f $(GOBIN)/imgview $(GOBIN)/tie-view
+	rm -f $(addprefix $(GOBIN)/,$(APPS))
