@@ -9,8 +9,8 @@ import (
 
 	tieclient "github.com/uidbz/tie/client"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/config"
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/tieconfig"
 )
 

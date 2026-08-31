@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring up the full tie-audio-player playback test environment:
+# Bring up the full tie-audio playback test environment:
 #   1. the tie stack (triplestore :2161 + filehost :2162 + seeded audio albums),
 #      delegated to the tie repo's own test-env start.sh (idempotent);
 #   2. a pwplay-server on :8080 that streams the filehost blobs over HTTP.

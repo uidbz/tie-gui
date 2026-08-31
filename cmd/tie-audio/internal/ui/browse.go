@@ -11,7 +11,7 @@ import (
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/tagselection"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
 // browsePage is the album cover wall: a gallery grid driven by a tie tag

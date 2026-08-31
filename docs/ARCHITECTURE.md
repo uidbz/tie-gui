@@ -1,6 +1,6 @@
 # Architecture Overview
 
-This document provides a technical overview of the tie-gui architecture — the shared gallery library behind imgview and tie-view, and the design patterns used across the clients (tie-fm, tie-audio-player).
+This document provides a technical overview of the tie-gui architecture — the shared gallery library behind imgview and tie-view, and the design patterns used across the clients (tie-fm, tie-audio).
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ This document provides a technical overview of the tie-gui architecture — the 
 │  │ └──────────────┘ │  │ └──────────────┘ │  │ └──────────────┘ │   │
 │  └──────────────────┘  └──────────────────┘  └──────────────────┘   │
 │  ┌──────────────────┐                                               │
-│  │ cmd/tie-audio-   │  (cmd/tie-fm and cmd/tie-audio-player do not  │
+│  │ cmd/tie-audio-   │  (cmd/tie-fm and cmd/tie-audio do not  │
 │  │    player        │   use the gallery library; tie-fm shares the  │
 │  └──────────────────┘   tagselection widget with tie-view)          │
 └──────────────┬───────────────────────────┬──────────────────────────┘

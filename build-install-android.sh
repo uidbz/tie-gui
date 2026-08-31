@@ -55,8 +55,8 @@ app_id() {
     case "$1" in
         imgview) echo "sr.ht.uid.imgview" ;;
         tie-view) echo "sr.ht.uid.tieview" ;;
-        tie-audio-player) echo "sr.ht.uid.tieaudioplayer" ;;
-        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio-player)" >&2; exit 1 ;;
+        tie-audio) echo "github.com.uidbz.tieaudio" ;;
+        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio)" >&2; exit 1 ;;
     esac
 }
 
@@ -65,7 +65,7 @@ APPS_TO_BUILD=()
 if [ "$#" -ge 1 ]; then
     APPS_TO_BUILD=("$@")
 else
-    APPS_TO_BUILD=(imgview tie-view tie-audio-player)
+    APPS_TO_BUILD=(imgview tie-view tie-audio)
 fi
 
 # Delegate the build phase to build-android.sh so the libmpv CGo wiring

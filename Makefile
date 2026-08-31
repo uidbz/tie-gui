@@ -3,7 +3,7 @@ ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
 endif
 
-APPS := imgview tie-view tie-fm tie-audio-player
+APPS := imgview tie-view tie-fm tie-audio
 
 .PHONY: all install submodule $(APPS) test clean
 

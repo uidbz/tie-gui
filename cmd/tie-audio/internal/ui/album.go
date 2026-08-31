@@ -11,8 +11,8 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/config"
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
 // openAlbum loads an album's tracks off the UI goroutine, then shows the track

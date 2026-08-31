@@ -8,7 +8,7 @@
 # After `fyne package` links the app, bundle-native-libs.sh injects the native
 # .so files into the APK's lib/arm64-v8a/ and re-signs it.
 #
-# tie-audio-player is a remote client (it controls a pwplay-server over HTTP),
+# tie-audio is a remote client (it controls a pwplay-server over HTTP),
 # so it needs no native libraries — a plain `fyne package` build. (When the
 # local libmpv playback backend lands there, it will join the bundling path.)
 #
@@ -25,7 +25,7 @@
 # Usage:
 #   ./build-android.sh                    # build all APKs, arm64, with libmpv
 #   ./build-android.sh imgview            # build just one app
-#   ./build-android.sh tie-audio-player   # (no libmpv involved either way)
+#   ./build-android.sh tie-audio   # (no libmpv involved either way)
 #   NOMPV=1 ./build-android.sh            # libmpv-free viewer build (no video)
 #   RELEASE=1 ./build-android.sh          # release build (signed)
 
@@ -42,13 +42,13 @@ app_id() {
     case "$1" in
         imgview) echo "sr.ht.uid.imgview" ;;
         tie-view) echo "sr.ht.uid.tieview" ;;
-        tie-audio-player) echo "sr.ht.uid.tieaudioplayer" ;;
-        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio-player)" >&2; exit 1 ;;
+        tie-audio) echo "github.com.uidbz.tieaudio" ;;
+        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio)" >&2; exit 1 ;;
     esac
 }
 
 # needs_mpv: the viewers link libmpv and need the vendored native libs;
-# tie-audio-player is a remote client and bundles none.
+# tie-audio is a remote client and bundles none.
 needs_mpv() {
     case "$1" in
         imgview|tie-view) return 0 ;;
@@ -60,7 +60,7 @@ needs_mpv() {
 if [ "$#" -ge 1 ]; then
     APPS=("$@")
 else
-    APPS=(imgview tie-view tie-audio-player)
+    APPS=(imgview tie-view tie-audio)
 fi
 
 # Does any requested app link libmpv?

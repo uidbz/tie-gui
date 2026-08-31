@@ -4,9 +4,9 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/config"
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/ui"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/ui"
 )
 
 func main() {
@@ -14,7 +14,7 @@ func main() {
 	session := data.NewSession(cfg)
 
 	a := app.New()
-	w := a.NewWindow("tie-audio-player")
+	w := a.NewWindow("tie-audio")
 	root := ui.NewApp(w, session)
 	w.SetContent(root.Root())
 	w.Resize(fyne.NewSize(1000, 700))

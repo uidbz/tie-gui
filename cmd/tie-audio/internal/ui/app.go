@@ -1,4 +1,4 @@
-// Package ui builds the tie-audio-player Fyne interface: the album browser,
+// Package ui builds the tie-audio Fyne interface: the album browser,
 // album/track views, the now-playing queue, and settings.
 package ui
 
@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
 // shellWindow wraps the real window so every SetContent keeps the transport bar

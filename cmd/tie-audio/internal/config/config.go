@@ -1,4 +1,4 @@
-// Package config loads and persists tie-audio-player's own settings and
+// Package config loads and persists tie-audio's own settings and
 // resolves the tie client configuration it depends on.
 package config
 
@@ -10,12 +10,12 @@ import (
 )
 
 const (
-	appName    = "tie-audio-player"
+	appName    = "tie-audio"
 	configFile = "config.toml"
 )
 
 // AppConfig is persisted to the user config dir
-// (e.g. ~/.config/tie-audio-player/config.toml).
+// (e.g. ~/.config/tie-audio/config.toml).
 type AppConfig struct {
 	// PwplayServer is the base URL of the pwplay-server that performs playback.
 	PwplayServer string

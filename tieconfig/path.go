@@ -1,7 +1,7 @@
 // Package tieconfig loads, resolves, saves and edits the tie *client* config
 // (which tie server/collection/filehosts to use) for the GUI apps. It centralizes
 // the Android-safe storage location and the in-app settings editor so tie-view
-// and tie-audio-player share one implementation.
+// and tie-audio share one implementation.
 package tieconfig
 
 import (

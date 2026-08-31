@@ -10,7 +10,7 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
 // AudioAlbumItem is a cover-wall tile backed by a tie audio album. It is not

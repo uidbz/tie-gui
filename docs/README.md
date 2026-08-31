@@ -1,7 +1,7 @@
 # Documentation
 
 User and developer documentation for the tie-gui clients
-(imgview, tie-view, tie-fm, tie-audio-player).
+(imgview, tie-view, tie-fm, tie-audio).
 
 ## For users
 

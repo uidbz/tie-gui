@@ -3,11 +3,11 @@
 package data
 
 import (
-	pwclient "github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/pwplay/client"
+	pwclient "github.com/uidbz/tie-gui/cmd/tie-audio/internal/pwplay/client"
 	tieclient "github.com/uidbz/tie/client"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/config"
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/playback"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
 
 // Session bundles the app config with the live tie and pwplay clients plus the

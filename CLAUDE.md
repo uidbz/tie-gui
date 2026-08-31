@@ -12,7 +12,7 @@ Fyne fork — hence the monorepo.
 | `cmd/tie-view/` | tie-network image viewer entry point |
 | `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted) |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui`, `widget/tablewidget` |
-| `cmd/tie-audio-player/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
+| `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
 | `gallery/imageview.go` | Single-image display widget |
@@ -33,7 +33,7 @@ tagged — and was imported as `git.sr.ht/~uid/tie` before the sourcehut→GitHu
 migration.)
 
 Note: the `gallery` library serves only `imgview` and `tie-view`; `tie-fm` and
-`tie-audio-player` have their own UI code and share only the `tagselection`
+`tie-audio` have their own UI code and share only the `tagselection`
 widget (tie-fm) and the tie client dependency.
 
 The Fyne fork submodule must be checked out before building:
@@ -51,7 +51,7 @@ git submodule update --init   # first time only: fetch the Fyne fork
 go build ./cmd/imgview        # local viewer
 go build ./cmd/tie-view        # tie-backed viewer
 go build ./cmd/tie-fm          # twin-panel file manager
-go build ./cmd/tie-audio-player  # tag-driven audio player
+go build ./cmd/tie-audio  # tag-driven audio player
 go build -tags nompv ./cmd/imgview ./cmd/tie-view   # without libmpv (no video)
 go test ./...
 ```
@@ -67,7 +67,7 @@ compiles under `!nompv` (not `!android`), with EGL vs GLFW glue split into
 `migrated_fynedo` build tag is implicit in the vendored Fyne fork.
 
 The Android scripts (`build-android.sh`, `install-android.sh`,
-`build-install-android.sh`) cover imgview, tie-view, and tie-audio-player. The
+`build-install-android.sh`) cover imgview, tie-view, and tie-audio. The
 audio player bundles no native libs (it's a pwplay-server remote client), so
 the scripts skip the libmpv vendored-libs check and the bundling step for it
 (`needs_mpv` gate in `build-android.sh`).

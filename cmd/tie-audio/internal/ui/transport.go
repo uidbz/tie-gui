@@ -10,8 +10,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/playback"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
 
 // pollInterval is how often the transport bar polls the backend. pwplay has no

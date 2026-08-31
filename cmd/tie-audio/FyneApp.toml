@@ -1,7 +1,7 @@
 [Details]
 Icon = "Icon.png"
-Name = "tie-audio-player"
-ID = "sr.ht.uid.tieaudioplayer"
+Name = "tie-audio"
+ID = "github.com.uidbz.tieaudio"
 Version = "1.0.0"
 Build = 2
 

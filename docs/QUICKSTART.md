@@ -53,7 +53,7 @@ git submodule update --init
 go build ./cmd/imgview
 go build ./cmd/tie-view
 go build ./cmd/tie-fm
-go build ./cmd/tie-audio-player
+go build ./cmd/tie-audio
 
 # Without libmpv (no video support in imgview/tie-view):
 go build -tags nompv ./cmd/imgview ./cmd/tie-view
@@ -145,10 +145,10 @@ locations on the other.
 `gvfs-backends gvfs-fuse` at runtime. Without them tie-fm still builds and
 runs — MTP devices simply report as unsupported.
 
-### tie-audio-player — Music in tie
+### tie-audio — Music in tie
 
 ```sh
-tie-audio-player
+tie-audio
 ```
 
 **Expected:** Player window; browse the collection's audio by tag and play.

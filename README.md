@@ -15,7 +15,7 @@ These clients are how you browse, view, play, and organize that data.
 | **imgview** | Local-filesystem image viewer. Directory browsing, archive support (zip, rar, tar, 7z, cbr, cbz), and video playback via libmpv. Works without tie. |
 | **tie-view** | Network image viewer for tie collections. Tag filtering with include/exclude semantics, co-tag refinement, in-app image tagging, virtual filesystem navigation, server-cached thumbnails. |
 | **tie-fm** | Twin-panel file manager. Local files and `tie:` locations side by side; copy/move/delete locally, tag files *and directories* in tie, browse USB drives and MTP phones. |
-| **tie-audio-player** | Tag-driven audio player for tie collections. |
+| **tie-audio** | Tag-driven audio player for tie collections. |
 
 All four are built on the [Fyne](https://fyne.io) toolkit and run on Linux,
 Windows, macOS, and Android.
@@ -28,7 +28,7 @@ cmd/
 ├── tie-view/           tie network image viewer entry point
 ├── tie-fm/             twin-panel file manager entry point
 │   └── internal/       config, fs providers (local/tie/mtp), UI, table widget
-└── tie-audio-player/   audio player entry point
+└── tie-audio/   audio player entry point
 gallery/                shared gallery library: layout engine, tile widget,
                         image view, platform abstraction, config
 tagselection/           tag-picker widget (used by tie-view and tie-fm)
@@ -68,7 +68,7 @@ git submodule update --init
 go build ./cmd/imgview            # local image viewer
 go build ./cmd/tie-view           # tie network viewer
 go build ./cmd/tie-fm             # file manager
-go build ./cmd/tie-audio-player   # audio player
+go build ./cmd/tie-audio   # audio player
 
 # Without libmpv (no video):
 go build -tags nompv ./cmd/imgview ./cmd/tie-view
@@ -81,7 +81,7 @@ go test ./...
 > **not** work — the `replace` directive points into the git submodule,
 > which module-proxy downloads do not contain. Build from a clone as above.
 
-**Android:** imgview, tie-view, and tie-audio-player package as arm64-v8a
+**Android:** imgview, tie-view, and tie-audio package as arm64-v8a
 APKs (the viewers with in-app libmpv playback; the audio player is a plain
 remote-client build). See [docs/ANDROID.md](docs/ANDROID.md).
 
@@ -122,10 +122,10 @@ Favorite tags (☆/★) are stored in the tie collection and shared with the
 other clients. Copy/move progress is shown in-app; USB storage and MTP
 phones appear under removable devices (Linux).
 
-### tie-audio-player — music in tie
+### tie-audio — music in tie
 
 ```sh
-tie-audio-player    # browse and play the collection's audio by tag
+tie-audio    # browse and play the collection's audio by tag
 ```
 
 ## Configuration

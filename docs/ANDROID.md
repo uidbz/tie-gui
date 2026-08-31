@@ -5,7 +5,7 @@ playback (arm64-v8a). `./build-android.sh` links against a cross-compiled
 libmpv+ffmpeg vendored in `third_party/android-libs/` and bundles those native
 libraries into the APK. A libmpv-free build is available via `NOMPV=1`.
 
-tie-audio-player also packages as an APK through the same script, but as a
+tie-audio also packages as an APK through the same script, but as a
 remote client (it controls a pwplay-server over HTTP) it bundles no native
 libraries — a plain `fyne package` build.
 
@@ -37,7 +37,7 @@ Build the APKs:
 git submodule update --init          # fetch the fyne fork (third_party/fyne)
 ./build-libmpv-android.sh            # first time: cross-compile + vendor libmpv
 ./build-android.sh                   # all three APKs, android/arm64, libmpv viewers
-./build-android.sh imgview           # just one (imgview, tie-view, tie-audio-player)
+./build-android.sh imgview           # just one (imgview, tie-view, tie-audio)
 NOMPV=1 ./build-android.sh           # libmpv-free viewer build (no video)
 RELEASE=1 ./build-android.sh         # signed release build
 ```

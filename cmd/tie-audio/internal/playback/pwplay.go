@@ -3,7 +3,7 @@ package playback
 import (
 	"time"
 
-	pwclient "github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/pwplay/client"
+	pwclient "github.com/uidbz/tie-gui/cmd/tie-audio/internal/pwplay/client"
 )
 
 // pwplayRemote drives a pwplay-server over HTTP, wrapping pwplay/client. It has

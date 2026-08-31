@@ -6,7 +6,7 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 
-	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
 // enableAlbumDragToQueue wires the gallery's tile-drag hooks so a cover can be

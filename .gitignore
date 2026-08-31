@@ -7,15 +7,15 @@ package/*
 /imgview
 /tie-view
 /tie-fm
-/tie-audio-player
-/cmd/tie-audio-player/tie-audio-player
+/tie-audio
+/cmd/tie-audio/tie-audio
 /cmd/tie-fm/tie-fm
 /imgview.debug
 *.apk
 *.apk.idsig
 
-# tie-audio-player test harness generated files
-/cmd/tie-audio-player/test-env/logs/
+# tie-audio test harness generated files
+/cmd/tie-audio/test-env/logs/
 
 # Cross-compiled libmpv + ffmpeg for Android; regenerate with ./vendor-android-libs.sh
 /third_party/android-libs/

@@ -9,7 +9,7 @@
 # Usage:
 #   ./install-android.sh                       # install all APKs
 #   ./install-android.sh imgview               # install just imgview
-#   ./install-android.sh tie-audio-player      # install just tie-audio-player
+#   ./install-android.sh tie-audio      # install just tie-audio
 #   DEVICE=2ab30210670b7ece ./install-android.sh
 #   LAUNCH=1 ./install-android.sh              # also launch each app after install
 
@@ -40,8 +40,8 @@ app_id() {
     case "$1" in
         imgview) echo "sr.ht.uid.imgview" ;;
         tie-view) echo "sr.ht.uid.tieview" ;;
-        tie-audio-player) echo "sr.ht.uid.tieaudioplayer" ;;
-        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio-player)" >&2; exit 1 ;;
+        tie-audio) echo "github.com.uidbz.tieaudio" ;;
+        *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio)" >&2; exit 1 ;;
     esac
 }
 
@@ -73,7 +73,7 @@ if [ "$#" -ge 1 ]; then
 else
     install_app imgview
     install_app tie-view
-    install_app tie-audio-player
+    install_app tie-audio
 fi
 
 echo "Done."
