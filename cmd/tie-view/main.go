@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -21,6 +20,7 @@ import (
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/mpvplayer"
 	"github.com/uidbz/tie-gui/tagselection"
+	"github.com/uidbz/tie-gui/tieconfig"
 	// "github.com/pkg/profile"
 )
 
@@ -45,8 +45,8 @@ func main() {
 		config.AdjustForMobile()
 	}
 
-	tieConfigPath = resolveTieConfigPath(gallery.NormalizeConfigPath(*tieConfigName))
-	tieConfig := loadTieConfig(tieConfigPath)
+	tieConfigPath = tieconfig.ResolvePath(*tieConfigName)
+	tieConfig := tieconfig.Load(*tieConfigName)
 	if tieHostName != "" {
 		if _, ok := tieConfig.FileHosts[tieHostName]; !ok {
 			fmt.Fprintf(os.Stderr, "No filehost %q in the tie config. Configured filehosts: %s\n", tieHostName, strings.Join(fileHostNames(tieConfig), ", "))
@@ -190,50 +190,6 @@ func main() {
 // tieConfigPath is the resolved path the tie config was loaded from and is
 // saved back to by the settings tab. Set once in main.
 var tieConfigPath string
-
-// tieConfigDir returns the directory tie configs live in. On Android
-// os.UserConfigDir has no $HOME to resolve, so we use $FILESDIR (the app's
-// internal files dir, set by Fyne's native code) — the same tree Fyne writes
-// preferences.json into, which Android Auto Backup restores on reinstall. On
-// desktop it is the normal user config dir, matching github.com/uidbz/conf.
-func tieConfigDir() string {
-	if d := os.Getenv("FILESDIR"); d != "" {
-		return filepath.Join(d, "tie")
-	}
-	d, _ := os.UserConfigDir()
-	return filepath.Join(d, "tie")
-}
-
-// resolveTieConfigPath turns the -config value into the concrete file path to
-// load from and save to. Empty is config.toml in tieConfigDir; a value with a
-// path separator is used verbatim; a bare name resolves under tieConfigDir so
-// it is writable even on Android (where conf's name search cannot write). The
-// name already carries its .toml suffix via gallery.NormalizeConfigPath.
-func resolveTieConfigPath(name string) string {
-	switch {
-	case name == "":
-		return filepath.Join(tieConfigDir(), "config.toml")
-	case strings.ContainsRune(name, '/'):
-		return name
-	default:
-		return filepath.Join(tieConfigDir(), name)
-	}
-}
-
-// loadTieConfig loads the tie client config from path via client.LoadConfig, so
-// an absolute path is read directly and normalizeConfig runs. A missing file
-// yields the built-in default (the settings tab then writes a real config to
-// path on the first Apply).
-func loadTieConfig(path string) client.Config {
-	c, err := client.LoadConfig(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			fmt.Println("Error reading tie config:", err)
-		}
-		return client.DefaultConfig()
-	}
-	return c
-}
 
 // fileHostNames returns the sorted names of the filehosts in a tie config,
 // for error messages.

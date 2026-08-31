@@ -3,10 +3,10 @@
 package config
 
 import (
-	"strings"
-
 	"github.com/uidbz/conf"
 	tieclient "github.com/uidbz/tie/client"
+
+	"github.com/uidbz/tie-gui/tieconfig"
 )
 
 const (
@@ -56,21 +56,9 @@ func Save(cfg AppConfig) error {
 	return conf.SaveToUserConfigDir(appName, configFile, &cfg)
 }
 
-// LoadTieConfig resolves the tie client config named by AppConfig.TieConfig,
-// mirroring imgview/tieview's resolution rules. Falls back to tie defaults.
+// LoadTieConfig resolves the tie client config named by AppConfig.TieConfig via
+// the shared tieconfig loader (Android-safe path, path-aware, normalized),
+// matching tie-view. Falls back to tie defaults when no config file exists.
 func LoadTieConfig(name string) tieclient.Config {
-	tieConfig := tieclient.Config{}
-	var err error
-	switch {
-	case name == "":
-		_, err = conf.LoadFromUserConfigDir("tie", "config.toml", &tieConfig)
-	case strings.ContainsRune(name, '/'):
-		err = conf.ReadConfig(name, &tieConfig)
-	default:
-		_, err = conf.LoadConfig("tie", name, &tieConfig)
-	}
-	if err != nil {
-		return tieclient.DefaultConfig()
-	}
-	return tieConfig
+	return tieconfig.Load(name)
 }

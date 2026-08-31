@@ -7,8 +7,11 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	tieclient "github.com/uidbz/tie/client"
+
 	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio-player/internal/data"
+	"github.com/uidbz/tie-gui/tieconfig"
 )
 
 func (a *App) buildSettings() fyne.CanvasObject {
@@ -42,6 +45,14 @@ func (a *App) buildSettings() fyne.CanvasObject {
 		widget.NewFormItem("filehost", fileHost),
 	)
 
+	// rebuildSession reloads the tie + pwplay clients from the persisted app
+	// config so a connection change takes effect immediately.
+	rebuildSession := func() {
+		a.session = data.NewSession(a.session.Cfg)
+		a.browse.session = a.session
+		a.browse.loadTags()
+	}
+
 	save := widget.NewButton("Save", func() {
 		cfg := current()
 		if err := config.Save(cfg); err != nil {
@@ -73,6 +84,19 @@ func (a *App) buildSettings() fyne.CanvasObject {
 		widget.NewSeparator(),
 	)
 
+	// Connection editor: edit the tie config (daemon/collection/filehosts) as
+	// TOML in-app, so the connection can be set up comfortably on Android
+	// (matching tie-view). Save the file the current tie config resolves to and
+	// rebuild the session on Apply.
+	connEditor := tieconfig.Editor(a.session.Tie.Config, tieconfig.ResolvePath(a.session.Cfg.TieConfig),
+		func(_ tieclient.Config) { rebuildSession() })
+
 	return container.NewBorder(header, nil, nil, nil,
-		container.NewVBox(form, container.NewHBox(save, test)))
+		container.NewVScroll(container.NewVBox(
+			form,
+			container.NewHBox(save, test),
+			widget.NewSeparator(),
+			widget.NewLabelWithStyle("Connection (tie config)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			connEditor,
+		)))
 }
