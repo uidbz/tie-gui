@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"image/jpeg"
@@ -21,18 +20,6 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 )
-
-// httpClientForHost honors the host's Insecure flag (self-signed
-// certificates); a secure host gets nil so getlib/putlib fall back to
-// http.DefaultClient.
-func httpClientForHost(host client.FileHost) *http.Client {
-	if !host.Insecure {
-		return nil
-	}
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-	}
-}
 
 // tieHostName names the filehost to fetch content from, set by the -host
 // flag. Empty means the default resolution in tieFileHost.
@@ -131,7 +118,7 @@ func (t *tieReader) DisplayName() string {
 
 func (t *tieReader) httpClient() *http.Client {
 	if t.client == nil {
-		t.client = httpClientForHost(t.host)
+		t.client = client.HTTPClientFor(t.host)
 	}
 	return t.client
 }
@@ -336,7 +323,7 @@ func (a *archiveMemberReader) GetReader() (io.ReadSeeker, error) {
 // once and shared across the member readers.
 func browseTieArchive(viewer *gallery.Gallery, host client.FileHost, hash string) {
 	viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		r, err := getlib.ReadFile(httpClientForHost(host), host.URL, hash)
+		r, err := getlib.ReadFile(client.HTTPClientFor(host), host.URL, hash)
 		if err != nil {
 			fmt.Println("Error fetching archive", hash, ":", err)
 			return nil
@@ -614,7 +601,7 @@ func uploadThumbnail(tc *client.TieClient, host client.FileHost, ownerHash strin
 	if host.URL == "" {
 		return "", errors.New("no filehost URL configured")
 	}
-	pc := putlib.PutConfig{Client: httpClientForHost(host)}
+	pc := putlib.PutConfig{Client: client.HTTPClientFor(host), Store: host.Store}
 	thumbHash, err := pc.AddressOf(bytes.NewReader(jpegBytes))
 	if err != nil {
 		return "", err
@@ -634,7 +621,7 @@ func uploadThumbnail(tc *client.TieClient, host client.FileHost, ownerHash strin
 
 // fetchBlob downloads a blob from the filehost.
 func fetchBlob(host client.FileHost, hash string) ([]byte, error) {
-	r, err := getlib.ReadFile(httpClientForHost(host), host.URL, hash)
+	r, err := getlib.ReadFile(client.HTTPClientFor(host), host.URL, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -727,7 +714,7 @@ func (t *filehostThumbnailer) thumbnailReader(tr *tieReader) (rs io.ReadSeeker, 
 		}
 		tr.thumbHash = thumbHash
 	}
-	r, err := getlib.ReadFile(httpClientForHost(host), host.URL, thumbHash)
+	r, err := getlib.ReadFile(client.HTTPClientFor(host), host.URL, thumbHash)
 	if err != nil {
 		return nil, false
 	}

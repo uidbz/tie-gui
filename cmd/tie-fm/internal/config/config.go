@@ -100,7 +100,7 @@ func DefaultTieConfig() client.Config {
 		Password:         "defaultpassword",
 		Namespace:        "Collections",
 		Collection:       "Main",
-		Webservice:       "http://localhost:1161",
+		DaemonURL:        "http://localhost:1161",
 		DefaultFileHosts: []string{"default"},
 		FileHosts: map[string]client.FileHost{
 			"default": {URL: "http://localhost:1162"},
@@ -136,13 +136,16 @@ func Load() (Config, error) {
 }
 
 // LoadTieConfig loads a tie client config from path, or returns
-// DefaultTieConfig when path is empty.
+// DefaultTieConfig when path is empty. It delegates to client.LoadConfig so an
+// absolute/relative path is read directly, a bare name is searched in tie's
+// config dirs, and normalizeConfig (DaemonURL/Webservice aliasing, synthesized
+// Collections) runs on the result.
 func LoadTieConfig(path string) (client.Config, error) {
 	if path == "" {
 		return DefaultTieConfig(), nil
 	}
-	var tc client.Config
-	if err := conf.ReadConfig(path, &tc); err != nil {
+	tc, err := client.LoadConfig(path)
+	if err != nil {
 		return DefaultTieConfig(), err
 	}
 	return tc, nil

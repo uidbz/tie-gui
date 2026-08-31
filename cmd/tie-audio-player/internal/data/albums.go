@@ -3,12 +3,10 @@ package data
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"path"
 	"slices"
 	"sort"
@@ -98,15 +96,6 @@ func (s *Session) Host() client.FileHost {
 	return client.FileHost{}
 }
 
-func httpClientForHost(host client.FileHost) *http.Client {
-	if !host.Insecure {
-		return nil
-	}
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-	}
-}
-
 // StreamURL is the direct filehost URL for a content hash (baseURL/hash), the
 // value handed to pwplay's AddTracks. Returns "" when no host is configured.
 func (s *Session) StreamURL(hash string) string {
@@ -119,7 +108,7 @@ func (s *Session) StreamURL(hash string) string {
 
 func (s *Session) fetchBlob(hash string) ([]byte, error) {
 	h := s.Host()
-	r, err := getlib.ReadFile(httpClientForHost(h), h.URL, hash)
+	r, err := getlib.ReadFile(client.HTTPClientFor(h), h.URL, hash)
 	if err != nil {
 		return nil, err
 	}

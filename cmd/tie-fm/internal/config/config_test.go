@@ -79,8 +79,8 @@ func TestFileAppsRoundTrip(t *testing.T) {
 
 func TestDefaultTieConfigLocal(t *testing.T) {
 	c := DefaultTieConfig()
-	if c.Webservice != "http://localhost:1161" {
-		t.Errorf("Webservice = %q", c.Webservice)
+	if c.DaemonURL != "http://localhost:1161" {
+		t.Errorf("DaemonURL = %q", c.DaemonURL)
 	}
 	if fh, ok := c.FileHosts["default"]; !ok || fh.URL != "http://localhost:1162" {
 		t.Errorf("default filehost = %+v", c.FileHosts["default"])
@@ -92,7 +92,7 @@ func TestLoadTieConfigEmptyIsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTieConfig: %v", err)
 	}
-	if c.Webservice != "http://localhost:1161" {
-		t.Errorf("Webservice = %q, want local default", c.Webservice)
+	if c.DaemonURL != "http://localhost:1161" {
+		t.Errorf("DaemonURL = %q, want local default", c.DaemonURL)
 	}
 }

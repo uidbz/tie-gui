@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/uidbz/conf"
 	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/gallery"
@@ -45,8 +45,8 @@ func main() {
 		config.AdjustForMobile()
 	}
 
-	tieConfig := loadTieConfig(gallery.NormalizeConfigPath(*tieConfigName))
-	applyTiePrefs(myApp, &tieConfig)
+	tieConfigPath = resolveTieConfigPath(gallery.NormalizeConfigPath(*tieConfigName))
+	tieConfig := loadTieConfig(tieConfigPath)
 	if tieHostName != "" {
 		if _, ok := tieConfig.FileHosts[tieHostName]; !ok {
 			fmt.Fprintf(os.Stderr, "No filehost %q in the tie config. Configured filehosts: %s\n", tieHostName, strings.Join(fileHostNames(tieConfig), ", "))
@@ -91,7 +91,7 @@ func main() {
 	}
 	fsTree := newTieFSTree(viewer, tieClient)
 	browseDir := func(uid client.DirUID) { fsTree.showDirUID(uid, "") }
-	viewer.Sidebar = makeSidebar(myApp, myWindow, viewer, tieClient, fsTree, browseDir, tagger)
+	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger)
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
@@ -187,28 +187,52 @@ func main() {
 	myWindow.ShowAndRun()
 }
 
-// loadTieConfig loads the tie client config. Without a -config argument it
-// reads config.toml from the user config dir only: conf.LoadConfig also
-// searches the current directory, where any stray config.toml (e.g.
-// imgview's own) would shadow the tie config. A -config value containing a
-// path separator is read as an explicit file path; any other value is a
-// config name searched in tie's config dirs, mirroring `tie -c`.
-func loadTieConfig(name string) client.Config {
-	tieConfig := client.Config{}
-	var err error
+// tieConfigPath is the resolved path the tie config was loaded from and is
+// saved back to by the settings tab. Set once in main.
+var tieConfigPath string
+
+// tieConfigDir returns the directory tie configs live in. On Android
+// os.UserConfigDir has no $HOME to resolve, so we use $FILESDIR (the app's
+// internal files dir, set by Fyne's native code) — the same tree Fyne writes
+// preferences.json into, which Android Auto Backup restores on reinstall. On
+// desktop it is the normal user config dir, matching github.com/uidbz/conf.
+func tieConfigDir() string {
+	if d := os.Getenv("FILESDIR"); d != "" {
+		return filepath.Join(d, "tie")
+	}
+	d, _ := os.UserConfigDir()
+	return filepath.Join(d, "tie")
+}
+
+// resolveTieConfigPath turns the -config value into the concrete file path to
+// load from and save to. Empty is config.toml in tieConfigDir; a value with a
+// path separator is used verbatim; a bare name resolves under tieConfigDir so
+// it is writable even on Android (where conf's name search cannot write). The
+// name already carries its .toml suffix via gallery.NormalizeConfigPath.
+func resolveTieConfigPath(name string) string {
 	switch {
 	case name == "":
-		_, err = conf.LoadFromUserConfigDir("tie", "config.toml", &tieConfig)
+		return filepath.Join(tieConfigDir(), "config.toml")
 	case strings.ContainsRune(name, '/'):
-		err = conf.ReadConfig(name, &tieConfig)
+		return name
 	default:
-		_, err = conf.LoadConfig("tie", name, &tieConfig)
+		return filepath.Join(tieConfigDir(), name)
 	}
+}
+
+// loadTieConfig loads the tie client config from path via client.LoadConfig, so
+// an absolute path is read directly and normalizeConfig runs. A missing file
+// yields the built-in default (the settings tab then writes a real config to
+// path on the first Apply).
+func loadTieConfig(path string) client.Config {
+	c, err := client.LoadConfig(path)
 	if err != nil {
-		fmt.Println("Error reading tie config:", err)
+		if !os.IsNotExist(err) {
+			fmt.Println("Error reading tie config:", err)
+		}
 		return client.DefaultConfig()
 	}
-	return tieConfig
+	return c
 }
 
 // fileHostNames returns the sorted names of the filehosts in a tie config,
@@ -224,12 +248,12 @@ func fileHostNames(c client.Config) []string {
 
 // makeSidebar builds the navigation sidebar: the first tab browses images
 // by tag, the second navigates the tie virtual filesystem.
-func makeSidebar(a fyne.App, window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger) *container.AppTabs {
+func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger) *container.AppTabs {
 	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir, tagger)
 	return container.NewAppTabs(
 		container.NewTabItem("Tags", tagWidget),
 		container.NewTabItem("Files", fsTree.tree),
-		makeSettingsTab(a, tc, reloadTags),
+		makeSettingsTab(tc, reloadTags),
 	)
 }
 

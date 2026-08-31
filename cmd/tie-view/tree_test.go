@@ -111,7 +111,7 @@ func TestChildUIDs(t *testing.T) {
 func TestNewTieFSTree(t *testing.T) {
 	test.NewApp()
 	config := client.DefaultConfig()
-	config.Webservice = "http://127.0.0.1:1"
+	config.DaemonURL = "http://127.0.0.1:1"
 	tc := client.NewTieClient(config)
 	tree := newTieFSTree(nil, tc).tree
 	if got := tree.ChildUIDs(""); len(got) != 1 || got[0] != "/" {
@@ -150,7 +150,7 @@ func collectLabels(o fyne.CanvasObject, out *[]string) {
 func TestTreeRenders(t *testing.T) {
 	test.NewApp()
 	config := client.DefaultConfig()
-	config.Webservice = "http://127.0.0.1:1"
+	config.DaemonURL = "http://127.0.0.1:1"
 	tc := client.NewTieClient(config)
 	tree := newTieFSTree(nil, tc).tree
 	w := test.NewWindow(tree)

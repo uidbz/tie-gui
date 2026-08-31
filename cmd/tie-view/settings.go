@@ -1,353 +1,81 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"sort"
 
-	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/uidbz/conf"
 	"github.com/uidbz/tie/client"
 )
 
-const (
-	prefKeyProfiles      = "tie.profiles"
-	prefKeyActiveProfile = "tie.activeProfile"
+// The settings tab edits the tie client config's [Collections.*] entries as
+// plain TOML (no Fyne Preferences): a dropdown selects the active collection,
+// "+"/"-" add and delete entries, and the form edits that collection's daemon,
+// namespace and credentials plus its primary filehost (URL, store, credentials,
+// TLS). Apply writes the config back to tieConfigPath and rebuilds the live
+// client on the selected collection. The config file lives under tieConfigDir,
+// which on Android is the same auto-backed-up tree Fyne uses for preferences,
+// so settings survive a reinstall without a separate persistence layer.
 
-	// Legacy flat preference keys, kept only for one-time migration when no
-	// profiles have been saved yet.
-	prefKeyWebservice    = "tie.webservice"
-	prefKeyNamespace     = "tie.namespace"
-	prefKeyCollection    = "tie.collection"
-	prefKeyFilehostName  = "tie.filehost.name"
-	prefKeyFilehostURL   = "tie.filehost.url"
-	prefKeyFilehostInsec = "tie.filehost.insecure"
-)
-
-// profile holds all connection settings for one named configuration.
-type profile struct {
-	Name             string `json:"name"`
-	Webservice       string `json:"webservice"`
-	Namespace        string `json:"namespace"`
-	Collection       string `json:"collection"`
-	FilehostName     string `json:"filehostName"`
-	FilehostURL      string `json:"filehostURL"`
-	FilehostInsecure bool   `json:"filehostInsecure"`
+// collectionKeys returns the config's collection names, sorted.
+func collectionKeys(c client.Config) []string {
+	keys := make([]string, 0, len(c.Collections))
+	for k := range c.Collections {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
-// loadProfiles deserialises the profile list from Preferences.
-// Returns nil when no profiles have been saved yet.
-func loadProfiles(p fyne.Preferences) []profile {
-	raw := p.String(prefKeyProfiles)
-	if raw == "" {
-		return nil
-	}
-	var profiles []profile
-	if err := json.Unmarshal([]byte(raw), &profiles); err != nil {
-		return nil
-	}
-	return profiles
-}
-
-// saveProfiles serialises the profile list into Preferences.
-func saveProfiles(p fyne.Preferences, profiles []profile) {
-	b, _ := json.Marshal(profiles)
-	p.SetString(prefKeyProfiles, string(b))
-}
-
-// profileNames returns just the Name field of each profile.
-func profileNames(profiles []profile) []string {
-	names := make([]string, len(profiles))
-	for i, pr := range profiles {
-		names[i] = pr.Name
-	}
-	return names
-}
-
-// findProfile returns the profile with the given name, if it exists.
-func findProfile(profiles []profile, name string) (profile, bool) {
-	for _, pr := range profiles {
-		if pr.Name == name {
-			return pr, true
-		}
-	}
-	return profile{}, false
-}
-
-// profileFromTC snapshots the live client state into a profile struct.
-func profileFromTC(name string, tc *client.TieClient) profile {
-	host := tieFileHost(tc)
-	return profile{
-		Name:             name,
-		Webservice:       tc.Config.Webservice,
-		Namespace:        tc.Config.Namespace,
-		Collection:       tc.Config.Collection,
-		FilehostName:     currentHostName(tc),
-		FilehostURL:      host.URL,
-		FilehostInsecure: host.Insecure,
-	}
-}
-
-// applyProfileToConfig writes a profile's values into cfg. Fields that are
-// empty in the profile are left unchanged so that a partially filled profile
-// doesn't clobber values from the TOML config file.
-func applyProfileToConfig(pr profile, cfg *client.Config) {
-	if pr.Webservice != "" {
-		cfg.Webservice = pr.Webservice
-	}
-	if pr.Namespace != "" {
-		cfg.Namespace = pr.Namespace
-	}
-	if pr.Collection != "" {
-		cfg.Collection = pr.Collection
-	}
-	if pr.FilehostName != "" && pr.FilehostURL != "" {
-		if cfg.FileHosts == nil {
-			cfg.FileHosts = make(map[string]client.FileHost)
-		}
-		cfg.FileHosts[pr.FilehostName] = client.FileHost{
-			URL:      pr.FilehostURL,
-			Insecure: pr.FilehostInsecure,
-		}
-		cfg.DefaultFileHosts = prependUnique(pr.FilehostName, cfg.DefaultFileHosts)
-	}
-}
-
-// applyTiePrefs overlays saved settings onto cfg at startup. It prefers the
-// profile system; if no profiles exist yet it falls back to the legacy flat
-// preference keys so that existing installations continue to work.
-func applyTiePrefs(a fyne.App, cfg *client.Config) {
-	p := a.Preferences()
-	profiles := loadProfiles(p)
-
-	if len(profiles) > 0 {
-		// Profile system: apply the last-active profile.
-		activeName := p.StringWithFallback(prefKeyActiveProfile, profiles[0].Name)
-		active, ok := findProfile(profiles, activeName)
-		if !ok {
-			active = profiles[0]
-		}
-		applyProfileToConfig(active, cfg)
+// ensureCollections guarantees cfg has at least one collection to edit,
+// synthesizing one from the flat fields when a config has no [Collections]
+// table. client.LoadConfig normalizes loaded files, but a first-run built-in
+// default is not normalized, so the settings form would otherwise be empty.
+func ensureCollections(cfg *client.Config) {
+	if len(cfg.Collections) > 0 {
 		return
 	}
-
-	// Legacy flat keys: migrate opportunistically.
-	if v := p.String(prefKeyWebservice); v != "" {
-		cfg.Webservice = v
+	name := cfg.Collection
+	if name == "" {
+		name = "default"
 	}
-	if v := p.String(prefKeyNamespace); v != "" {
-		cfg.Namespace = v
+	cfg.Collections = map[string]client.CollectionEntry{
+		name: {
+			Namespace:  cfg.Namespace,
+			Collection: cfg.Collection,
+			FileHosts:  cfg.DefaultFileHosts,
+		},
 	}
-	if v := p.String(prefKeyCollection); v != "" {
-		cfg.Collection = v
-	}
-	name := p.String(prefKeyFilehostName)
-	url := p.String(prefKeyFilehostURL)
-	if name != "" && url != "" {
-		h := client.FileHost{
-			URL:      url,
-			Insecure: p.Bool(prefKeyFilehostInsec),
-		}
-		if cfg.FileHosts == nil {
-			cfg.FileHosts = make(map[string]client.FileHost)
-		}
-		cfg.FileHosts[name] = h
-		cfg.DefaultFileHosts = prependUnique(name, cfg.DefaultFileHosts)
+	if cfg.DefaultCollection == "" {
+		cfg.DefaultCollection = name
 	}
 }
 
-// makeSettingsTab returns an AppTabs tab item with named connection profiles.
-// A dropdown at the top selects the active profile; "+" / "-" buttons add and
-// delete profiles. Clicking Apply saves the current form values under the
-// profile name shown in the form, applies them to the live client immediately,
-// persists them to Preferences, and calls onApply (if non-nil) so callers can
-// react — e.g. to reload the tag list from the newly active server.
-func makeSettingsTab(a fyne.App, tc *client.TieClient, onApply func()) *container.TabItem {
-	p := a.Preferences()
-
-	// Load saved profiles, creating a default one from the live client if none
-	// exist yet (first run, or after clearing Preferences).
-	profiles := loadProfiles(p)
-	if len(profiles) == 0 {
-		profiles = []profile{profileFromTC("Default", tc)}
-		saveProfiles(p, profiles)
-		p.SetString(prefKeyActiveProfile, profiles[0].Name)
+// primaryHost returns the name of a collection entry's first filehost, or "".
+func primaryHost(e client.CollectionEntry) string {
+	if len(e.FileHosts) > 0 {
+		return e.FileHosts[0]
 	}
-	activeName := p.StringWithFallback(prefKeyActiveProfile, profiles[0].Name)
-	if _, ok := findProfile(profiles, activeName); !ok {
-		activeName = profiles[0].Name
-	}
-
-	// Form fields.
-	profileName := widget.NewEntry()
-	daemonURL := widget.NewEntry()
-	daemonURL.SetPlaceHolder("http://localhost:1161")
-	namespace := widget.NewEntry()
-	namespace.SetPlaceHolder("Collections")
-	collection := widget.NewEntry()
-	collection.SetPlaceHolder("Main")
-	hostName := widget.NewEntry()
-	hostName.SetPlaceHolder("fast")
-	hostURL := widget.NewEntry()
-	hostURL.SetPlaceHolder("http://localhost:1162")
-	hostInsecure := widget.NewCheck("", nil)
-	status := widget.NewLabel("")
-
-	// loadIntoForm populates all form fields from a profile.
-	loadIntoForm := func(pr profile) {
-		profileName.SetText(pr.Name)
-		daemonURL.SetText(pr.Webservice)
-		namespace.SetText(pr.Namespace)
-		collection.SetText(pr.Collection)
-		hostName.SetText(pr.FilehostName)
-		hostURL.SetText(pr.FilehostURL)
-		hostInsecure.SetChecked(pr.FilehostInsecure)
-	}
-
-	// Dropdown: switching profiles loads their values into the form but does
-	// NOT apply them to the live client — the user must click Apply.
-	dropdown := widget.NewSelect(profileNames(profiles), nil)
-	dropdown.SetSelected(activeName)
-	if pr, ok := findProfile(profiles, activeName); ok {
-		loadIntoForm(pr)
-	}
-	dropdown.OnChanged = func(name string) {
-		if pr, ok := findProfile(profiles, name); ok {
-			loadIntoForm(pr)
-		}
-		p.SetString(prefKeyActiveProfile, name)
-		status.SetText("")
-	}
-
-	// "+" button: add a new profile pre-filled with the current form values.
-	addBtn := widget.NewButton("+", func() {
-		base := "New profile"
-		name := base
-		for i := 2; ; i++ {
-			if _, exists := findProfile(profiles, name); !exists {
-				break
-			}
-			name = fmt.Sprintf("%s %d", base, i)
-		}
-		newPr := profile{
-			Name:             name,
-			Webservice:       daemonURL.Text,
-			Namespace:        namespace.Text,
-			Collection:       collection.Text,
-			FilehostName:     hostName.Text,
-			FilehostURL:      hostURL.Text,
-			FilehostInsecure: hostInsecure.Checked,
-		}
-		profiles = append(profiles, newPr)
-		saveProfiles(p, profiles)
-		dropdown.Options = profileNames(profiles)
-		dropdown.Refresh()
-		dropdown.SetSelected(name) // triggers OnChanged → loadIntoForm + pref save
-		status.SetText("Profile created.")
-	})
-
-	// "-" button: delete the currently selected profile.
-	delBtn := widget.NewButton("-", func() {
-		if len(profiles) <= 1 {
-			status.SetText("Cannot delete the only profile.")
-			return
-		}
-		sel := dropdown.Selected
-		for i, pr := range profiles {
-			if pr.Name == sel {
-				profiles = append(profiles[:i], profiles[i+1:]...)
-				break
-			}
-		}
-		saveProfiles(p, profiles)
-		dropdown.Options = profileNames(profiles)
-		dropdown.Refresh()
-		dropdown.SetSelected(profiles[0].Name) // triggers OnChanged → loadIntoForm
-		status.SetText("Profile deleted.")
-	})
-
-	profileRow := container.NewBorder(
-		nil, nil, nil,
-		container.NewHBox(addBtn, delBtn),
-		dropdown,
-	)
-
-	form := widget.NewForm(
-		widget.NewFormItem("Profile name", profileName),
-		widget.NewFormItem("Daemon URL", daemonURL),
-		widget.NewFormItem("Namespace", namespace),
-		widget.NewFormItem("Collection", collection),
-		widget.NewFormItem("Filehost name", hostName),
-		widget.NewFormItem("Filehost URL", hostURL),
-		widget.NewFormItem("Skip TLS verify", hostInsecure),
-	)
-
-	applyBtn := widget.NewButton("Apply", func() {
-		oldName := dropdown.Selected
-		newName := profileName.Text
-		if newName == "" {
-			newName = oldName
-		}
-
-		pr := profile{
-			Name:             newName,
-			Webservice:       daemonURL.Text,
-			Namespace:        namespace.Text,
-			Collection:       collection.Text,
-			FilehostName:     hostName.Text,
-			FilehostURL:      hostURL.Text,
-			FilehostInsecure: hostInsecure.Checked,
-		}
-
-		// Update or rename the profile in the list.
-		found := false
-		for i, existing := range profiles {
-			if existing.Name == oldName {
-				profiles[i] = pr
-				found = true
-				break
-			}
-		}
-		if !found {
-			profiles = append(profiles, pr)
-		}
-		saveProfiles(p, profiles)
-
-		// Refresh dropdown options in case of a rename.
-		dropdown.Options = profileNames(profiles)
-		dropdown.Refresh()
-		dropdown.SetSelected(newName)
-		p.SetString(prefKeyActiveProfile, newName)
-
-		// Apply to live client immediately.
-		applyProfileToConfig(pr, &tc.Config)
-		*tc = *client.NewTieClient(tc.Config)
-
-		if onApply != nil {
-			onApply()
-		}
-
-		status.SetText("Saved.")
-	})
-
-	content := container.NewVScroll(container.NewVBox(profileRow, form, applyBtn, status))
-	return container.NewTabItem("Settings", content)
+	return ""
 }
 
-// currentHostName returns the name of the currently active filehost in tc,
-// using the same priority order as tieFileHost.
-func currentHostName(tc *client.TieClient) string {
-	if tieHostName != "" {
-		return tieHostName
+// cloneConfig copies c with fresh Collections and FileHosts maps so edits to
+// the returned config don't mutate the live client's shared maps before Apply.
+func cloneConfig(c client.Config) client.Config {
+	cols := make(map[string]client.CollectionEntry, len(c.Collections))
+	for k, v := range c.Collections {
+		cols[k] = v
 	}
-	if _, ok := tc.Config.FileHosts["fast"]; ok {
-		return "fast"
+	c.Collections = cols
+	hosts := make(map[string]client.FileHost, len(c.FileHosts))
+	for k, v := range c.FileHosts {
+		hosts[k] = v
 	}
-	if len(tc.Config.DefaultFileHosts) > 0 {
-		return tc.Config.DefaultFileHosts[0]
-	}
-	return "default"
+	c.FileHosts = hosts
+	return c
 }
 
 // prependUnique returns ss with name at the front, removing any duplicate.
@@ -360,4 +88,182 @@ func prependUnique(name string, ss []string) []string {
 		}
 	}
 	return out
+}
+
+// makeSettingsTab builds the connection settings tab (see file comment). onApply
+// runs after a successful Apply so callers can react (e.g. reload the tag list).
+func makeSettingsTab(tc *client.TieClient, onApply func()) *container.TabItem {
+	// Edit a copy with cloned maps; mutations only reach the live client on Apply.
+	cfg := cloneConfig(tc.Config)
+	ensureCollections(&cfg)
+
+	active := cfg.DefaultCollection
+	if _, ok := cfg.Collections[active]; !ok {
+		if ks := collectionKeys(cfg); len(ks) > 0 {
+			active = ks[0]
+		}
+	}
+
+	collKey := widget.NewEntry()
+	namespace := widget.NewEntry()
+	namespace.SetPlaceHolder("Collections")
+	collectionID := widget.NewEntry()
+	collectionID.SetPlaceHolder("(defaults to the collection name)")
+	daemonURL := widget.NewEntry()
+	daemonURL.SetPlaceHolder("http://localhost:1161")
+	username := widget.NewEntry()
+	password := widget.NewPasswordEntry()
+	daemonInsecure := widget.NewCheck("", nil)
+
+	hostName := widget.NewEntry()
+	hostName.SetPlaceHolder("default")
+	hostURL := widget.NewEntry()
+	hostURL.SetPlaceHolder("http://localhost:1162")
+	hostStore := widget.NewEntry()
+	hostStore.SetPlaceHolder("(blank = default store)")
+	hostUser := widget.NewEntry()
+	hostPass := widget.NewPasswordEntry()
+	hostInsecure := widget.NewCheck("", nil)
+
+	status := widget.NewLabel("")
+
+	// loadIntoForm shows a collection's stored values (raw, without top-level
+	// fallbacks) so the form reflects what the file actually holds.
+	loadIntoForm := func(key string) {
+		e := cfg.Collections[key]
+		collKey.SetText(key)
+		namespace.SetText(e.Namespace)
+		collectionID.SetText(e.Collection)
+		daemonURL.SetText(e.DaemonURL)
+		username.SetText(e.Username)
+		password.SetText(e.Password)
+		daemonInsecure.SetChecked(e.Insecure)
+
+		hn := primaryHost(e)
+		h := cfg.FileHosts[hn]
+		hostName.SetText(hn)
+		hostURL.SetText(h.URL)
+		hostStore.SetText(h.Store)
+		hostUser.SetText(h.Username)
+		hostPass.SetText(h.Password)
+		hostInsecure.SetChecked(h.Insecure)
+	}
+
+	dropdown := widget.NewSelect(collectionKeys(cfg), nil)
+	dropdown.SetSelected(active)
+	loadIntoForm(active)
+	dropdown.OnChanged = func(key string) {
+		if _, ok := cfg.Collections[key]; ok {
+			loadIntoForm(key)
+			status.SetText("")
+		}
+	}
+
+	addBtn := widget.NewButton("+", func() {
+		base := "new-collection"
+		name := base
+		for i := 2; ; i++ {
+			if _, exists := cfg.Collections[name]; !exists {
+				break
+			}
+			name = fmt.Sprintf("%s-%d", base, i)
+		}
+		cfg.Collections[name] = client.CollectionEntry{}
+		dropdown.Options = collectionKeys(cfg)
+		dropdown.Refresh()
+		dropdown.SetSelected(name) // triggers OnChanged -> loadIntoForm
+		status.SetText("Collection created; edit and Apply.")
+	})
+
+	delBtn := widget.NewButton("-", func() {
+		if len(cfg.Collections) <= 1 {
+			status.SetText("Cannot delete the only collection.")
+			return
+		}
+		sel := dropdown.Selected
+		delete(cfg.Collections, sel)
+		if cfg.DefaultCollection == sel {
+			cfg.DefaultCollection = ""
+		}
+		keys := collectionKeys(cfg)
+		dropdown.Options = keys
+		dropdown.Refresh()
+		dropdown.SetSelected(keys[0])
+		status.SetText("Collection deleted; Apply to persist.")
+	})
+
+	collRow := container.NewBorder(nil, nil, nil, container.NewHBox(addBtn, delBtn), dropdown)
+
+	form := widget.NewForm(
+		widget.NewFormItem("Collection name", collKey),
+		widget.NewFormItem("Namespace", namespace),
+		widget.NewFormItem("Collection id", collectionID),
+		widget.NewFormItem("Daemon URL", daemonURL),
+		widget.NewFormItem("Daemon username", username),
+		widget.NewFormItem("Daemon password", password),
+		widget.NewFormItem("Skip daemon TLS verify", daemonInsecure),
+		widget.NewFormItem("Filehost name", hostName),
+		widget.NewFormItem("Filehost URL", hostURL),
+		widget.NewFormItem("Filehost store", hostStore),
+		widget.NewFormItem("Filehost username", hostUser),
+		widget.NewFormItem("Filehost password", hostPass),
+		widget.NewFormItem("Skip filehost TLS verify", hostInsecure),
+	)
+
+	applyBtn := widget.NewButton("Apply", func() {
+		oldKey := dropdown.Selected
+		key := collKey.Text
+		if key == "" {
+			key = oldKey
+		}
+
+		var hosts []string
+		if hostName.Text != "" {
+			hosts = []string{hostName.Text}
+		}
+		entry := client.CollectionEntry{
+			Namespace:  namespace.Text,
+			Collection: collectionID.Text,
+			DaemonURL:  daemonURL.Text,
+			Username:   username.Text,
+			Password:   password.Text,
+			Insecure:   daemonInsecure.Checked,
+			FileHosts:  hosts,
+		}
+		if key != oldKey {
+			delete(cfg.Collections, oldKey)
+		}
+		cfg.Collections[key] = entry
+		cfg.DefaultCollection = key
+
+		if hostName.Text != "" {
+			cfg.FileHosts[hostName.Text] = client.FileHost{
+				URL:      hostURL.Text,
+				Store:    hostStore.Text,
+				Username: hostUser.Text,
+				Password: hostPass.Text,
+				Insecure: hostInsecure.Checked,
+			}
+			// Keep tieFileHost's top-level resolution finding this host.
+			cfg.DefaultFileHosts = prependUnique(hostName.Text, cfg.DefaultFileHosts)
+		}
+
+		if err := conf.WriteConfig(tieConfigPath, cfg); err != nil {
+			status.SetText("Save failed: " + err.Error())
+			return
+		}
+
+		dropdown.Options = collectionKeys(cfg)
+		dropdown.Refresh()
+		dropdown.SetSelected(key)
+
+		*tc = *client.NewTieClientFor(cfg, key)
+		if onApply != nil {
+			onApply()
+		}
+		status.SetText("Saved to " + tieConfigPath)
+	})
+
+	content := container.NewVScroll(container.NewVBox(collRow, form, applyBtn, status))
+	return container.NewTabItem("Settings", content)
 }
