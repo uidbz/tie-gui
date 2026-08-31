@@ -154,6 +154,6 @@ tie-audio-player    # browse and play the collection's audio by tag
 
 ## License
 
-The monorepo is GPL-3 licensed; see [LICENSE](LICENSE). The tie-fm subtree
-retains its original BSD 3-Clause license (`cmd/tie-fm/LICENSE`), and its
-bundled KDE Breeze icons are LGPL-3+ (`cmd/tie-fm/internal/ui/icons/LICENSE`).
+The monorepo is BSD 3-Clause licensed (matching [tie](https://github.com/uidbz/tie));
+see [LICENSE](LICENSE). The bundled KDE Breeze icons are LGPL-3+
+(`cmd/tie-fm/internal/ui/icons/LICENSE`).
