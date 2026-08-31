@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Shared environment for the tie-audio-player local test setup.
 # Sourced by start.sh / stop.sh. This test-env layers a pwplay-server (:8080)
-# on top of the tie stack (daemon :2161 + filehost :2162) that lives in the tie
+# on top of the tie stack (triplestore :2161 + filehost :2162) that lives in the tie
 # repo's own test-env, so audio playback can be driven end-to-end.
 
 # Absolute path to this directory and the tie-audio-player repo root.
 export TAP_ENV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export TAP_SRC="$(cd "$TAP_ENV/.." && pwd)"
 
-# The tie stack test-env (daemon + filehost + seeded audio albums). Override
+# The tie stack test-env (triplestore + filehost + seeded audio albums). Override
 # TIE_TEST_ENV to point at a different checkout.
 export TIE_TEST_ENV="${TIE_TEST_ENV:-$(cd "$TAP_SRC/../tie/test-env" && pwd)}"
 

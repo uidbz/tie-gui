@@ -48,7 +48,7 @@ tie-fm browses two kinds of location side by side:
   Build from the repository root: `go build ./cmd/tie-fm` — see the
   [root README](../../README.md#building).
 - Linux with `xdg-open` for the default file-open behavior.
-- A running tie daemon is only needed to browse `tie:` locations; local
+- A running tie triplestore is only needed to browse `tie:` locations; local
   browsing works without it.
 
 ### Removable devices (USB storage & phones)
@@ -94,7 +94,7 @@ tie-fm keeps its own settings (separate from the tie client config) at
 `$XDG_CONFIG_HOME/tie-fm/config.toml`, created on first run. It stores:
 
 - `TieConfig` — path to the tie client config to use (empty ⇒ built-in local
-  default: daemon `:1161`, filehost `:1162`).
+  default: triplestore `:1161`, filehost `:1162`).
 - `Bookmarks` — the favorites sidebar entries (directory bookmarks).
 - `FileApps` — per-extension open commands (see below).
 

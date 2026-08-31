@@ -84,7 +84,7 @@ func (a *App) buildSettings() fyne.CanvasObject {
 		widget.NewSeparator(),
 	)
 
-	// Connection editor: edit the tie config (daemon/collection/filehosts) as
+	// Connection editor: edit the tie config (triplestore/collection/filehosts) as
 	// TOML in-app, so the connection can be set up comfortably on Android
 	// (matching tie-view). Save the file the current tie config resolves to and
 	// rebuild the session on Apply.

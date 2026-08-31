@@ -79,8 +79,8 @@ func TestFileAppsRoundTrip(t *testing.T) {
 
 func TestDefaultTieConfigLocal(t *testing.T) {
 	c := DefaultTieConfig()
-	if c.DaemonURL != "http://localhost:1161" {
-		t.Errorf("DaemonURL = %q", c.DaemonURL)
+	if c.TripleStoreURL != "http://localhost:1161" {
+		t.Errorf("TripleStoreURL = %q", c.TripleStoreURL)
 	}
 	if fh, ok := c.FileHosts["default"]; !ok || fh.URL != "http://localhost:1162" {
 		t.Errorf("default filehost = %+v", c.FileHosts["default"])
@@ -92,7 +92,7 @@ func TestLoadTieConfigEmptyIsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTieConfig: %v", err)
 	}
-	if c.DaemonURL != "http://localhost:1161" {
-		t.Errorf("DaemonURL = %q, want local default", c.DaemonURL)
+	if c.TripleStoreURL != "http://localhost:1161" {
+		t.Errorf("TripleStoreURL = %q, want local default", c.TripleStoreURL)
 	}
 }

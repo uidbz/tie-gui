@@ -25,5 +25,5 @@ User and developer documentation for the tie-gui clients
 ## The tie project
 
 These clients are front-ends for [tie](https://github.com/uidbz/tie). For
-the data model, daemon, filehost, and CLI, see the tie repository and its
+the data model, triplestore, filehost, and CLI, see the tie repository and its
 docs (media-database walkthrough, mount reference, internals).

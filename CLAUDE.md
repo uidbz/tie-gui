@@ -555,7 +555,7 @@ Implements: `CustomReader`, `VideoFile`, `VideoStreamer`, `DimensionProvider`.
 Both local thumbnails and tie blobs use the same HighwayHash key
 (`galleryKey` in `gallery/hash.go` = `tieKey` in `tie/client/tie.go`). This
 means a file's content address is identical whether computed locally or by the
-tie daemon, and thumbnail caches are portable across machines.
+tie triplestore, and thumbnail caches are portable across machines.
 
 Local thumbnail cache path: `ThumbnailDir/<xx>/<yy>/<zz>/<64-char-hash>`
 (3 levels × 2 hex chars, then full hash as filename).

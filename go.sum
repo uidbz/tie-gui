@@ -147,10 +147,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6 h1:GTI/4+CFJJDcBplnIYw5i+2Zy8VO8DBgJGgPkDzW34U=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6/go.mod h1:XIwt3LLWCVqucBqkfBSAvr6Qs52z8VS+NXGRcdr6FQ8=
-github.com/uidbz/tie v0.4.4-0.20260830150633-712e798a4db8 h1:vdW3KchGdco+Ij1gFZZt7eGf1xqnyhlOBP7dovCZijI=
-github.com/uidbz/tie v0.4.4-0.20260830150633-712e798a4db8/go.mod h1:saTRPurAJUARw8KlXQTP9uJWN3qid0aEozhrRJUT2FY=
-github.com/uidbz/tie v0.4.4-0.20260831095305-0d6a0ac20b4c h1:MTx6ri92bAxNz0bcrcn1Eucd0MbgNdlYxFS9lmJFXeI=
-github.com/uidbz/tie v0.4.4-0.20260831095305-0d6a0ac20b4c/go.mod h1:saTRPurAJUARw8KlXQTP9uJWN3qid0aEozhrRJUT2FY=
+github.com/uidbz/tie v0.4.4-0.20260831134234-cba2a14befc1 h1:S6a2ChxaVZBRC8AvFwshIqsao588yVrD7of+Nd9od5s=
+github.com/uidbz/tie v0.4.4-0.20260831134234-cba2a14befc1/go.mod h1:saTRPurAJUARw8KlXQTP9uJWN3qid0aEozhrRJUT2FY=
 github.com/ulikunitz/xz v0.5.8/go.mod h1:nbz6k7qbPmH4IRqmfOplQw/tblSgqTqBwxkY0oWt/14=
 github.com/ulikunitz/xz v0.5.16 h1:ld6NyySjx5lowVKwJvMRLnW5nxKX/xnpSiFYZ/Lxur0=
 github.com/ulikunitz/xz v0.5.16/go.mod h1:H9Rt/W6/Qj27PGauhQc6nfCDy7vHpzsOThBSaYDoEhw=

@@ -13,7 +13,7 @@ require (
 	github.com/minio/highwayhash v1.0.3
 	github.com/pelletier/go-toml/v2 v2.2.1
 	github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6
-	github.com/uidbz/tie v0.4.4-0.20260831095305-0d6a0ac20b4c
+	github.com/uidbz/tie v0.4.4-0.20260831134234-cba2a14befc1
 )
 
 require (

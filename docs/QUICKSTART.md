@@ -102,7 +102,7 @@ imgview ~/Downloads/comics.cbr
 
 ### tie-view — Network Content (Requires tie)
 
-**Note:** tie-view requires a [tie](https://github.com/uidbz/tie) daemon. Skip this section if you don't have tie set up.
+**Note:** tie-view requires a [tie](https://github.com/uidbz/tie) triplestore. Skip this section if you don't have tie set up.
 
 ```sh
 # Query by tag
@@ -314,7 +314,7 @@ imgview ~/Videos  # Shows video thumbnails with play icon
 - **Fix:** Check `ThumbnailDir` path in config. Ensure write permissions.
 
 **tie-view: connection refused**
-- **Fix:** Ensure tie daemon is running. Check config file path with `-config`.
+- **Fix:** Ensure tie triplestore is running. Check config file path with `-config`.
 
 **Window too small on HiDPI**
 - **Fix:** Fyne auto-detects scaling. Override with `FYNE_SCALE=1.5` environment variable.

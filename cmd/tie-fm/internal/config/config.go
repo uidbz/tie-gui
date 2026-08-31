@@ -92,7 +92,7 @@ func Default() Config {
 }
 
 // DefaultTieConfig is the tie client config used when Config.TieConfig is empty.
-// It points at a local tie server (daemon :1161, filehost :1162), matching the
+// It points at a local tie server (triplestore :1161, filehost :1162), matching the
 // test-env sandbox.
 func DefaultTieConfig() client.Config {
 	return client.Config{
@@ -100,7 +100,7 @@ func DefaultTieConfig() client.Config {
 		Password:         "defaultpassword",
 		Namespace:        "Collections",
 		Collection:       "Main",
-		DaemonURL:        "http://localhost:1161",
+		TripleStoreURL:   "http://localhost:1161",
 		DefaultFileHosts: []string{"default"},
 		FileHosts: map[string]client.FileHost{
 			"default": {URL: "http://localhost:1162"},
@@ -138,7 +138,7 @@ func Load() (Config, error) {
 // LoadTieConfig loads a tie client config from path, or returns
 // DefaultTieConfig when path is empty. It delegates to client.LoadConfig so an
 // absolute/relative path is read directly, a bare name is searched in tie's
-// config dirs, and normalizeConfig (DaemonURL/Webservice aliasing, synthesized
+// config dirs, and normalizeConfig (TripleStoreURL/Webservice aliasing, synthesized
 // Collections) runs on the result.
 func LoadTieConfig(path string) (client.Config, error) {
 	if path == "" {

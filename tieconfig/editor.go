@@ -15,7 +15,7 @@ import (
 // Editor builds a settings form that edits a tie client config's [Collections.*]
 // entries as plain TOML (no Fyne Preferences): a dropdown selects the active
 // collection, "+"/"-" add and delete entries, and the form edits that
-// collection's daemon, namespace and credentials plus its primary filehost
+// collection's triplestore, namespace and credentials plus its primary filehost
 // (URL, store, credentials, TLS). Apply writes the config to savePath and calls
 // onApply with the saved config (DefaultCollection set to the active
 // collection) so the caller can rebuild its client. It returns a scrollable
@@ -38,11 +38,11 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 	namespace.SetPlaceHolder("Collections")
 	collectionID := widget.NewEntry()
 	collectionID.SetPlaceHolder("(defaults to the collection name)")
-	daemonURL := widget.NewEntry()
-	daemonURL.SetPlaceHolder("http://localhost:1161")
+	triplestoreURL := widget.NewEntry()
+	triplestoreURL.SetPlaceHolder("http://localhost:1161")
 	username := widget.NewEntry()
 	password := widget.NewPasswordEntry()
-	daemonInsecure := widget.NewCheck("", nil)
+	triplestoreInsecure := widget.NewCheck("", nil)
 
 	hostName := widget.NewEntry()
 	hostName.SetPlaceHolder("default")
@@ -63,10 +63,10 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 		collKey.SetText(key)
 		namespace.SetText(e.Namespace)
 		collectionID.SetText(e.Collection)
-		daemonURL.SetText(e.DaemonURL)
+		triplestoreURL.SetText(e.TripleStoreURL)
 		username.SetText(e.Username)
 		password.SetText(e.Password)
-		daemonInsecure.SetChecked(e.Insecure)
+		triplestoreInsecure.SetChecked(e.Insecure)
 
 		hn := primaryHost(e)
 		h := cfg.FileHosts[hn]
@@ -127,10 +127,10 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 		widget.NewFormItem("Collection name", collKey),
 		widget.NewFormItem("Namespace", namespace),
 		widget.NewFormItem("Collection id", collectionID),
-		widget.NewFormItem("Daemon URL", daemonURL),
-		widget.NewFormItem("Daemon username", username),
-		widget.NewFormItem("Daemon password", password),
-		widget.NewFormItem("Skip daemon TLS verify", daemonInsecure),
+		widget.NewFormItem("Triplestore URL", triplestoreURL),
+		widget.NewFormItem("Triplestore username", username),
+		widget.NewFormItem("Triplestore password", password),
+		widget.NewFormItem("Skip triplestore TLS verify", triplestoreInsecure),
 		widget.NewFormItem("Filehost name", hostName),
 		widget.NewFormItem("Filehost URL", hostURL),
 		widget.NewFormItem("Filehost store", hostStore),
@@ -151,13 +151,13 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 			hosts = []string{hostName.Text}
 		}
 		entry := client.CollectionEntry{
-			Namespace:  namespace.Text,
-			Collection: collectionID.Text,
-			DaemonURL:  daemonURL.Text,
-			Username:   username.Text,
-			Password:   password.Text,
-			Insecure:   daemonInsecure.Checked,
-			FileHosts:  hosts,
+			Namespace:      namespace.Text,
+			Collection:     collectionID.Text,
+			TripleStoreURL: triplestoreURL.Text,
+			Username:       username.Text,
+			Password:       password.Text,
+			Insecure:       triplestoreInsecure.Checked,
+			FileHosts:      hosts,
 		}
 		if key != oldKey {
 			delete(cfg.Collections, oldKey)

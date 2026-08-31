@@ -35,7 +35,7 @@ func TestJoinNode(t *testing.T) {
 }
 
 // TestTieFSTreeIds checks node ID classification and display names without
-// any tie daemon: the root is a branch, unknown IDs are not, and file
+// any tie triplestore: the root is a branch, unknown IDs are not, and file
 // leaves show their filename.
 func TestTieFSTreeIds(t *testing.T) {
 	fs := &tieFSTree{
@@ -63,7 +63,7 @@ func TestTieFSTreeIds(t *testing.T) {
 	}
 }
 
-// TestChildUIDs checks child listing against a cached directory (no daemon
+// TestChildUIDs checks child listing against a cached directory (no triplestore
 // needed): subdirectories come first, sorted by name; non-image files are
 // skipped; and the root's parent edge to itself must not produce a "/"
 // child (the tree would recurse forever).
@@ -106,12 +106,12 @@ func TestChildUIDs(t *testing.T) {
 
 // TestNewTieFSTree builds the widget headlessly: the top level holds just
 // the tie root, which starts expanded so the tab never looks empty; a
-// failed dir read (unreachable daemon) yields no children rather than a
+// failed dir read (unreachable triplestore) yields no children rather than a
 // panic.
 func TestNewTieFSTree(t *testing.T) {
 	test.NewApp()
 	config := client.DefaultConfig()
-	config.DaemonURL = "http://127.0.0.1:1"
+	config.TripleStoreURL = "http://127.0.0.1:1"
 	tc := client.NewTieClient(config)
 	tree := newTieFSTree(nil, tc).tree
 	if got := tree.ChildUIDs(""); len(got) != 1 || got[0] != "/" {
@@ -121,7 +121,7 @@ func TestNewTieFSTree(t *testing.T) {
 		t.Error("root branch not open after construction")
 	}
 	if got := tree.ChildUIDs("/"); len(got) != 0 {
-		t.Errorf("ChildUIDs(\"/\") with unreachable daemon = %v, want empty", got)
+		t.Errorf("ChildUIDs(\"/\") with unreachable triplestore = %v, want empty", got)
 	}
 }
 
@@ -145,12 +145,12 @@ func collectLabels(o fyne.CanvasObject, out *[]string) {
 // TestTreeRenders renders the tree in a test window: the "/" node must be
 // visible. Regression test for isBranch("") returning false — the fyne tree
 // walk starts at the root node "" and only descends into ChildUIDs for
-// branches, so a non-branch root rendered the whole tree empty. The daemon
+// branches, so a non-branch root rendered the whole tree empty. The triplestore
 // is unreachable here; ChildUIDs("") needs no I/O, so "/" must still show.
 func TestTreeRenders(t *testing.T) {
 	test.NewApp()
 	config := client.DefaultConfig()
-	config.DaemonURL = "http://127.0.0.1:1"
+	config.TripleStoreURL = "http://127.0.0.1:1"
 	tc := client.NewTieClient(config)
 	tree := newTieFSTree(nil, tc).tree
 	w := test.NewWindow(tree)

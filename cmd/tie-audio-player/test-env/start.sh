@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring up the full tie-audio-player playback test environment:
-#   1. the tie stack (daemon :2161 + filehost :2162 + seeded audio albums),
+#   1. the tie stack (triplestore :2161 + filehost :2162 + seeded audio albums),
 #      delegated to the tie repo's own test-env start.sh (idempotent);
 #   2. a pwplay-server on :8080 that streams the filehost blobs over HTTP.
 # Idempotent-ish: refuses to start a second pwplay-server if the PID file points
@@ -50,7 +50,7 @@ for _ in $(seq 1 30); do
 	if curl -s -o /dev/null "$PWPLAY_URL/status"; then
 		echo "pwplay-server is up."
 		echo "  server:   $PWPLAY_URL"
-		echo "  daemon:   http://localhost:2161"
+		echo "  triplestore: http://localhost:2161"
 		echo "  filehost: http://localhost:2162"
 		exit 0
 	fi
