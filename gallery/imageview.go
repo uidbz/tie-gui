@@ -229,7 +229,11 @@ func (iv *ImageView) LoadImage() error {
 		return err2
 	}
 	iv.format = format
-	display := iv.downscaleForMobile(img)
+	// Upload-ready pixels: the GL painter uploads *image.RGBA directly but
+	// converts every other type (YCbCr from JPEG, NRGBA from imaging.Fit) with
+	// a full-bitmap draw.Draw on the UI thread each time the texture is
+	// (re)created. Convert once here instead.
+	display := toRGBA(iv.downscaleForMobile(img))
 	iv.setImage(display)
 	// setImage recorded the (possibly downscaled) display dimensions; keep the
 	// TRUE original dimensions for correct zoom math and the progressive-quality
@@ -295,7 +299,8 @@ func (iv *ImageView) applyZoomQuality() {
 }
 
 // decodeFullImage re-decodes the source at full resolution (EXIF-oriented,
-// matching the initial load). Runs off the UI goroutine.
+// matching the initial load) and converts it to *image.RGBA so the texture
+// upload needs no CPU pixel pass. Runs off the UI goroutine.
 func (iv *ImageView) decodeFullImage() image.Image {
 	reader, err := iv.info.GetReader()
 	if err != nil {
@@ -305,15 +310,16 @@ func (iv *ImageView) decodeFullImage() image.Image {
 	if err != nil {
 		return nil
 	}
-	return img
+	return toRGBA(img)
 }
 
-// downscaleForMobile shrinks a decoded image on mobile so the GPU texture that
-// gets re-uploaded on every pinch frame stays small. Full-resolution phone
-// photos (12MP+) are ~48MB of RGBA; re-uploading that each frame makes pinch
-// zoom choppy. We cap the longest edge at 2x the screen's longest edge, which
-// leaves headroom for zooming in while keeping the texture a few MB. Desktop
-// (and any non-decoded case) is left untouched.
+// downscaleForMobile shrinks a decoded image on mobile so the initial GL
+// texture (and its RGBA copy in RAM) stays small: full-resolution phone photos
+// (12MP+) are ~48MB of RGBA. We cap the longest edge at 2x the screen's
+// longest edge, which leaves headroom for zooming in while keeping the
+// texture a few MB; applyZoomQuality swaps in the full decode once the user
+// actually zooms past that. Desktop (and any non-decoded case) is left
+// untouched.
 func (iv *ImageView) downscaleForMobile(img image.Image) image.Image {
 	if !iv.platform.ShouldDownscaleImages() {
 		return img
@@ -493,19 +499,7 @@ func (iv *ImageView) dragEndMobile() {
 	// is the reliable "primary finger released" signal, so reset pinch state and
 	// skip the pan/paging logic (a pinch is not a swipe).
 	if iv.pinchDist > 0 {
-		iv.pinchDist = 0
-		iv.touches = make(map[int]fyne.Position)
-		iv.swipeAccum = 0
-		iv.swipeVertAccum = 0
-		// Snap to the default fillWindow view if the pinch settled inside the
-		// fit-to-screen detent (mirrors TouchUp, which is not delivered here).
-		if zf := iv.zoomFactor(); zf > 0.86 && zf < 1.14 {
-			iv.fillWindow = true
-		}
-		iv.newSize = true
-		iv.changeFn()
-		iv.container.Refresh()
-		iv.applyZoomQuality()
+		iv.endPinch()
 		return
 	}
 
@@ -576,28 +570,42 @@ func (iv *ImageView) TouchDown(e *mobile.TouchEvent) {
 func (iv *ImageView) TouchUp(e *mobile.TouchEvent) {
 	wasPinching := iv.pinchDist > 0
 	delete(iv.touches, e.ID)
-	if len(iv.touches) < 2 {
-		iv.pinchDist = 0
-		// Clear all remaining entries. The surviving finger is tracked by
-		// Dragged for panning; a stale map entry here would let TouchMoved
-		// mistake it for a second active touch and re-run pinch/resize logic.
-		iv.touches = make(map[int]fyne.Position)
+	if len(iv.touches) >= 2 {
+		return
 	}
-	// A pinch mutates iv.size/iv.pos via direct Resize/Move (no Refresh, to
-	// stay smooth). When it ends, sync the layout state and update the title
-	// once so downstream (zoom %, high-quality raster) reflects the final zoom.
-	if wasPinching && iv.pinchDist == 0 {
-		// If the pinch settled inside the fit-to-screen detent, snap to the
-		// default fillWindow view. Using fillWindow (not a fixed size) means the
-		// layout re-fits automatically on orientation/viewport changes.
-		if zf := iv.zoomFactor(); zf > 0.86 && zf < 1.14 {
-			iv.fillWindow = true
-		}
-		iv.newSize = true
-		iv.changeFn()
-		iv.container.Refresh()
-		iv.applyZoomQuality()
+	if wasPinching {
+		iv.endPinch()
+		return
 	}
+	// Not pinching: drop any stale entries so a later second finger is
+	// recognised as the start of a fresh pinch.
+	iv.touches = make(map[int]fyne.Position)
+}
+
+// endPinch finishes an in-progress pinch: clears the touch state and syncs the
+// layout/title once. A pinch mutates iv.size/iv.pos via direct Resize/Move
+// (no Refresh) to stay smooth; here the final zoom is committed so downstream
+// (zoom % title, full-resolution swap) reflects it. Shared by TouchUp and
+// dragEndMobile, since the driver delivers only one of them depending on
+// whether the primary finger dragged.
+func (iv *ImageView) endPinch() {
+	iv.pinchDist = 0
+	// Clear all remaining entries. The surviving finger is tracked by Dragged
+	// for panning; a stale map entry here would let TouchMoved mistake it for
+	// a second active touch and re-run pinch/resize logic.
+	iv.touches = make(map[int]fyne.Position)
+	iv.swipeAccum = 0
+	iv.swipeVertAccum = 0
+	// If the pinch settled inside the fit-to-screen detent, snap to the
+	// default fillWindow view. Using fillWindow (not a fixed size) means the
+	// layout re-fits automatically on orientation/viewport changes.
+	if zf := iv.zoomFactor(); zf > 0.86 && zf < 1.14 {
+		iv.fillWindow = true
+	}
+	iv.newSize = true
+	iv.changeFn()
+	iv.container.Refresh()
+	iv.applyZoomQuality()
 }
 
 func (iv *ImageView) TouchCancel(e *mobile.TouchEvent) {
@@ -656,11 +664,12 @@ func (iv *ImageView) TouchMoved(e *mobile.TouchEvent) {
 	iv.pos.X = clampF(iv.pos.X, minX, maxX)
 	iv.pos.Y = clampF(iv.pos.Y, minY, maxY)
 
-	// Resize/move the widget directly instead of container.Refresh(): a full
-	// Refresh cascades into canvas.Image.Refresh(), which re-rasterizes the
-	// source bitmap every frame and makes the pinch choppy. Resize only
-	// relayouts and lets the GPU scale the existing texture. The title/refresh
-	// is synced once when the pinch ends (TouchUp).
+	// Resize/move the widget directly instead of container.Refresh(). With
+	// ScaleMode Fastest the vendored Fyne fork's canvas.Image.Resize only
+	// requests a repaint (no texture invalidation), so a pinch frame is just
+	// one textured quad drawn at the new size; the bitmap is uploaded once
+	// (as *image.RGBA, see LoadImage/decodeFullImage) and rescaled on the GPU.
+	// The title/layout state is synced once when the pinch ends (endPinch).
 	iv.Resize(newSize)
 	iv.Move(iv.pos)
 }

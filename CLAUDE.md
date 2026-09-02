@@ -39,8 +39,13 @@ widget (tie-fm) and the tie client dependency.
 The Fyne fork submodule must be checked out before building:
 `git clone --recurse-submodules …` or `git submodule update --init`. The
 fork adds: `canvas.GLVideo` (libmpv video embedding), Android system-bar
-toggle via `SetFullScreen`, and platform-dependent texture-cache lifetimes
-(see below).
+toggle via `SetFullScreen`, platform-dependent texture-cache lifetimes
+(see below), and a `canvas.Image.Resize` that only repaints (no texture
+invalidation) for `ImageScaleFastest`/`ImageScalePixels` — the texture holds
+the source pixels unchanged in those modes, so per-frame resizes (pinch zoom
+in `ImageView.TouchMoved`) draw the cached texture instead of re-uploading
+the bitmap. Pair this with `*image.RGBA` bitmaps (`toRGBA`): any other pixel
+type costs a full-bitmap `draw.Draw` on the UI thread at upload.
 
 ---
 

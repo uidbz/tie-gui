@@ -103,19 +103,27 @@ These live on `ImageView` in `gallery/imageview.go`:
 
 ### Performance notes
 
-Pinch zoom resizes the image widget every frame. Two things keep it smooth:
+Pinch zoom resizes the image widget every frame. Four things keep it smooth:
 
+- **Fork patch: `canvas.Image.Resize` does not invalidate the texture for
+  `ImageScaleFastest`/`ImageScalePixels`.** Upstream Fyne queues a texture
+  refresh on every resize, so a resize per pinch frame meant deleting and
+  re-uploading the whole bitmap each frame (plus a CPU pixel conversion). With
+  those scale modes the uploaded texture holds the source pixels unchanged, so
+  the fork only requests a repaint and the GPU rescales the cached texture
+  (`third_party/fyne/canvas/image.go`). A pinch frame is now one textured quad.
 - **Direct resize, not `Refresh`.** During a live pinch, `TouchMoved` calls
-  `iv.Resize`/`iv.Move` directly rather than `container.Refresh()`. A full
-  refresh cascades into `canvas.Image.Refresh()` and frees/re-uploads the GL
-  texture every frame. The high-quality state (zoom-% title, texture) is synced
-  once when the pinch ends in `TouchUp`.
+  `iv.Resize`/`iv.Move` directly rather than `container.Refresh()`. The zoom-%
+  title and layout state are synced once when the pinch ends (`endPinch`).
+- **Upload-ready bitmaps.** `LoadImage` and `decodeFullImage` convert the decoded
+  image to `*image.RGBA` (`toRGBA`), the only type the GL painter uploads
+  without a full-bitmap `draw.Draw` on the UI thread. The full-res decode does
+  this on its background goroutine.
 - **Downscale on load (`downscaleForMobile`).** Full-resolution phone photos are
-  12MP+ (~48MB of RGBA); re-uploading that texture per frame is the dominant
-  cost. On mobile the decoded image is scaled so its longest edge is ≤ 2× the
-  screen's longest edge — a few MB, with headroom to stay sharp when zooming in.
-  The GPU (`ImageScaleFastest`) handles the actual zoom scaling. Desktop keeps
-  full resolution.
+  12MP+ (~48MB of RGBA). On mobile the decoded image is scaled so its longest
+  edge is ≤ 2× the screen's longest edge, keeping the initial texture a few MB;
+  `applyZoomQuality` swaps in the full-resolution decode once the user zooms
+  past 1.15×. Desktop keeps full resolution.
 
 ### Loading images — the folder picker
 
