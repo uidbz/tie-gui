@@ -173,8 +173,8 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 				Password: hostPass.Text,
 				Insecure: hostInsecure.Checked,
 			}
-			// Keep top-level filehost resolution finding this host.
-			cfg.DefaultFileHosts = prependUnique(hostName.Text, cfg.DefaultFileHosts)
+			// The collection entry's own FileHosts already names this host; do
+			// not touch the shared top-level DefaultFileHosts.
 		}
 
 		if err := conf.WriteConfig(savePath, cfg); err != nil {
@@ -251,16 +251,4 @@ func clone(c client.Config) client.Config {
 	}
 	c.FileHosts = hosts
 	return c
-}
-
-// prependUnique returns ss with name at the front, removing any duplicate.
-func prependUnique(name string, ss []string) []string {
-	out := make([]string, 0, len(ss)+1)
-	out = append(out, name)
-	for _, s := range ss {
-		if s != name {
-			out = append(out, s)
-		}
-	}
-	return out
 }

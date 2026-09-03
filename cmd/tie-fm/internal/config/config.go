@@ -93,7 +93,9 @@ func Default() Config {
 
 // DefaultTieConfig is the tie client config used when Config.TieConfig is empty.
 // It points at a local tie server (triplestore :1161, filehost :1162), matching the
-// test-env sandbox.
+// test-env sandbox. The explicit [Collections] entry keeps the config in the same
+// normalized shape client.LoadConfig produces, so collection-aware filehost
+// resolution (TieClient.ResolveHosts) finds the default host.
 func DefaultTieConfig() client.Config {
 	return client.Config{
 		Username:         "defaultuser",
@@ -104,6 +106,14 @@ func DefaultTieConfig() client.Config {
 		DefaultFileHosts: []string{"default"},
 		FileHosts: map[string]client.FileHost{
 			"default": {URL: "http://localhost:1162"},
+		},
+		DefaultCollection: "Main",
+		Collections: map[string]client.CollectionEntry{
+			"Main": {
+				Namespace:  "Collections",
+				Collection: "Main",
+				FileHosts:  []string{"default"},
+			},
 		},
 	}
 }
