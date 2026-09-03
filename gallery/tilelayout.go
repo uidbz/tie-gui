@@ -211,23 +211,24 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	}
 
 	if currentPage < maxPages-1 {
-		if layout.nextPageButton == nil {
-			layout.nextPageButton = widget.NewButton("Load Next Page ▼", func() {
-				if layout.viewer != nil {
-					layout.viewer.ChangePage(currentPage + 1)
-				}
-			})
-			layout.nextPageButton.Importance = widget.HighImportance
-		} else {
-			// Update button text in case page number changed
-			layout.nextPageButton.SetText("Load Next Page ▼")
-			layout.nextPageButton.OnTapped = func() {
-				if layout.viewer != nil {
-					layout.viewer.ChangePage(currentPage + 1)
+		fyne.Do(func() {
+			// Widget creation and mutation belong on the UI goroutine: the
+			// enclosing PlaceTiles runs on a background goroutine.
+			if layout.nextPageButton == nil {
+				layout.nextPageButton = widget.NewButton("Load Next Page ▼", func() {
+					if layout.viewer != nil {
+						layout.viewer.ChangePage(currentPage + 1)
+					}
+				})
+				layout.nextPageButton.Importance = widget.HighImportance
+			} else {
+				// Update the callback in case the page number changed
+				layout.nextPageButton.OnTapped = func() {
+					if layout.viewer != nil {
+						layout.viewer.ChangePage(currentPage + 1)
+					}
 				}
 			}
-		}
-		fyne.Do(func() {
 			layout.grid.Add(layout.nextPageButton)
 		})
 	}
