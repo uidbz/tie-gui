@@ -44,6 +44,7 @@ type ImageConfig struct {
 	FullScreen    []fyne.KeyName
 	RunCmda       []fyne.KeyName
 	ShowTagbar    []fyne.KeyName
+	ToggleInfo    []fyne.KeyName
 	CmdA          string
 	SaveImage     []fyne.KeyName
 	SaveDir       string

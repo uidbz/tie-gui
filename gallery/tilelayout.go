@@ -59,13 +59,23 @@ type TileLayout struct {
 	viewer           *Gallery // TODO Phase 3: remove this back-reference
 	offset           int
 	currentlyLoading sync.WaitGroup
-	tileCache        *tileCache
-	showLabels       bool
+	// placement tracks a running PlaceTiles call: Add(1) before spawning,
+	// Done when it returns. Tests Wait on it to observe page placement
+	// (with the test driver, PlaceTiles' fyne.Do blocks run inline before
+	// it returns, so Wait covers the whole placement).
+	placement  sync.WaitGroup
+	tileCache  *tileCache
+	showLabels bool
 	// Direct access to avoid back-reference through viewer
 	thumbnailer   Thumbnailer
 	refreshThumbs bool
 	// Pagination button (shown at end of gallery when more pages exist)
 	nextPageButton *widget.Button
+	// pendingReveal, when >= 0, is the page-relative tile index PlaceTiles
+	// scrolls into view after placing this page (set by showGallery when
+	// returning from the single-image view to a different page). Consumed
+	// once by the page-placement completion block.
+	pendingReveal int
 }
 
 // loadedTile carries a finished thumbnail tile from a loader worker to the
@@ -138,6 +148,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 		showLabels:    showLabels,
 		thumbnailer:   viewer.Thumbnailer,
 		refreshThumbs: viewer.refreshThumbs,
+		pendingReveal: -1,
 	}
 
 	for i := 0; i < config.General.Workers; i++ {
@@ -227,6 +238,17 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	// (unlike grid.Refresh, which recursively refreshes all children).
 	fyne.Do(func() {
 		layout.relayoutGrid()
+		// A pending reveal (returning from the single-image view to a
+		// freshly placed page) scrolls the target tile into view now that
+		// this page's tiles are positioned. Consumed exactly once.
+		if layout.pendingReveal >= 0 {
+			idx := layout.pendingReveal
+			layout.pendingReveal = -1
+			if idx < len(layout.tiles) {
+				tile := layout.tiles[idx]
+				layout.scrollToOffset(tile.Position().Y, tile.Size().Height)
+			}
+		}
 	})
 }
 
@@ -365,6 +387,28 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 	} else {
 		layout.minHeight = currentY
 	}
+}
+
+// scrollToOffset scrolls the gallery so the tile row at (y, h) sits in the
+// middle of the viewport, clamped to the scrollable range.
+func (layout *TileLayout) scrollToOffset(y, h float32) {
+	v := layout.viewer
+	if v == nil || v.scroll == nil {
+		return
+	}
+	viewport := v.scroll.Size().Height
+	target := y - (viewport-h)/2
+	max := layout.minHeight - viewport
+	if max < 0 {
+		max = 0
+	}
+	if target < 0 {
+		target = 0
+	}
+	if target > max {
+		target = max
+	}
+	v.scroll.ScrollToOffset(fyne.NewPos(0, target))
 }
 
 // ToggleLabels flips the filename label visibility for all current tiles and

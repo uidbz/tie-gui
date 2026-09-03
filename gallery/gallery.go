@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -17,6 +16,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/mpvplayer"
@@ -89,32 +89,55 @@ type Gallery struct {
 	// Internal Wiring — Do Not Access Directly
 	// ═══════════════════════════════════════════════════════════════════════
 
-	gallery           *fyne.Container
-	imageFiles        []*ImageInfo
-	layout            *TileLayout
-	window            fyne.Window
-	app               fyne.App
-	platform          *Platform
-	currentIndex      int
-	currentPath       string
+	gallery      *fyne.Container
+	imageFiles   []*ImageInfo
+	layout       *TileLayout
+	window       fyne.Window
+	app          fyne.App
+	platform     *Platform
+	currentIndex int
+	currentPath  string
+	// cacheMu guards cache: LoadImageToCache runs on the UI goroutine (via
+	// ChangeImage) and on background prefetch goroutines concurrently.
+	cacheMu           sync.Mutex
 	cache             map[string]*ImageView
 	scroll            *container.Scroll
 	savedScrollOffset fyne.Position
-	hotkeys       []Hotkey
-	loading       sync.WaitGroup
-	galleryLoaded bool
-	config        Config
-	bottomBar     *fyne.Container
-	sidebarStored fyne.CanvasObject // saved sidebar when hidden by the toggle
-	sidebarToggle *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
-	menuButton    *widget.Button    // ☰ menu button in the bottom bar (right side)
-	refreshThumbs bool
-	tileOnclick   func(*Tile)
-	currentPage   int
-	maxPages      int
-	isFullscreen  bool
-	currentVideo  *mpvplayer.Video // non-nil while a video plays in the main window
-	videoOnClose  func()           // cleanup (e.g. temp-file removal) run after the video closes
+	hotkeys           []Hotkey
+	loading           sync.WaitGroup
+	galleryLoaded     bool
+	config            Config
+	bottomBar         *fyne.Container
+	sidebarStored     fyne.CanvasObject // saved sidebar when hidden by the toggle
+	sidebarToggle     *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
+	menuButton        *widget.Button    // ☰ menu button in the bottom bar (right side)
+	refreshThumbs     bool
+	tileOnclick       func(*Tile)
+	currentPage       int
+	maxPages          int
+	isFullscreen      bool
+	currentVideo      *mpvplayer.Video // non-nil while a video plays in the main window
+	videoOnClose      func()           // cleanup (e.g. temp-file removal) run after the video closes
+	// openedInfo records the gallery entry whose single-image view is (or was
+	// last) open; showGallery switches to its page and scrolls it into view.
+	openedInfo *ImageInfo
+	// infoOverlay, when non-nil, is the metadata panel laid over the
+	// single-image view (toggled with the I key or the ☰ menu).
+	infoOverlay *infoOverlay
+	// sizeWatcher reports grid-width changes so the pagination links are
+	// rebuilt when the window is resized (2-6 page slots by width).
+	sizeWatcher *sizeWatcher
+	// imageMenuButton/imageMenuOverlay float a ☰ menu button over the
+	// bottom-right of the single-image view so the gallery menu (image
+	// info, filename toggle) is reachable while an image is open; the
+	// bottom bar (and its own menu button) is not on screen then.
+	imageMenuButton  *widget.Button
+	imageMenuOverlay *fyne.Container
+	// infoMetadataFn loads the info overlay's byte-level metadata (size,
+	// format, EXIF); nil selects asyncInfoMetadata. Tests substitute a
+	// synchronous implementation because the test driver runs fyne.Do
+	// inline, which would race with UI-thread text shaping.
+	infoMetadataFn func(info *ImageInfo, apply func(imageMetadata))
 }
 
 // NewGallery creates a Gallery instance but does not wire hotkeys or layout.
@@ -214,6 +237,7 @@ func (viewer *Gallery) ShowImageDir(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
 	viewer.currentPage = 0
 	viewer.layout.offset = 0
+	viewer.openedInfo = nil
 	viewer.ReadImageDir(path, nil)
 	viewer.LoadGallery()
 	viewer.window.SetContent(viewer.Content)
@@ -223,6 +247,7 @@ func (viewer *Gallery) ShowImageArchive(path string) {
 	viewer.imageFiles = make([]*ImageInfo, 0)
 	viewer.currentPage = 0
 	viewer.layout.offset = 0
+	viewer.openedInfo = nil
 	viewer.ReadImageArchive(path)
 	viewer.LoadGallery()
 	viewer.window.SetContent(viewer.Content)
@@ -239,6 +264,15 @@ func (viewer *Gallery) Init() {
 	viewer.layout.grid = viewer.gallery
 	viewer.layout.InitHotkeys()
 	viewer.InitHotkeys()
+	// The floating image-view menu button opens the same popup menu as the
+	// bottom-bar button. It is stacked over the image by ChangeImage (the
+	// bottom bar is not on screen then); a separate instance is required
+	// because Fyne objects cannot be shared between two parents.
+	viewer.imageMenuButton = widget.NewButton("☰", func() {
+		viewer.showGalleryMenu()
+	})
+	viewer.imageMenuOverlay = container.NewBorder(nil,
+		container.NewHBox(layout.NewSpacer(), viewer.imageMenuButton), nil, nil)
 }
 
 // ToggleSidebar hides the sidebar when it is visible, and restores it when
@@ -260,13 +294,23 @@ func (viewer *Gallery) CreateView() {
 	if viewer.scroll == nil {
 		viewer.scroll = container.NewScroll(viewer.gallery)
 	}
+	// The size watcher sits below the scroll container (never intercepting
+	// pointer events) and reports grid-width changes so the pagination links
+	// can be rebuilt for the new window width.
+	if viewer.sizeWatcher == nil {
+		viewer.sizeWatcher = newSizeWatcher(func(width float32) {
+			if viewer.galleryLoaded && viewer.bottomBar != nil {
+				viewer.buildPagination()
+			}
+		})
+	}
 	// On mobile, overlay the grid with a horizontal-swipe catcher so the app can
 	// page to an adjacent view; it forwards vertical drags back to the scroller.
 	// The callbacks are read late (they may be wired after CreateView), so the
 	// overlay is added whenever the platform uses drag gestures.
-	grid := fyne.CanvasObject(viewer.scroll)
+	grid := fyne.CanvasObject(container.NewStack(viewer.sizeWatcher, viewer.scroll))
 	if viewer.platform != nil && viewer.platform.UsesMobileDragGestures() {
-		grid = container.NewStack(viewer.scroll, newGridSwipeOverlay(viewer))
+		grid = container.NewStack(viewer.sizeWatcher, viewer.scroll, newGridSwipeOverlay(viewer))
 	}
 	if viewer.Sidebar != nil {
 		split := container.NewHSplit(viewer.Sidebar, grid)
@@ -329,6 +373,17 @@ func (viewer *Gallery) showGalleryMenu() {
 		}
 	}))
 
+	// Image info overlay: only meaningful while a single image is displayed.
+	if viewer.imageViewActive() {
+		infoLabel := "Image info"
+		if viewer.infoOverlay != nil && viewer.infoOverlay.Visible() {
+			infoLabel = "Hide image info"
+		}
+		items = append(items, fyne.NewMenuItem(infoLabel, func() {
+			viewer.ToggleInfoOverlay()
+		}))
+	}
+
 	// Future options can be added here:
 	// - Sort order
 	// - Grid size
@@ -339,10 +394,15 @@ func (viewer *Gallery) showGalleryMenu() {
 	menu := fyne.NewMenu("", items...)
 	popUpMenu := widget.NewPopUpMenu(menu, viewer.window.Canvas())
 
-	// Position the menu at the bottom-right, near the menu button
-	// Get the button position and size
-	buttonPos := fyne.CurrentApp().Driver().AbsolutePositionForObject(viewer.menuButton)
-	buttonSize := viewer.menuButton.Size()
+	// Position the menu at the bottom-right, near the button that opened it:
+	// the floating button while the image view is on screen, otherwise the
+	// bottom-bar button.
+	anchor := viewer.menuButton
+	if viewer.imageViewActive() && viewer.imageMenuButton != nil {
+		anchor = viewer.imageMenuButton
+	}
+	buttonPos := fyne.CurrentApp().Driver().AbsolutePositionForObject(anchor)
+	buttonSize := anchor.Size()
 
 	// Position menu above the button, aligned to the right edge
 	menuPos := fyne.NewPos(
@@ -369,37 +429,19 @@ func (viewer *Gallery) LoadGallery() {
 	// query swaps viewer.imageFiles from its own goroutine, and reading the
 	// header inside the spawned goroutine would race with that swap.
 	imageFiles := viewer.imageFiles
+	viewer.layout.placement.Add(1)
 	go func() {
+		defer viewer.layout.placement.Done()
 		viewer.layout.PlaceTiles(imageFiles)
 	}()
-	if viewer.bottomBar == nil {
-		prevPage := widget.NewHyperlink("Prev", nil)
-		prevPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage - 1) }
-		nextPage := widget.NewHyperlink("Next", nil)
-		nextPage.OnTapped = func() { viewer.ChangePage(viewer.currentPage + 1) }
-		viewer.bottomBar = container.NewHBox(prevPage, nextPage)
-	}
-	imagesPerPage := viewer.config.General.ImagesPerPage
-	viewer.maxPages = len(viewer.imageFiles)/imagesPerPage + 1
-	viewer.bottomBar.Objects = viewer.bottomBar.Objects[:2]
-	for i := 0; i < viewer.maxPages; i++ {
-		i := i
-		start := i*imagesPerPage + 1
-		end := start + imagesPerPage - 1
-		if i == viewer.maxPages-1 {
-			end = len(viewer.imageFiles)
-		}
-		page := widget.NewHyperlink(strconv.Itoa(start)+"-"+strconv.Itoa(end), nil)
-		page.OnTapped = func() {
-			viewer.ChangePage(i)
-		}
-		if i == viewer.currentPage {
-			page.TextStyle.Bold = true
-		}
-		viewer.bottomBar.Add(page)
-	}
-	viewer.bottomBar.Refresh()
+	viewer.buildPagination()
 	viewer.galleryLoaded = true
+	// A fresh gallery view (new page, new directory, new query) starts at
+	// the top; showGallery's tile-tracking restore is the only path that
+	// scrolls anywhere else.
+	if viewer.scroll != nil {
+		viewer.scroll.ScrollToOffset(fyne.NewPos(0, 0))
+	}
 }
 
 func (viewer *Gallery) CurrentImageInfo() *ImageInfo {
@@ -437,6 +479,9 @@ func (viewer *Gallery) ChangeGallery() {
 
 	viewer.currentPage = 0
 	viewer.layout.offset = 0
+	// The image list was replaced; any remembered open entry no longer
+	// applies to it.
+	viewer.openedInfo = nil
 	viewer.LoadGallery()
 	viewer.window.SetContent(viewer.Content)
 }
@@ -461,6 +506,8 @@ func (viewer *Gallery) ChangePage(page int) {
 }
 
 func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
+	viewer.cacheMu.Lock()
+	defer viewer.cacheMu.Unlock()
 	if x, ok := viewer.cache[info.Path]; ok == false {
 		if viewer.OnTapped != nil {
 			info.OnTapped = viewer.OnTapped
@@ -596,6 +643,11 @@ func (viewer *Gallery) InitHotkeys() {
 	for _, x := range bindings.ShowGallery {
 		add(Hotkey{x, showGallery})
 	}
+	for _, x := range bindings.ToggleInfo {
+		add(Hotkey{x, func() {
+			viewer.ToggleInfoOverlay()
+		}})
+	}
 	// Gallery navigation hotkeys (ScrollDown/ScrollUp/PathLevelUp) live in
 	// TileLayout.InitHotkeys: KeyPress dispatches layout.hotkeys on every
 	// platform, while viewer.hotkeys reach the desktop ImageView via focus
@@ -666,13 +718,62 @@ func (viewer *Gallery) showGallery() {
 		viewer.CurrentImageView.fyneImage.Image = nil
 		viewer.CurrentImageView.fyneImage.Refresh()
 	}
-	if !viewer.galleryLoaded {
+	// The info overlay belongs to the image view; close it when leaving.
+	if viewer.infoOverlay != nil {
+		viewer.infoOverlay.Hide()
+	}
+	// Switch back to the page that holds the opened entry before the tiles
+	// are placed, so the grid ends up showing the image the user came from.
+	// The entry may have moved to a different page while it was open (next/
+	// prev navigation, or a resized window re-slicing the pages).
+	pageBefore := viewer.currentPage
+	if viewer.openedInfo != nil && len(viewer.imageFiles) > 0 {
+		idx := viewer.openedInfo.order
+		if idx < 0 || idx >= len(viewer.imageFiles) || viewer.imageFiles[idx] != viewer.openedInfo {
+			idx = -1
+			for i, item := range viewer.imageFiles {
+				if item == viewer.openedInfo {
+					idx = i
+					break
+				}
+			}
+		}
+		if idx >= 0 {
+			if ipp := viewer.config.General.ImagesPerPage; ipp > 0 {
+				viewer.currentPage = idx / ipp
+				viewer.layout.offset = viewer.currentPage * ipp
+			}
+		}
+	}
+	reloaded := !viewer.galleryLoaded || viewer.currentPage != pageBefore
+	if reloaded {
+		// The page is about to be replaced: hand the tile's page-relative
+		// index to PlaceTiles, which scrolls it into view once the new
+		// page's tiles are positioned. Must be set before LoadGallery
+		// spawns the placement goroutine.
+		if viewer.openedInfo != nil && viewer.layout != nil {
+			if idx := viewer.openedInfo.order - viewer.layout.offset; idx >= 0 {
+				viewer.layout.pendingReveal = idx
+			}
+		}
 		viewer.LoadGallery()
+	} else {
+		viewer.buildPagination()
 	}
 	viewer.CreateView()
-	// Restore the scroll position that was active before entering the
-	// single-image view.
-	if viewer.scroll != nil {
+	// On an unchanged page the tiles are already positioned: scroll the
+	// opened tile into view directly (re-laying out first in case the
+	// window was resized while the image was open).
+	if !reloaded && viewer.scroll != nil && viewer.openedInfo != nil && viewer.layout != nil {
+		idx := viewer.openedInfo.order - viewer.layout.offset
+		if idx >= 0 && idx < len(viewer.layout.tiles) {
+			viewer.layout.relayoutGrid()
+			tile := viewer.layout.tiles[idx]
+			viewer.layout.scrollToOffset(tile.Position().Y, tile.Size().Height)
+		} else {
+			viewer.scroll.ScrollToOffset(viewer.savedScrollOffset)
+		}
+	} else if !reloaded && viewer.scroll != nil {
 		viewer.scroll.ScrollToOffset(viewer.savedScrollOffset)
 	}
 	viewer.window.SetTitle("imgview")
@@ -729,6 +830,9 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 	img := viewer.LoadImageToCache(info)
 	viewer.currentPath = filepath.Dir(info.Path)
 	viewer.CurrentImageView = img
+	// Remember which gallery entry is open so showGallery can switch back to
+	// its page and scroll it into view, even across pages.
+	viewer.openedInfo = info
 	// Save the gallery scroll position so it can be restored when the user
 	// navigates back from the single-image view.
 	if viewer.scroll != nil {
@@ -751,6 +855,17 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 		go func() { viewer.LoadImageToCache(next) }()
 	}
 	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
+	// Float the ☰ menu button over the image so the gallery menu (image
+	// info, filename toggle) stays reachable while an image is open.
+	if viewer.imageMenuOverlay != nil {
+		viewer.Content.Objects = append(viewer.Content.Objects, viewer.imageMenuOverlay)
+	}
+	// Keep the info overlay across next/prev navigation: re-stack it above
+	// the new image and retarget its contents.
+	if viewer.infoOverlay != nil && viewer.infoOverlay.Visible() {
+		viewer.Content.Objects = append(viewer.Content.Objects, viewer.infoOverlay)
+		viewer.infoOverlay.setInfo(info)
+	}
 	viewer.Content.Refresh()
 	if viewer.platform.ShouldAutoFullscreen() && !viewer.isFullscreen {
 		viewer.isFullscreen = true

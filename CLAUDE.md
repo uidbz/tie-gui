@@ -17,6 +17,8 @@ Fyne fork — hence the monorepo.
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
 | `gallery/imageview.go` | Single-image display widget |
 | `gallery/imageinfo.go` | Per-item data model (extracted from tilelayout.go in Phase 1) |
+| `gallery/pagination.go` | Elided bottom-bar page links (2-6 by width) + grid `sizeWatcher` |
+| `gallery/infooverlay.go` | Single-image metadata/EXIF overlay (I key, ☰ menu) |
 | `gallery/helper.go` | File-type detection utilities (extracted from imageview.go in Phase 1) |
 | `gallery/apphelper.go` | Shared app bootstrap helpers (Phase 4) |
 | `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) |
@@ -119,6 +121,25 @@ for a fully scrolled 500-tile page) in exchange for hitch-free scroll-back.
 Large "Load Next Page ▼" button appended to `grid.Objects` after all tiles
 when `currentPage < maxPages - 1`. Handled specially in `Layout()`: given
 full width and fixed height (60px desktop, 80px mobile).
+
+### Pagination links & scroll behavior (`gallery/pagination.go`)
+The bottom bar shows **2-6 numbered page links** depending on the grid width
+(`paginationSlotCount`), with first/last pages pinned, the current page kept
+visible, and hidden middle ranges collapsed into "…" labels (`pageSlots`).
+Fyne has no window-resize callback, so a transparent `sizeWatcher` widget
+stacked **below** the scroll container (it never intercepts pointer events)
+reports grid-width changes and rebuilds the links on window resize.
+
+- **Page navigation scrolls to the top**: `LoadGallery` always resets the
+  scroll offset to 0 (new page, new directory, new tag query).
+- **Returning from the single-image view scrolls to the opened tile**:
+  `ChangeImage` records `viewer.openedInfo`; `showGallery` switches back to
+  that entry's page (it may differ from the page the user left, after
+  next/prev navigation) and scrolls the tile into view. When the page must
+  be re-placed, the tile's page-relative index is handed to
+  `layout.pendingReveal`, which `PlaceTiles` consumes after the new page is
+  laid out; on an unchanged page the scroll is computed directly from the
+  live tile position.
 
 ### Mobile Config Adjustments
 `Config.AdjustForMobile()` reduces memory footprint on mobile platforms:
@@ -340,11 +361,21 @@ required because no widget is focused in the gallery grid on desktop.
 `viewer.hotkeys` leaves them dead on the desktop gallery view.
 
 ### Gallery UI controls
-- **☰ Menu button** (bottom-right): Opens popup menu with options
+- **☰ Menu button** (bottom-right of the gallery grid; a second floating ☰
+  instance overlays the bottom-right of the single-image view): Opens popup
+  menu with options
   - Show/Hide filenames
+  - Image info (only while a single image is displayed): toggles the
+    metadata overlay — filename, path, type, dimensions, byte size, format,
+    and a curated EXIF section (camera, exposure, dates). Also bound to the
+    **I** key (`[Image] ToggleInfo`, image-view hotkey). Tapping the dimmed
+    scrim outside the panel closes it; the overlay follows next/prev
+    navigation and closes when returning to the grid.
   - (Future: more options)
 - **◀/▶ Toggle** (bottom-left, tie-view only): Show/hide tag sidebar
-- **Pagination** (bottom-center): Page navigation links and "Load Next Page" button at end of gallery
+- **Pagination** (bottom-center): 2-6 elided page links by width (see
+  "Pagination links & scroll behavior") and the "Load Next Page" button at
+  end of gallery
 
 **Default**: Filename labels are OFF by default (saves ~22px vertical space per row). Use ☰ menu → "Show filenames" to enable.
 
@@ -593,6 +624,19 @@ Config file locations: `~/.config/imgview/config.toml` (Linux),
   are only read/written inside `fyne.Do` blocks, so no mutex is needed.
 - Network calls (`tc.Get`, `tc.Query`, `CoTagsForQueryExcludingInput`,
   `getlib.ReadFile`) must run in goroutines, never on the UI goroutine.
+- `Gallery.cache` is guarded by `cacheMu`: `LoadImageToCache` runs both on
+  the UI goroutine (ChangeImage) and on background prefetch goroutines.
+- `layout.placement` (a `sync.WaitGroup`) tracks a running `PlaceTiles` so
+  tests can await page placement deterministically (with the test driver's
+  inline `fyne.Do`, `Wait` covers the whole placement); production code
+  never blocks on it — blocking the UI goroutine would deadlock, since
+  `PlaceTiles` enqueues `fyne.Do` work to it.
+- The Fyne **test driver runs `fyne.Do` inline on the calling goroutine**
+  instead of marshalling to a UI thread, so background work that is safe in
+  production races with test-goroutine widget access. Tests therefore swap
+  in synchronous seams (`Gallery.infoMetadataFn` for the info overlay's
+  EXIF load) and wait on `placement` + `currentlyLoading` + the tile
+  updater's trailing debounce before asserting.
 
 ---
 
