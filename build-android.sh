@@ -9,8 +9,11 @@
 # .so files into the APK's lib/arm64-v8a/ and re-signs it.
 #
 # tie-audio is a remote client (it controls a pwplay-server over HTTP),
-# so it needs no native libraries — a plain `fyne package` build. (When the
-# local libmpv playback backend lands there, it will join the bundling path.)
+# so it needs no native libraries. It does import the gallery (album grid),
+# which pulls in mpvplayer, so it is always built with `-tags nompv`: the stub
+# compiles without mpv headers and leaves the APK with no libmpv dependency
+# to bundle. (Without the tag, a solo `build-android.sh tie-audio` fails on
+# `mpv/client.h`, and a combined build silently links libmpv it never ships.)
 #
 # For a libmpv-free build of the viewers (no video, no native libs to bundle),
 # pass NOMPV=1 — it adds `-tags nompv` and skips the bundling step.
@@ -130,7 +133,8 @@ build() {
     id="$(app_id "$app")"
 
     local args=(package -os "$TARGET" --id "$id" -icon Icon.png)
-    if [ "$NOMPV" = "1" ]; then
+    # Apps that don't ship libmpv must not link it either.
+    if [ "$NOMPV" = "1" ] || ! needs_mpv "$app"; then
         args+=(-tags nompv)
     fi
     if [ "${RELEASE:-0}" = "1" ]; then

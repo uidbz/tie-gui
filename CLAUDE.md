@@ -77,7 +77,11 @@ The Android scripts (`build-android.sh`, `install-android.sh`,
 `build-install-android.sh`) cover imgview, tie-view, and tie-audio. The
 audio player bundles no native libs (it's a pwplay-server remote client), so
 the scripts skip the libmpv vendored-libs check and the bundling step for it
-(`needs_mpv` gate in `build-android.sh`).
+(`needs_mpv` gate in `build-android.sh`) and **always build it with
+`-tags nompv`**: tie-audio imports `gallery` (album grid) → `mpvplayer`, and
+the stub is what keeps a solo `build-android.sh tie-audio` (the per-app path
+`build-install-android.sh` uses) from failing on `mpv/client.h` — and keeps
+the APK from linking a libmpv it never ships.
 
 ---
 
@@ -433,29 +437,24 @@ snapshot without a selection-clearing reload.
 
 ---
 
-## Settings profiles (`cmd/tie-view/settings.go`)
+## Settings tab (`cmd/tie-view/settings.go`)
 
-Profiles are stored as a JSON array under the `"tie.profiles"` Preferences key.
-Active profile name under `"tie.activeProfile"`. Legacy flat keys
-(`"tie.webservice"`, etc.) are still read at startup when no profiles exist yet.
+`makeSettingsTab(tc, onApply, quickEditor)` returns a "Settings" tab holding
+an inner `AppTabs`:
 
-```go
-type profile struct {
-    Name             string `json:"name"`
-    Webservice       string `json:"webservice"`
-    Namespace        string `json:"namespace"`
-    Collection       string `json:"collection"`
-    FilehostName     string `json:"filehostName"`
-    FilehostURL      string `json:"filehostURL"`
-    FilehostInsecure bool   `json:"filehostInsecure"`
-}
-```
+- **Connection** — the shared `tieconfig.Editor` (`tieconfig/editor.go`),
+  which edits the tie client config's `[Collections.*]` entries as plain TOML
+  at `tieConfigPath` (resolved once in `main` via `tieconfig.ResolvePath`; on
+  Android this is under `$FILESDIR`, so it survives reinstalls). Apply writes
+  the file, then `*tc = *client.NewTieClientFor(saved, saved.DefaultCollection)`
+  and `onApply()` (→ `reloadTags`). The struct-overwrite pattern (`*tc = *newTc`)
+  propagates the rebuilt inner client (private fields baked at construction)
+  to every existing `*TieClient` pointer without tie module changes.
+- **Quick tags** — `makeQuickTagEditor` (see "Quick tagging mode").
 
-**Apply** writes the profile, calls `applyProfileToConfig(&tc.Config)`, then
-`*tc = *client.NewTieClient(tc.Config)`. The struct-overwrite pattern
-(`*tc = *newTc`) propagates the rebuilt `ws.Client` (which has private fields
-baked at construction) to all existing `*TieClient` pointers without any tie
-module changes. `onApply()` is then called (→ `reloadTags`).
+Fyne Preferences are used only for the quick-tagging on/off flag
+(`quicktag.enabled`); there are no Preferences-based connection profiles
+anymore.
 
 ---
 
@@ -562,6 +561,101 @@ tagger's search trie up to date without a separate network request.
 | `SetCurrentHash(hash)` | Track current image hash; if panel is open, switches it |
 | `OnHide func()` | Called after the panel hides; used to restore keyboard focus on desktop |
 | `OnTagsAdded func([]string)` | Called on the UI goroutine with tags successfully written to tie; the sidebar uses it to grow its search trie |
+| `OnTagsChanged func(hash, tags)` | Called on the UI goroutine with the panel image's full tag list after a user edit (and after a failure reconcile); wired to `quickTagBar.SetTags` |
+| `SetTags(hash, tags)` | External update (from the quick tag bar) of the panel's applied list via `SetSelected` — no tie write; ignored unless `panelHash == hash` |
+
+---
+
+## Quick tagging mode (`cmd/tie-view/quicktag.go`, `quicktagconfig.go`, `quicktag_editor.go`)
+
+A mode for tagging many images fast: the picture stays full-size and a
+translucent pill of icon buttons (`quickTagBar`) overlays the top or bottom
+edge. Each button is one configured tag; tapping it (or pressing its key)
+toggles the tag on the displayed image and writes to tie immediately
+(optimistic flip, revert + "failed: tag" flash on error). A status line
+above/below the pill names the hovered button on desktop and confirms
+toggles ("+ favorite" / "− favorite").
+
+**Toggling the mode:** `[Image] ShowTagbar` key (**T**, previously an
+unbound config slot) or ☰ menu → "Quick tagging mode". The on/off state
+persists in Fyne Preferences (`quicktag.enabled`). `OnImageChange` appends
+`quickBar.Overlay` to `viewer.Content.Objects` (below `taggerOverlay`, so an
+open tag panel covers the bar) and calls `quickBar.SetImage(curReader)`;
+toggling while an image is shown adds/removes the overlay in place
+(`syncQuickOverlay`, using `Gallery.ImageViewActive()`).
+
+**Speed:** `tieReader.tags`/`tagsKnown` cache the image's tags from the
+query's expanded attributes (`buildReaders` reads `RowValues(row, "tag")`),
+so the bar paints correctly the instant an image opens; a background
+`tc.Get(hash)` then reconciles (directory listings carry no tags). Toggles
+made while that fetch is in flight are kept via `pending` and a `gen`
+counter drops stale results. The bar mirrors its applied set back into the
+reader (`syncReader`) and to the image tagger (`OnTagsChanged` ↔ `SetTags`
+in both directions, no ping-pong since `SetTags` never writes). Adds also
+register the tag in `("tags","all")` once per session.
+
+**Hotkeys:** `Gallery.RegisterHotkey(name, fn)` (new, `gallery/gallery.go`)
+appends to `viewer.hotkeys` so bindings reach the desktop via the focused
+`ImageView.TypedKey` and mobile via window-level `KeyPress`, like the
+configured `[Image]` keys. Call it **after** `viewer.Init()` (which resets
+the list). Bindings can't be removed, so main.go registers each key name
+once and looks up the live action in `quickKeys` at press time; per-tag
+`Key` defaults to the button's position 1–9 (`quickTagConfig.normalized`).
+Bar keys only fire while the mode is on and the image view is active.
+
+**Hit-testing:** only the cells (`Tappable`+`Hoverable`) and the pill
+(`tapSink`, swallows near-miss taps) are hit-testable; the rest of the bar
+strip is transparent to taps, and nothing is `Draggable`, so swipes and the
+floating ☰ button keep working.
+
+**Config** (`quicktagconfig.go`): `<config dir>/tieview/quicktags.toml`
+(`$FILESDIR` on Android, else `os.UserConfigDir()`); a commented default
+(favorite with `heart.png`/`heart-grey.png`) is written on first run. The
+top level is the **default set** (`QuickTagSet`, embedded in
+`quickTagConfig` — exported name because go-toml's marshaler skips
+unexported embedded fields); `[Collections.<name>]` tables are
+**per-collection overrides** keyed by the tie config's collection name.
+```toml
+Position = "bottom"   # or "top"
+IconSize = 40         # optional; default 40 desktop / 56 mobile
+
+[[Tag]]
+Tag = "favorite"
+On  = "heart.png"      # applied
+Off = "heart-grey.png" # not applied; empty = dimmed On icon; both empty = text button
+Key = "1"              # optional Fyne key name
+
+[Collections.photos]   # this collection gets its own bar
+Position = "top"       # optional; falls back to the top-level value
+[[Collections.photos.Tag]]
+Tag = "print"
+On  = "icons/printer.png"
+```
+`quickTagConfig.For(collection)` resolves the set to show: an override's
+`Tag` list replaces the default list entirely (even when empty), while its
+`Position`/`IconSize` fall back to the top-level values when unset; `""` or
+an unknown collection yields the default. The active collection is
+`tieClient.Config.DefaultCollection` (the connection editor sets it to the
+applied entry); `applyQuickTagConfig` in main.go re-resolves it and is also
+run from the settings tab's `onApply` (`onCollectionChanged`) so the bar
+follows a connection switch.
+
+Icon paths are absolute or relative to the config dir; `heart.png`,
+`heart-grey.png`, `star-filled.png`, `star-empty.png` are embedded built-ins
+(a same-named file on disk shadows them). Settings → **Quick tags**
+(`makeQuickTagEditor`) edits the same file in-app: a "Bar for" dropdown
+(Default / each configured collection, plus any override-only names so
+stale ones can be removed) picks the set being edited; per-tag cards with a
+PNG file picker (picked files are copied into `<config dir>/icons/`),
+reorder, delete, Apply (save + `quickBar.Rebuild`), "Use default bar"
+(drops the selected collection's override) and "Reload file" for hand edits.
+Switching scope stores unsaved edits in memory (`storeForm`), but a
+collection without an override only gains one if its form differs from the
+default, so browsing the dropdown never creates overrides. The editor
+returns a `refresh` func that re-reads the collection list and jumps to the
+active collection after a connection change. `Rebuild` swaps the buttons
+and re-anchors `Overlay` (same container object, new Border layout) so the
+live view updates without navigation.
 
 ---
 
@@ -577,6 +671,8 @@ type tieReader struct {
     thumbHash  string       // content address of cached thumbnail
     dimensions string       // "WxH" from tie metadata, e.g. "3840x2160"
     isVideo    bool
+    tags       []string     // cached tie tags (quick tag bar); tagsKnown marks them loaded
+    tagsKnown  bool
 }
 ```
 
