@@ -61,6 +61,10 @@ type imageTagger struct {
 	// were successfully written to tie, so the sidebar can add genuinely new
 	// tags to its search trie without a full reload.
 	OnTagsAdded func(tags []string)
+	// OnTagsChanged, when non-nil, is called on the UI goroutine with the
+	// panel image's full tag list whenever the user edits it here, so other
+	// views of the same image (the quick tag bar) stay in step.
+	OnTagsChanged func(hash string, tags []string)
 }
 
 // newImageTagger creates an imageTagger. Call SetAllTags and SetFavoriteTags
@@ -294,6 +298,18 @@ func (it *imageTagger) loadCurrentTags() {
 	}()
 }
 
+// SetTags replaces the panel's applied-tag list for hash from an external
+// source (the quick tag bar) without writing to tie. Ignored unless the panel
+// currently holds that image. Uses SetSelected so OnSelectedChanged does not
+// fire and diff the change back into tie.
+func (it *imageTagger) SetTags(hash string, tags []string) {
+	if hash == "" || it.panelHash != hash {
+		return
+	}
+	it.appliedTags = append([]string(nil), tags...)
+	it.ts.SetSelected(tags)
+}
+
 // syncTags is called by ts.OnSelectedChanged with the current union of
 // included+excluded tags. It diffs newTags against the appliedTags snapshot
 // and persists the additions/removals to tie.
@@ -321,6 +337,9 @@ func (it *imageTagger) syncTags(newTags []string) {
 
 	if len(added) == 0 && len(removed) == 0 {
 		return
+	}
+	if it.OnTagsChanged != nil {
+		it.OnTagsChanged(hash, it.appliedTags)
 	}
 
 	go func() {
@@ -367,6 +386,9 @@ func (it *imageTagger) syncTags(newTags []string) {
 				// Rebuild the selected list to match tie's ground truth.
 				it.appliedTags = append([]string(nil), trueTags...)
 				it.ts.SetSelected(trueTags)
+				if it.OnTagsChanged != nil {
+					it.OnTagsChanged(hash, it.appliedTags)
+				}
 				// TODO: Show error dialog to user (requires window reference)
 				fmt.Printf("imageTagger: reconciled after %d failed tag operations\n", len(failed))
 			})

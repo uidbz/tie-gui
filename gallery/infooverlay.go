@@ -263,6 +263,12 @@ func (viewer *Gallery) imageViewActive() bool {
 	return len(viewer.Content.Objects) > 0 && viewer.Content.Objects[0] == viewer.CurrentImage
 }
 
+// ImageViewActive reports whether the single-image view is currently on
+// screen. Apps use it to decide whether an image-view overlay they manage
+// (e.g. tie-view's quick tag bar) should be added to Content right away or
+// only on the next OnImageChange.
+func (viewer *Gallery) ImageViewActive() bool { return viewer.imageViewActive() }
+
 // ToggleInfoOverlay shows the metadata overlay for the currently displayed
 // image, or hides it when already open. Bound to the I key by default and
 // reachable from the ☰ menu's "Image info" item.

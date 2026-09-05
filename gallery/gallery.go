@@ -713,6 +713,16 @@ func (viewer *Gallery) InitHotkeys() {
 	}
 }
 
+// RegisterHotkey binds an additional image-view hotkey. It reaches the
+// desktop through the focused ImageView's TypedKey (every ChangeImage hands
+// the view the current list) and mobile through the window-level KeyPress,
+// exactly like the configured [Image] bindings. Call it after Init, which
+// resets the list; bindings are never removed, so register each key once and
+// look up any mutable behavior inside the callback.
+func (viewer *Gallery) RegisterHotkey(name fyne.KeyName, function func()) {
+	viewer.hotkeys = append(viewer.hotkeys, Hotkey{name, function})
+}
+
 // showGallery returns to the gallery grid from the single-image or video view,
 // releasing playback/image resources and restoring the prior scroll position.
 func (viewer *Gallery) showGallery() {

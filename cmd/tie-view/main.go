@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -62,6 +63,23 @@ func main() {
 	// by toggling tagger.Panel without rebuilding the content stack.
 	taggerOverlay := container.NewBorder(nil, tagger.Panel, nil, nil)
 
+	// Quick tagging mode: a strip of icon buttons over the image edge that
+	// toggles configured tags with one tap or key. Its configuration lives in
+	// quicktags.toml (edited by hand or via Settings → Quick tags) as a
+	// default set plus per-collection overrides; whether the mode is on
+	// persists in Preferences across sessions.
+	quickCfgPath := quickTagConfigPath()
+	quickCfg := loadQuickTagConfig(quickCfgPath)
+	// activeCollection names the tie collection the live client is bound to
+	// (the settings editor sets DefaultCollection to the applied one).
+	activeCollection := func() string { return tieClient.Config.DefaultCollection }
+	quickBar := newQuickTagBar(tieClient, quickCfg.For(activeCollection()), filepath.Dir(quickCfgPath), platform.IsMobile())
+	const quickPref = "quicktag.enabled"
+	quickEnabled := myApp.Preferences().BoolWithFallback(quickPref, false)
+	// The bar and the tag panel edit the same image; keep them in step.
+	tagger.OnTagsChanged = quickBar.SetTags
+	quickBar.OnTagsChanged = tagger.SetTags
+
 	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		if t.Info.InputIsVideo {
 			go openTieVideo(t.Viewer, t.Info)
@@ -90,20 +108,106 @@ func main() {
 		}
 	}
 	fsTree := newTieFSTree(viewer, tieClient)
+
+	// curReader is the tie entry behind the displayed image (nil for none or
+	// non-tie content), tracked by OnImageChange for the quick tag bar.
+	var curReader *tieReader
+	// syncQuickOverlay adds or removes the bar on the live image view so
+	// toggling the mode takes effect without navigating.
+	syncQuickOverlay := func() {
+		if !viewer.ImageViewActive() {
+			return
+		}
+		objs := viewer.Content.Objects
+		idx := slices.Index(objs, fyne.CanvasObject(quickBar.Overlay))
+		switch {
+		case quickEnabled && idx < 0:
+			viewer.Content.Objects = append(objs, quickBar.Overlay)
+		case !quickEnabled && idx >= 0:
+			viewer.Content.Objects = slices.Delete(objs, idx, idx+1)
+		default:
+			return
+		}
+		viewer.Content.Refresh()
+	}
+	setQuickTagging := func(on bool) {
+		quickEnabled = on
+		myApp.Preferences().SetBool(quickPref, on)
+		if on {
+			quickBar.SetImage(curReader)
+		}
+		syncQuickOverlay()
+	}
+	// Bar shortcuts resolve through quickKeys at press time, so a settings
+	// change only has to register key names not seen before (RegisterHotkey
+	// bindings cannot be removed; duplicates would toggle twice).
+	quickKeys := quickBar.Keys()
+	quickKeysBound := map[fyne.KeyName]bool{}
+	bindQuickKeys := func() {
+		for name := range quickKeys {
+			if quickKeysBound[name] {
+				continue
+			}
+			quickKeysBound[name] = true
+			name := name
+			viewer.RegisterHotkey(name, func() {
+				if fn := quickKeys[name]; fn != nil && quickEnabled && viewer.ImageViewActive() {
+					fn()
+				}
+			})
+		}
+	}
+	// applyQuickTagConfig installs cfg and shows the active collection's set;
+	// also run when the active collection changes so the bar follows it.
+	applyQuickTagConfig := func(cfg quickTagConfig) {
+		quickCfg = cfg
+		quickBar.Rebuild(quickCfg.For(activeCollection()))
+		quickKeys = quickBar.Keys()
+		bindQuickKeys()
+		if quickEnabled && viewer.ImageViewActive() {
+			viewer.Content.Refresh()
+		}
+	}
+
 	viewer.MenuItems = func() []*fyne.MenuItem {
 		label := "Show hidden directories"
 		if fsTree.showHidden {
 			label = "Hide hidden directories"
 		}
-		return []*fyne.MenuItem{fyne.NewMenuItem(label, func() {
-			fsTree.SetShowHidden(!fsTree.showHidden)
-		})}
+		quickLabel := "Quick tagging mode"
+		if quickEnabled {
+			quickLabel = "Quick tagging mode ✓"
+		}
+		return []*fyne.MenuItem{
+			fyne.NewMenuItem(quickLabel, func() { setQuickTagging(!quickEnabled) }),
+			fyne.NewMenuItem(label, func() {
+				fsTree.SetShowHidden(!fsTree.showHidden)
+			}),
+		}
 	}
 	browseDir := func(uid client.DirUID) { fsTree.showDirUID(uid, "") }
-	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger)
+	quickEditor, refreshQuickEditor := makeQuickTagEditor(myWindow, quickCfgPath, quickCfg,
+		func() ([]string, string) { return collectionNames(tieClient.Config), activeCollection() },
+		applyQuickTagConfig)
+	// After a connection change the bar switches to the new collection's set
+	// and the editor follows.
+	onCollectionChanged := func() {
+		applyQuickTagConfig(quickCfg)
+		refreshQuickEditor()
+	}
+	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger, quickEditor, onCollectionChanged)
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
+	// Hotkeys must be registered after Init, which resets the binding list.
+	for _, k := range config.Image.ShowTagbar {
+		viewer.RegisterHotkey(k, func() {
+			if viewer.ImageViewActive() {
+				setQuickTagging(!quickEnabled)
+			}
+		})
+	}
+	bindQuickKeys()
 
 	// Right-click on a gallery tile shows a de-import confirmation dialog.
 	viewer.OnTileSecondaryTapped = func(t *gallery.Tile) {
@@ -174,14 +278,20 @@ func main() {
 
 	viewer.OnImageChange = func(info *gallery.ImageInfo) {
 		gallery.FocusImageViewOnDesktop(myWindow, viewer)
+		curReader, _ = info.CustomReader.(*tieReader)
 		// Overlay the tag panel on top of the image view. ChangeImage already
 		// set Content.Objects to [CurrentImage]; append the taggerOverlay so
-		// the panel can be toggled without rebuilding the content stack.
+		// the panel can be toggled without rebuilding the content stack. The
+		// quick tag bar goes underneath it so an open panel covers the bar.
+		if quickEnabled {
+			viewer.Content.Objects = append(viewer.Content.Objects, quickBar.Overlay)
+			quickBar.SetImage(curReader)
+		}
 		viewer.Content.Objects = append(viewer.Content.Objects, taggerOverlay)
 		viewer.Content.Refresh()
 		// Track which image is displayed so Toggle opens the correct panel.
-		if tr, ok := info.CustomReader.(*tieReader); ok {
-			tagger.SetCurrentHash(tr.hash)
+		if curReader != nil {
+			tagger.SetCurrentHash(curReader.hash)
 		} else {
 			tagger.SetCurrentHash("")
 		}
@@ -212,14 +322,32 @@ func fileHostNames(c client.Config) []string {
 }
 
 // makeSidebar builds the navigation sidebar: the first tab browses images
-// by tag, the second navigates the tie virtual filesystem.
-func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger) *container.AppTabs {
+// by tag, the second navigates the tie virtual filesystem, the third holds
+// the connection and quick tag settings. onCollectionChanged runs after a
+// connection change is applied, once the tag list reload has been kicked off.
+func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger, quickEditor fyne.CanvasObject, onCollectionChanged func()) *container.AppTabs {
 	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir, tagger)
+	onApply := func() {
+		reloadTags()
+		if onCollectionChanged != nil {
+			onCollectionChanged()
+		}
+	}
 	return container.NewAppTabs(
 		container.NewTabItem("Tags", tagWidget),
 		container.NewTabItem("Files", fsTree.tree),
-		makeSettingsTab(tc, reloadTags),
+		makeSettingsTab(tc, onApply, quickEditor),
 	)
+}
+
+// collectionNames returns the sorted collection names of a tie config.
+func collectionNames(c client.Config) []string {
+	names := make([]string, 0, len(c.Collections))
+	for name := range c.Collections {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ratingFilterOptions maps the rating Select's labels to filters. "Any" clears

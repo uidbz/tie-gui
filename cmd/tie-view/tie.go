@@ -61,6 +61,18 @@ type tieReader struct {
 	// the query's expanded attributes for display in the gallery label.
 	filename string
 	isVideo  bool
+	// tags caches the image's tie tags: seeded from the query's expanded
+	// attributes for tag/rating queries (tagsKnown = true), left unknown for
+	// directory listings, and kept current by the quick tag bar. UI-goroutine
+	// state once the reader is handed to the gallery.
+	tags      []string
+	tagsKnown bool
+}
+
+// setTags replaces the cached tag list and marks it known.
+func (t *tieReader) setTags(tags []string) {
+	t.tags = append([]string(nil), tags...)
+	t.tagsKnown = true
 }
 
 // Dimensions implements gallery.DimensionProvider. It parses the "WxH" string
@@ -439,6 +451,8 @@ func buildReaders(viewer *gallery.Gallery, tc *client.TieClient, rows []client.R
 				thumbHash:  client.RowFirst(row, "thumbnail"),
 				dimensions: client.RowFirst(row, "dimensions"),
 				filename:   client.RowFirst(row, "filename"),
+				tags:       client.RowValues(row, "tag"),
+				tagsKnown:  true,
 			})
 		case tieRowDir:
 			uid := client.DirUID(row.Key)
