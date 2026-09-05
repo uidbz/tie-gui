@@ -376,10 +376,13 @@ func classifyTieRow(row client.Row) tieRowKind {
 			return tieRowArchive
 		}
 	}
+	mediaType := client.RowFirst(row, client.TieMediaType.String())
+	if isRaw(mediaType, client.RowFirst(row, "filename")) {
+		return tieRowSkip
+	}
 	if slices.Contains(types, client.TieImageFile.String()) {
 		return tieRowFile
 	}
-	mediaType := client.RowFirst(row, client.TieMediaType.String())
 	if strings.HasPrefix(mediaType, "image/") {
 		return tieRowFile
 	}

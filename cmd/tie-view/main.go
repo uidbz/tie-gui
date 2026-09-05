@@ -90,6 +90,15 @@ func main() {
 		}
 	}
 	fsTree := newTieFSTree(viewer, tieClient)
+	viewer.MenuItems = func() []*fyne.MenuItem {
+		label := "Show hidden directories"
+		if fsTree.showHidden {
+			label = "Hide hidden directories"
+		}
+		return []*fyne.MenuItem{fyne.NewMenuItem(label, func() {
+			fsTree.SetShowHidden(!fsTree.showHidden)
+		})}
+	}
 	browseDir := func(uid client.DirUID) { fsTree.showDirUID(uid, "") }
 	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger)
 

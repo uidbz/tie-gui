@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -43,6 +44,11 @@ type tieFSTree struct {
 	branches map[string]bool              // node ID -> is a directory
 	files    map[string]tieFSNode         // leaf node ID -> file entry
 	readers  map[string]*tieReader        // content hash -> reader (keeps thumbHash warm)
+
+	// showHidden controls whether hidden directories (names with a leading
+	// ".") appear in the tree. Defaults to false; toggled via the gallery
+	// ☰ menu.
+	showHidden bool
 }
 
 // newTieFSTree returns a tree for navigating the tie virtual filesystem.
@@ -105,6 +111,11 @@ func (t *tieFSTree) childUIDs(uid widget.TreeNodeID) []widget.TreeNodeID {
 		if p == uid || baseName(p) == "" {
 			continue
 		}
+		// Hidden directories (leading ".") are skipped unless the user
+		// enabled them via the gallery ☰ menu toggle.
+		if !t.showHidden && strings.HasPrefix(baseName(p), ".") {
+			continue
+		}
 		subPaths = append(subPaths, p)
 	}
 	sort.Slice(subPaths, func(i, j int) bool { return baseName(subPaths[i]) < baseName(subPaths[j]) })
@@ -149,7 +160,26 @@ func (t *tieFSTree) selected(uid widget.TreeNodeID) {
 	if isFile {
 		dirPath, selectHash = f.parent, f.Uid
 	}
-	t.showDir(dirPath, selectHash)
+	// The Fyne tree re-focuses itself after OnSelected returns (treeNode.Tapped
+	// calls canvas.Focus on the tree). Defer the gallery swap so it runs after
+	// that: swapping immediately removes the tree from the canvas for a file
+	// selection (logging a "failed to focus" error), and for a directory the
+	// tree would hold keyboard focus and swallow the gallery's window-level
+	// hotkeys.
+	fyne.Do(func() {
+		t.showDir(dirPath, selectHash)
+		if !isFile {
+			t.viewer.ReleaseFocus()
+		}
+	})
+}
+
+// SetShowHidden controls whether hidden directories (names with a leading ".")
+// appear in the tree, refreshing the tree so open branches re-evaluate their
+// children.
+func (t *tieFSTree) SetShowHidden(show bool) {
+	t.showHidden = show
+	t.tree.Refresh()
 }
 
 // showDir replaces the gallery with the image files of the directory at
@@ -268,10 +298,72 @@ func (t *tieFSTree) reader(hash string) *tieReader {
 // (StringToTieType joins them into one unmapped string), so the tie-type is
 // only a fallback for files without a recorded media type.
 func isImageFile(f client.File) bool {
+	if isRaw(f.MediaType, f.Filename) {
+		return false
+	}
 	if f.MediaType != "" {
 		return strings.HasPrefix(f.MediaType, "image/")
 	}
 	return f.TieType == client.TieImageFile
+}
+
+// rawMediaTypes are the MIME types of camera raw formats that tie reports with
+// an "image/" prefix. filetype (used by tie to classify files) detects Canon
+// CR2 as "image/x-canon-cr2"; other common raws (NEF, DNG, ARW, ...) are
+// TIFF-based and surface as "image/tiff", so those are caught by extension
+// instead of media type.
+var rawMediaTypes = map[string]bool{
+	"image/x-canon-cr2":      true,
+	"image/x-canon-crw":      true,
+	"image/x-nikon-nef":      true,
+	"image/x-nikon-nrw":      true,
+	"image/x-adobe-dng":      true,
+	"image/x-sony-arw":       true,
+	"image/x-sony-sr2":       true,
+	"image/x-sony-srf":       true,
+	"image/x-fuji-raf":       true,
+	"image/x-panasonic-rw2":  true,
+	"image/x-panasonic-raw":  true,
+	"image/x-olympus-orf":    true,
+	"image/x-pentax-pef":     true,
+	"image/x-samsung-srw":    true,
+	"image/x-sigma-x3f":      true,
+	"image/x-hasselblad-3fr": true,
+	"image/x-epson-erf":      true,
+	"image/x-kodak-dcr":      true,
+	"image/x-kodak-kdc":      true,
+	"image/x-kodak-k25":      true,
+	"image/x-minolta-mrw":    true,
+	"image/x-mamiya-mef":     true,
+	"image/x-leaf-mos":       true,
+	"image/x-leica-rwl":      true,
+	"image/x-phaseone-iiq":   true,
+	"image/x-dcraw":          true,
+	"image/x-raw":            true,
+}
+
+// rawExtensions are raw camera filename extensions the gallery cannot decode
+// (Go's image package has no decoder for them). TIFF-based raws such as NEF,
+// DNG and ARW classify as "image/tiff" and are identified here.
+var rawExtensions = map[string]bool{
+	".3fr": true, ".ari": true, ".arw": true, ".bay": true, ".braw": true,
+	".crw": true, ".cr2": true, ".cr3": true, ".cap": true, ".dcs": true,
+	".dcr": true, ".dng": true, ".drf": true, ".eip": true, ".erf": true,
+	".fff": true, ".gpr": true, ".iiq": true, ".k25": true, ".kdc": true,
+	".mdc": true, ".mef": true, ".mos": true, ".mrw": true, ".nef": true,
+	".nrw": true, ".obm": true, ".orf": true, ".pef": true, ".ptx": true,
+	".pxn": true, ".r3d": true, ".raf": true, ".raw": true, ".rwl": true,
+	".rw2": true, ".rwz": true, ".sr2": true, ".srf": true, ".srw": true,
+	".x3f": true,
+}
+
+// isRaw reports whether a media type or filename identifies a camera raw
+// image, which the gallery cannot decode and must not display.
+func isRaw(mediaType, filename string) bool {
+	if rawMediaTypes[strings.ToLower(mediaType)] {
+		return true
+	}
+	return rawExtensions[strings.ToLower(filepath.Ext(filename))]
 }
 
 // baseName returns the last segment of a slash path ("" for "/").

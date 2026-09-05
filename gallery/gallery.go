@@ -84,6 +84,10 @@ type Gallery struct {
 	// Sidebar, when non-nil, is shown left of the gallery (e.g. a tag
 	// selector) instead of a plain full-width gallery.
 	Sidebar fyne.CanvasObject
+	// MenuItems, when non-nil, returns extra items appended to the gallery's
+	// ☰ popup menu. Embedding apps set it to expose their own toggles (e.g.
+	// tie-view's "Show hidden directories").
+	MenuItems func() []*fyne.MenuItem
 
 	// ═══════════════════════════════════════════════════════════════════════
 	// Internal Wiring — Do Not Access Directly
@@ -180,6 +184,14 @@ func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick fun
 // Platform returns the gallery's platform abstraction for mobile vs desktop behavior.
 func (viewer *Gallery) Platform() *Platform {
 	return viewer.platform
+}
+
+// ReleaseFocus unfocuses the currently focused widget so window-level hotkeys
+// (gallery grid shortcuts) resume receiving typed keys. Embedding apps call
+// this after a widget that captured keyboard focus (e.g. a filesystem tree)
+// finishes navigating back to the grid — mirroring the tag sidebar's Unfocus.
+func (viewer *Gallery) ReleaseFocus() {
+	viewer.window.Canvas().Unfocus()
 }
 
 func (viewer *Gallery) KeyPress(key *fyne.KeyEvent) {
@@ -389,6 +401,11 @@ func (viewer *Gallery) showGalleryMenu() {
 	// - Grid size
 	// - Refresh thumbnails
 	// - Settings
+
+	// App-specific options (e.g. tie-view's hidden-directory toggle).
+	if viewer.MenuItems != nil {
+		items = append(items, viewer.MenuItems()...)
+	}
 
 	// Create and show popup menu
 	menu := fyne.NewMenu("", items...)

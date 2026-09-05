@@ -151,6 +151,12 @@ package gallery
 // Sidebar fyne.CanvasObject
 //   When non-nil, shown left of the gallery grid. Used by:
 //   - tie-view: tag filter sidebar with co-tag refinement
+//
+// MenuItems func() []*fyne.MenuItem
+//   When non-nil, returns extra items appended to the gallery's ☰ popup menu
+//   (both the bottom-bar button and the floating image-view button). Called
+//   each time the menu opens, so labels can reflect live state. Used by:
+//   - tie-view: "Show/Hide hidden directories" toggle for the files tree
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STABILITY GUARANTEE

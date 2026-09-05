@@ -163,3 +163,54 @@ func TestTreeRenders(t *testing.T) {
 		t.Errorf("rendered tree labels = %v, want the \"/\" node", labels)
 	}
 }
+
+// TestIsImageFileRaw checks that camera raw files are excluded from the
+// gallery: they carry an "image/" media type (or image tie-type) but cannot
+// be decoded, so isImageFile must reject them via media type or extension.
+func TestIsImageFileRaw(t *testing.T) {
+	cases := []struct {
+		name string
+		f    client.File
+		want bool
+	}{
+		{"jpeg", client.File{Filename: "a.jpg", MediaType: "image/jpeg"}, true},
+		{"png", client.File{Filename: "a.png", MediaType: "image/png"}, true},
+		{"cr2 by media type", client.File{Filename: "a.cr2", MediaType: "image/x-canon-cr2"}, false},
+		{"nef by extension (tiff media type)", client.File{Filename: "a.nef", MediaType: "image/tiff"}, false},
+		{"raw extension", client.File{Filename: "a.raw", MediaType: "image/tiff"}, false},
+		{"dng by extension", client.File{Filename: "a.dng", MediaType: "image/tiff"}, false},
+		{"tiff is still an image", client.File{Filename: "a.tif", MediaType: "image/tiff"}, true},
+		{"image tie-type fallback", client.File{Filename: "a.jpg", TieType: client.TieImageFile}, true},
+		{"raw by tie-type fallback", client.File{Filename: "a.cr2", TieType: client.TieImageFile}, false},
+	}
+	for _, c := range cases {
+		if got := isImageFile(c.f); got != c.want {
+			t.Errorf("isImageFile(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestChildUIDsHiddenDirs checks that hidden directories (leading ".") are
+// excluded from the tree by default and appear when showHidden is set.
+func TestChildUIDsHiddenDirs(t *testing.T) {
+	fs := &tieFSTree{
+		dirs: map[string]*client.Directory{
+			"/": {SubDirs: []client.SubDirectory{
+				{Paths: []string{"tie:/videos"}},
+				{Paths: []string{"tie:/.cache"}},
+				{Paths: []string{"tie:/music"}},
+			}},
+		},
+		branches: make(map[string]bool),
+		files:    make(map[string]tieFSNode),
+	}
+
+	if got := fs.childUIDs("/"); !slices.Equal(got, []string{"/music", "/videos"}) {
+		t.Errorf("childUIDs with hidden dirs = %v, want [/music /videos]", got)
+	}
+
+	fs.showHidden = true
+	if got := fs.childUIDs("/"); !slices.Equal(got, []string{"/.cache", "/music", "/videos"}) {
+		t.Errorf("childUIDs showing hidden dirs = %v, want [/.cache /music /videos]", got)
+	}
+}
