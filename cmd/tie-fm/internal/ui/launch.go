@@ -15,8 +15,9 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/config"
 )
 
-// streamableExts are audio/video types worth streaming over HTTP (players like
-// mpv/vlc open a URL natively) rather than downloading fully before playback.
+// streamableExts are audio/video types likely to be opened in players like
+// mpv/vlc that stream over HTTP, so the "App supports streaming" checkbox is
+// pre-checked for them on new associations.
 var streamableExts = map[string]bool{
 	"mp4": true, "mkv": true, "webm": true, "mov": true, "avi": true,
 	"m4v": true, "mpg": true, "mpeg": true, "wmv": true, "flv": true, "ts": true,
@@ -24,25 +25,26 @@ var streamableExts = map[string]bool{
 	"opus": true, "wav": true, "wma": true,
 }
 
-// isStreamable reports whether name's extension is an audio/video type that a
-// media player can stream from a URL instead of a downloaded file.
+// isStreamable reports whether name's extension is an audio/video type whose
+// association is likely to stream from a URL instead of a downloaded file.
 func isStreamable(name string) bool {
 	return streamableExts[config.ExtKey(name)]
 }
 
-// openLocal launches a local file using the command configured for its file
-// type, falling back to xdg-open when none is set.
-func openLocal(cfg *config.Config, localPath, name string) error {
+// openLocal launches a local file (or, for streaming associations on tie
+// entries, a filehost URL) using the command configured for its file type,
+// falling back to xdg-open when none is set.
+func openLocal(cfg *config.Config, target, name string) error {
 	if cfg != nil {
-		if cmdline := cfg.AppFor(name); cmdline != "" {
-			cmd := buildCommand(cmdline, localPath)
+		if assoc, ok := cfg.AppFor(name); ok {
+			cmd := buildCommand(assoc.Command, target)
 			if cmd == nil {
-				return fmt.Errorf("invalid open command %q", cmdline)
+				return fmt.Errorf("invalid open command %q", assoc.Command)
 			}
 			return cmd.Start()
 		}
 	}
-	return exec.Command("xdg-open", localPath).Start()
+	return exec.Command("xdg-open", target).Start()
 }
 
 // buildCommand splits a stored command line into an *exec.Cmd for opening file.
@@ -70,9 +72,9 @@ func buildCommand(cmdline, file string) *exec.Cmd {
 }
 
 // promptOpenWith asks for a command to open files of name's type, stores it as
-// the association for that extension, persists, and (when open is true) opens
-// localPath now. onChanged runs after a successful save.
-func promptOpenWith(win fyne.Window, cfg *config.Config, name, localPath string, open bool, onChanged func()) {
+// the association for that extension, and persists. onSaved runs after a
+// successful save.
+func promptOpenWith(win fyne.Window, cfg *config.Config, name string, onSaved func()) {
 	ext := config.ExtKey(name)
 	if ext == "" {
 		dialog.ShowInformation("Open with", "This file has no extension to associate an app with.", win)
@@ -80,27 +82,28 @@ func promptOpenWith(win fyne.Window, cfg *config.Config, name, localPath string,
 	}
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("e.g. mpv %f  or  gimp")
-	entry.SetText(cfg.AppFor(name))
+	streamCheck := widget.NewCheck("App supports streaming (pass tie URL instead of downloading)", nil)
+	streamCheck.Checked = isStreamable(ext)
+	if assoc, ok := cfg.AppFor(name); ok {
+		entry.SetText(assoc.Command)
+		streamCheck.Checked = assoc.Stream
+	}
 	dialog.ShowForm(fmt.Sprintf("Open .%s with", ext), "Save", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("Command", entry),
 			widget.NewFormItem("", widget.NewLabel("%f is replaced by the file path (else appended).")),
+			widget.NewFormItem("", streamCheck),
 		},
 		func(ok bool) {
 			if !ok {
 				return
 			}
-			cfg.SetApp(ext, entry.Text)
+			cfg.SetApp(ext, config.AppAssoc{Command: entry.Text, Stream: streamCheck.Checked})
 			if err := cfg.Save(); err != nil {
 				dialog.ShowError(err, win)
 			}
-			if onChanged != nil {
-				onChanged()
-			}
-			if open && localPath != "" {
-				if err := openLocal(cfg, localPath, name); err != nil {
-					dialog.ShowError(err, win)
-				}
+			if onSaved != nil {
+				onSaved()
 			}
 		}, win)
 }
@@ -132,13 +135,28 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 		extEntry.SetText(ext)
 		cmdEntry := widget.NewEntry()
 		cmdEntry.SetPlaceHolder("e.g. mpv %f")
+		streamCheck := widget.NewCheck("App supports streaming (pass tie URL instead of downloading)", nil)
 		if ext != "" {
-			cmdEntry.SetText(cfg.FileApps[ext])
+			assoc := cfg.FileApps[ext]
+			cmdEntry.SetText(assoc.Command)
+			streamCheck.Checked = assoc.Stream
+		} else {
+			// New association: pre-check for media extensions until the user
+			// toggles the checkbox explicitly.
+			streamTouched := false
+			streamCheck.OnChanged = func(bool) { streamTouched = true }
+			streamCheck.SetChecked(false)
+			extEntry.OnChanged = func(s string) {
+				if !streamTouched {
+					streamCheck.SetChecked(isStreamable(s))
+				}
+			}
 		}
 		dialog.ShowForm("File association", "Save", "Cancel",
 			[]*widget.FormItem{
 				widget.NewFormItem("Extension", extEntry),
 				widget.NewFormItem("Command", cmdEntry),
+				widget.NewFormItem("", streamCheck),
 			},
 			func(ok bool) {
 				if !ok {
@@ -147,9 +165,9 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 				newExt := config.ExtKey("." + strings.TrimPrefix(extEntry.Text, "."))
 				// If the key was renamed, drop the old entry.
 				if ext != "" && newExt != ext {
-					cfg.SetApp(ext, "")
+					cfg.SetApp(ext, config.AppAssoc{})
 				}
-				cfg.SetApp(newExt, cmdEntry.Text)
+				cfg.SetApp(newExt, config.AppAssoc{Command: cmdEntry.Text, Stream: streamCheck.Checked})
 				save()
 			}, win)
 	}
@@ -167,11 +185,15 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			ext := current[i]
 			b := o.(*fyne.Container)
-			b.Objects[0].(*widget.Label).SetText(fmt.Sprintf(".%s  →  %s", ext, cfg.FileApps[ext]))
+			label := fmt.Sprintf(".%s  →  %s", ext, cfg.FileApps[ext].Command)
+			if cfg.FileApps[ext].Stream {
+				label += "  (streams)"
+			}
+			b.Objects[0].(*widget.Label).SetText(label)
 			btns := b.Objects[1].(*fyne.Container).Objects
 			btns[0].(*widget.Button).OnTapped = func() { editExt(ext) }
 			btns[1].(*widget.Button).OnTapped = func() {
-				cfg.SetApp(ext, "")
+				cfg.SetApp(ext, config.AppAssoc{})
 				save()
 			}
 		})

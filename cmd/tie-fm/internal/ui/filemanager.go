@@ -516,11 +516,21 @@ func (fm *FileManager) activate(row int) {
 		fm.navigateTo(e.Path)
 		return
 	}
+	fm.openEntry(e)
+}
+
+// openEntry opens a file entry: when its association supports streaming and
+// the backend serves a direct URL (fs.Streamer, e.g. tie over HTTP) the URL is
+// handed to the app; otherwise the entry is materialized to a local temp copy
+// first. Requires a configured association to stream — we never hand a URL to
+// xdg-open (which would open a browser).
+func (fm *FileManager) openEntry(e fs.Entry) {
 	provider := fm.registry.For(e.Path)
-	// Stream media through a configured player (mpv/vlc handle URLs) rather than
-	// downloading the whole file first. Requires a configured app so we never
-	// hand a URL to xdg-open (which would open a browser).
-	if isStreamable(e.Name) && fm.cfg != nil && fm.cfg.AppFor(e.Name) != "" {
+	assoc, hasAssoc := config.AppAssoc{}, false
+	if fm.cfg != nil {
+		assoc, hasAssoc = fm.cfg.AppFor(e.Name)
+	}
+	if hasAssoc && assoc.Stream {
 		if s, ok := provider.(fs.Streamer); ok {
 			if url, err := s.StreamURL(e); err == nil {
 				if err := openLocal(fm.cfg, url, e.Name); err != nil {
@@ -540,15 +550,11 @@ func (fm *FileManager) activate(row int) {
 	}
 }
 
-// openWith materializes the entry then prompts for (and remembers) the app to
-// open its file type with, opening it immediately on save.
+// openWith prompts for (and remembers) the app to open the entry's file type
+// with, then opens it through that association — streaming directly when the
+// association says the app supports it, without a temp download.
 func (fm *FileManager) openWith(e fs.Entry) {
-	local, err := fm.registry.For(e.Path).Materialize(e)
-	if err != nil {
-		dialog.ShowError(err, fm.win)
-		return
-	}
-	promptOpenWith(fm.win, fm.cfg, e.Name, local, true, nil)
+	promptOpenWith(fm.win, fm.cfg, e.Name, func() { fm.openEntry(e) })
 }
 
 func (fm *FileManager) showMenu(row int, obj fyne.CanvasObject) {

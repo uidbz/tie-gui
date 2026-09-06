@@ -113,13 +113,25 @@ absent the path is appended as the final argument. Arguments are split on
 whitespace (no shell). Files without a matching association open with
 `xdg-open`.
 
+Each association has an **App supports streaming** flag: when set, a tie entry
+is handed to the app as its direct filehost HTTP URL instead of being
+downloaded to a temporary local copy first. Use it for players that open URLs
+natively (mpv, vlc, …); for everything else leave it off and tie files are
+materialized to `/tmp` as before. Streaming applies only to backends that can
+serve a URL (tie); local and MTP entries are always opened from a real path.
+
 Example `config.toml` fragment:
 
 ```toml
-[FileApps]
-pdf = "okular %f"
-mkv = "mpv %f"
-png = "gimp"
+[FileApps.pdf]
+Command = "okular %f"
+
+[FileApps.mkv]
+Command = "mpv %f"
+Stream = true
+
+[FileApps.png]
+Command = "gimp"
 ```
 
 ## Layout

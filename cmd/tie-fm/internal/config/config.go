@@ -24,6 +24,16 @@ type Bookmark struct {
 	Path  string
 }
 
+// AppAssoc is a file association: the command used to open files of one type.
+// Command may contain a "%f" placeholder for the file path; if absent the path
+// is appended as the final argument. Stream marks apps that can open an HTTP
+// URL directly (e.g. mpv/vlc): for such apps a tie entry's filehost URL is
+// passed instead of a downloaded temporary copy.
+type AppAssoc struct {
+	Command string
+	Stream  bool
+}
+
 // Config is tie-fm's persisted settings.
 type Config struct {
 	// TieConfig is the path to the tie client config file to load. Empty means
@@ -32,10 +42,9 @@ type Config struct {
 	// Bookmarks populate the favorites sidebar.
 	Bookmarks []Bookmark
 	// FileApps maps a lowercase file extension (without the leading dot) to the
-	// command used to open files of that type, overriding the xdg-open default.
-	// The command may contain a "%f" placeholder for the file path; if absent
-	// the path is appended as the final argument.
-	FileApps map[string]string
+	// association used to open files of that type, overriding the xdg-open
+	// default.
+	FileApps map[string]AppAssoc
 
 	path string // where this config was loaded from / will be saved back to
 }
@@ -49,31 +58,32 @@ func ExtKey(name string) string {
 	return strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
 }
 
-// AppFor returns the configured open command for the given filename's
-// extension, or "" when none is set.
-func (c Config) AppFor(name string) string {
+// AppFor returns the configured association for the given filename's
+// extension, or false when none is set.
+func (c Config) AppFor(name string) (AppAssoc, bool) {
 	if c.FileApps == nil {
-		return ""
+		return AppAssoc{}, false
 	}
-	return c.FileApps[ExtKey(name)]
+	a, ok := c.FileApps[ExtKey(name)]
+	return a, ok
 }
 
-// SetApp associates the command with the extension key (a bare extension such
-// as "pdf"). An empty command removes the association.
-func (c *Config) SetApp(ext, command string) {
+// SetApp associates the association with the extension key (a bare extension
+// such as "pdf"). An empty command removes the association.
+func (c *Config) SetApp(ext string, assoc AppAssoc) {
 	ext = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(ext)), ".")
 	if ext == "" {
 		return
 	}
-	command = strings.TrimSpace(command)
-	if command == "" {
+	assoc.Command = strings.TrimSpace(assoc.Command)
+	if assoc.Command == "" {
 		delete(c.FileApps, ext)
 		return
 	}
 	if c.FileApps == nil {
-		c.FileApps = map[string]string{}
+		c.FileApps = map[string]AppAssoc{}
 	}
-	c.FileApps[ext] = command
+	c.FileApps[ext] = assoc
 }
 
 // Default returns the built-in tie-fm config: home + tie bookmarks and no

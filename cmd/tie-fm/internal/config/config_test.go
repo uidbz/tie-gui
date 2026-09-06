@@ -38,19 +38,20 @@ func TestLoadCreatesDefault(t *testing.T) {
 
 func TestFileAppHelpers(t *testing.T) {
 	var c Config
-	if got := c.AppFor("movie.mkv"); got != "" {
-		t.Errorf("AppFor on nil map = %q, want empty", got)
+	if _, ok := c.AppFor("movie.mkv"); ok {
+		t.Errorf("AppFor on nil map returned an association")
 	}
-	c.SetApp(".MKV", "mpv %f") // leading dot and case are normalized
-	if got := c.AppFor("/some/path/MOVIE.mkv"); got != "mpv %f" {
-		t.Errorf("AppFor = %q, want %q", got, "mpv %f")
+	c.SetApp(".MKV", AppAssoc{Command: "mpv %f", Stream: true}) // leading dot and case are normalized
+	assoc, ok := c.AppFor("/some/path/MOVIE.mkv")
+	if !ok || assoc.Command != "mpv %f" || !assoc.Stream {
+		t.Errorf("AppFor = %+v, %v, want Command+Stream, true", assoc, ok)
 	}
 	if got := ExtKey("noext"); got != "" {
 		t.Errorf("ExtKey(noext) = %q, want empty", got)
 	}
-	c.SetApp("mkv", "") // empty command removes
-	if got := c.AppFor("a.mkv"); got != "" {
-		t.Errorf("after removal AppFor = %q, want empty", got)
+	c.SetApp("mkv", AppAssoc{}) // empty command removes
+	if _, ok := c.AppFor("a.mkv"); ok {
+		t.Errorf("after removal AppFor returned an association")
 	}
 }
 
@@ -62,8 +63,8 @@ func TestFileAppsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	c.SetApp("pdf", "okular %f")
-	c.SetApp("png", "gimp")
+	c.SetApp("pdf", AppAssoc{Command: "okular %f"})
+	c.SetApp("mkv", AppAssoc{Command: "mpv %f", Stream: true})
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -72,8 +73,13 @@ func TestFileAppsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if c2.AppFor("doc.pdf") != "okular %f" || c2.AppFor("img.png") != "gimp" {
-		t.Errorf("round-trip FileApps = %#v", c2.FileApps)
+	pdf, pdfOK := c2.AppFor("doc.pdf")
+	mkv, mkvOK := c2.AppFor("movie.mkv")
+	if !pdfOK || pdf.Command != "okular %f" || pdf.Stream {
+		t.Errorf("round-trip pdf = %+v, %v", pdf, pdfOK)
+	}
+	if !mkvOK || mkv.Command != "mpv %f" || !mkv.Stream {
+		t.Errorf("round-trip mkv = %+v, %v", mkv, mkvOK)
 	}
 }
 
