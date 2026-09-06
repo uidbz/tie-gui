@@ -37,6 +37,9 @@ type starRating struct {
 	selected  int // committed rating: 0 = unrated, else 1..5
 	starSize  float32
 	OnChanged func(rating int)
+	// OnHover, when non-nil, is called on desktop with the rating under the
+	// cursor while hovering and with 0 when the cursor leaves.
+	OnHover func(rating int)
 }
 
 func newStarRating(starSize float32, onChanged func(rating int)) *starRating {
@@ -140,6 +143,16 @@ func (c *starCell) Tapped(_ *fyne.PointEvent) {
 
 // MouseIn/MouseMoved/MouseOut implement desktop.Hoverable for a live preview
 // of the rating under the cursor, reverting to the committed value on leave.
-func (c *starCell) MouseIn(_ *desktop.MouseEvent)    { c.parent.paint(c.idx) }
+func (c *starCell) MouseIn(_ *desktop.MouseEvent) {
+	c.parent.paint(c.idx)
+	if c.parent.OnHover != nil {
+		c.parent.OnHover(c.idx)
+	}
+}
 func (c *starCell) MouseMoved(_ *desktop.MouseEvent) {}
-func (c *starCell) MouseOut()                        { c.parent.paint(c.parent.selected) }
+func (c *starCell) MouseOut() {
+	c.parent.paint(c.parent.selected)
+	if c.parent.OnHover != nil {
+		c.parent.OnHover(0)
+	}
+}

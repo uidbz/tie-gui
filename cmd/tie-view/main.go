@@ -79,6 +79,8 @@ func main() {
 	// The bar and the tag panel edit the same image; keep them in step.
 	tagger.OnTagsChanged = quickBar.SetTags
 	quickBar.OnTagsChanged = tagger.SetTags
+	tagger.OnRatingChanged = quickBar.SetRating
+	quickBar.OnRatingChanged = tagger.SetRating
 
 	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
 		if t.Info.InputIsVideo {
@@ -401,6 +403,10 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 	ts := tagselection.NewTagSelection(window)
 	// Sidebar uses include/exclude filtering, so show the checkbox.
 	ts.ShowIncludeExclude = true
+	// Quick-pick and search-result rows carry a ☆/★ button that toggles the
+	// tag's membership in tie's ("tags","favorite") list — the same curation
+	// the image tagger offers, reachable without opening an image.
+	ts.ShowStars = true
 
 	// Current filter/sort state, all read and written on the UI goroutine.
 	curRating := ratingFilter{mode: ratingAny}
@@ -476,19 +482,77 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 		untaggedBtn,
 	)
 
-	// allTags and allFavorites hold the full unfiltered lists from the most
-	// recent tag fetch. All reads and writes happen on the UI goroutine
-	// (inside fyne.Do), so no mutex is needed.
+	// allTags is the full tag list and starred the tie favorites from the
+	// most recent fetch, kept current by star toggles. allFavorites and
+	// allFavoritesLabel are the quick-pick list shown while nothing is
+	// selected: the favorites, or every tag when none are configured. All
+	// reads and writes happen on the UI goroutine (inside fyne.Do), so no
+	// mutex is needed.
 	var allTags []string
+	var starred []string
 	var allFavorites []string
 	var allFavoritesLabel string
 
-	// Tags added to images via the tagger are registered in tie's
-	// "tags"/"all" index by syncTags, which then fires OnTagsAdded on the UI
-	// goroutine. Add genuinely new tags to the sidebar's search trie (and
-	// the full-list snapshot) without a reload — reloadTags would clear the
-	// user's current search selection.
+	// applyFavoritesView recomputes the default quick-pick list from starred
+	// and allTags, and shows it when no selection narrows the list.
+	applyFavoritesView := func() {
+		if len(starred) == 0 {
+			allFavorites, allFavoritesLabel = allTags, "All tags"
+		} else {
+			allFavorites, allFavoritesLabel = starred, "Favorites"
+		}
+		if in, ex := ts.SelectedTags(); len(in) == 0 && len(ex) == 0 {
+			ts.SetListLabel(allFavoritesLabel)
+			ts.SetFavorites(allFavorites)
+		}
+	}
+
+	// setStarred records a star toggle locally (no tie write): the sidebar's
+	// ☆/★ state, the default quick-pick list, and the tagger's starred set.
+	setStarred := func(tag string, isStarred bool) {
+		idx := slices.Index(starred, tag)
+		switch {
+		case isStarred && idx < 0:
+			starred = append(starred, tag)
+			sort.Strings(starred)
+		case !isStarred && idx >= 0:
+			starred = slices.Delete(starred, idx, idx+1)
+		default:
+			return
+		}
+		ts.ToggleStar(tag, isStarred)
+		applyFavoritesView()
+		if tagger != nil {
+			tagger.SetFavoriteTags(starred)
+		}
+	}
+
+	// Starring here persists to tie like the tagger's star button does; the
+	// optimistic update is rolled back if the write fails.
+	ts.OnStar = func(tag string, isStarred bool) {
+		window.Canvas().Unfocus() // the star button took keyboard focus
+		setStarred(tag, isStarred)
+		go func() {
+			var err error
+			if isStarred {
+				err = tc.RegisterFavorite(tag)
+			} else {
+				err = tc.UnregisterFavorite(tag)
+			}
+			if err != nil {
+				fmt.Printf("sidebar: failed to %s tag %q: %v\n",
+					map[bool]string{true: "star", false: "unstar"}[isStarred], tag, err)
+				fyne.Do(func() { setStarred(tag, !isStarred) })
+			}
+		}()
+	}
+
 	if tagger != nil {
+		// Tags added to images via the tagger are registered in tie's
+		// "tags"/"all" index by syncTags, which then fires OnTagsAdded on the
+		// UI goroutine. Add genuinely new tags to the sidebar's search trie
+		// (and the full-list snapshot) without a reload — reloadTags would
+		// clear the user's current search selection.
 		tagger.OnTagsAdded = func(tags []string) {
 			changed := false
 			for _, tag := range tags {
@@ -501,9 +565,12 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			// In the "no favorites configured" fallback the quick-pick list
 			// shows every tag; refresh it to include the new arrivals.
 			if changed && allFavoritesLabel == "All tags" {
-				ts.SetFavorites(allTags)
+				applyFavoritesView()
 			}
 		}
+		// Stars toggled in the tagger (already written to tie there) update
+		// the sidebar without a second write.
+		tagger.OnStarChanged = setStarred
 	}
 
 	// reloadTags clears the widget state and re-fetches tags from tc.
@@ -513,7 +580,9 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			ts.ClearSelected()
 			ts.ClearAllTags()
 			ts.ClearFavorites()
+			ts.SetStarred(nil)
 			allTags = nil
+			starred = nil
 			allFavorites = nil
 			allFavoritesLabel = ""
 			ts.SetListLabel("Loading…")
@@ -530,24 +599,17 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 				for _, tag := range allTags {
 					ts.AddTag(tag)
 				}
-				// Capture the actual tie favorites before the sidebar fallback
-				// so the tagger's ☆/★ state reflects the real relation, not the
-				// "show everything" substitute used when no favorites are configured.
-				actualFavorites := client.RowValues(row, client.TieFavorite.String())
-				allFavorites = actualFavorites
-				if len(allFavorites) == 0 {
-					// No favorites configured: list every tag so the sidebar
-					// isn't empty until something is typed in the search box.
-					allFavorites = allTags
-					allFavoritesLabel = "All tags"
-				} else {
-					allFavoritesLabel = "Favorites"
-				}
-				ts.SetListLabel(allFavoritesLabel)
-				ts.SetFavorites(allFavorites)
+				// The ☆/★ state reflects the real ("tags","favorite")
+				// relation; applyFavoritesView substitutes "every tag" for
+				// the quick-pick list when no favorites are configured, so
+				// the sidebar isn't empty until something is typed.
+				starred = client.RowValues(row, client.TieFavorite.String())
+				sort.Strings(starred)
+				ts.SetStarred(starred)
+				applyFavoritesView()
 				if tagger != nil {
 					tagger.SetAllTags(allTags)
-					tagger.SetFavoriteTags(actualFavorites)
+					tagger.SetFavoriteTags(starred)
 				}
 			})
 		}()

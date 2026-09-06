@@ -61,17 +61,25 @@ type tieReader struct {
 	// the query's expanded attributes for display in the gallery label.
 	filename string
 	isVideo  bool
-	// tags caches the image's tie tags: seeded from the query's expanded
-	// attributes for tag/rating queries (tagsKnown = true), left unknown for
-	// directory listings, and kept current by the quick tag bar. UI-goroutine
-	// state once the reader is handed to the gallery.
+	// tags and rating cache the image's tie tags and 1-5 rating (0 =
+	// unrated): seeded from the query's expanded attributes for tag/rating
+	// queries (tagsKnown = true), left unknown for directory listings, and
+	// kept current by the quick tag bar. UI-goroutine state once the reader
+	// is handed to the gallery.
 	tags      []string
+	rating    int
 	tagsKnown bool
 }
 
-// setTags replaces the cached tag list and marks it known.
+// setTags replaces the cached tag list and marks the cache known.
 func (t *tieReader) setTags(tags []string) {
 	t.tags = append([]string(nil), tags...)
+	t.tagsKnown = true
+}
+
+// setRating replaces the cached rating and marks the cache known.
+func (t *tieReader) setRating(rating int) {
+	t.rating = rating
 	t.tagsKnown = true
 }
 
@@ -452,6 +460,7 @@ func buildReaders(viewer *gallery.Gallery, tc *client.TieClient, rows []client.R
 				dimensions: client.RowFirst(row, "dimensions"),
 				filename:   client.RowFirst(row, "filename"),
 				tags:       client.RowValues(row, "tag"),
+				rating:     rowRating(row),
 				tagsKnown:  true,
 			})
 		case tieRowDir:
@@ -477,6 +486,12 @@ func buildReaders(viewer *gallery.Gallery, tc *client.TieClient, rows []client.R
 		}
 	}
 	return readers
+}
+
+// rowRating parses a row's expanded "rating" attribute (0 when absent).
+func rowRating(row client.Row) int {
+	n, _ := strconv.Atoi(client.RowFirst(row, "rating"))
+	return n
 }
 
 // ratingMode selects how the rating filter constrains the gallery.

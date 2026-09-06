@@ -45,9 +45,25 @@ type QuickTagSet struct {
 	// IconSize is the button edge length in points; 0 selects the platform
 	// default (see quickTagIconSize).
 	IconSize float32 `toml:"IconSize,omitempty"`
+	// Rating places the 1-5 star rating control: "inline" (default, in the
+	// same pill as the tag buttons), "top" or "bottom" (its own strip on that
+	// edge; when that is the tags' edge the stars sit on a row above/below
+	// them), or "off".
+	Rating string `toml:"Rating,omitempty"`
+	// RatingKeys are optional shortcut keys for 1..5 stars, in order.
+	// Pressing the key of the current rating clears it, like tapping it.
+	RatingKeys []string `toml:"RatingKeys,omitempty"`
 	// Tags are the bar's buttons, left to right.
 	Tags []quickTagEntry `toml:"Tag"`
 }
+
+// Rating placements.
+const (
+	ratingInline = "inline"
+	ratingTop    = "top"
+	ratingBottom = "bottom"
+	ratingOff    = "off"
+)
 
 // quickTagConfig is the on-disk quicktags.toml: a default set at the top
 // level plus optional per-collection overrides keyed by the tie config's
@@ -56,8 +72,8 @@ type quickTagConfig struct {
 	QuickTagSet
 	// Collections maps a tie collection name to its override. A collection
 	// with an entry here uses the entry's Tag list instead of the default one
-	// (even an empty list); its Position and IconSize fall back to the
-	// top-level values when unset.
+	// (even an empty list); its Position, IconSize, Rating and RatingKeys
+	// fall back to the top-level values when unset.
 	Collections map[string]QuickTagSet `toml:"Collections,omitempty"`
 }
 
@@ -75,6 +91,12 @@ func (cfg quickTagConfig) For(collection string) QuickTagSet {
 	}
 	if ov.IconSize > 0 {
 		set.IconSize = ov.IconSize
+	}
+	if ov.Rating != "" {
+		set.Rating = ov.Rating
+	}
+	if len(ov.RatingKeys) > 0 {
+		set.RatingKeys = ov.RatingKeys
 	}
 	return set
 }
@@ -111,8 +133,8 @@ type quickTagEntry struct {
 	// builtinQuickTagIcons need no file. Empty (with Off empty too) renders
 	// the tag name as a text button instead.
 	On string `toml:"On,omitempty"`
-	// Off is the icon shown while the tag is not applied. Empty shows a dimmed
-	// copy of On.
+	// Off is the icon shown while the tag is not applied. Empty shows a
+	// grayscale copy of On.
 	Off string `toml:"Off,omitempty"`
 	// Key is the keyboard shortcut (a Fyne key name such as "1" or "F").
 	// Empty defaults to the button's 1-based position for the first nine
@@ -126,14 +148,19 @@ const defaultQuickTagTOML = `# tie-view quick tagging bar.
 #
 # Each [[Tag]] entry is one button on the bar, left to right. Icons are square
 # PNGs: "On" is shown while the tag is applied to the image, "Off" while it is
-# not. Leave Off empty to show a dimmed copy of On; leave both empty for a text
-# button. Paths are relative to this file's directory unless absolute. The
+# not. Leave Off empty to show a grayscale copy of On; leave both empty for a
+# text button. Paths are relative to this file's directory unless absolute. The
 # built-in icons heart.png, heart-grey.png, star-filled.png and star-empty.png
 # need no file.
 #
 # Key is the keyboard shortcut (a Fyne key name, e.g. "1" or "F"). Unset keys
 # default to the button's position: 1, 2, ... 9. Position is "bottom" or "top".
 # The bar itself is toggled with the [Image] ShowTagbar key (T) or the menu.
+#
+# Rating places the 1-5 star control: "inline" (next to the tag buttons),
+# "top" / "bottom" (its own strip; on the tags' edge it becomes a second row),
+# or "off". RatingKeys optionally binds keys to 1..5 stars, e.g.
+# RatingKeys = ["F1", "F2", "F3", "F4", "F5"]; the current rating's key clears.
 #
 # The top-level entries are the default bar. A tie collection can get its own
 # bar with a [Collections.<name>] table (name as in the tie config), whose
@@ -147,6 +174,7 @@ const defaultQuickTagTOML = `# tie-view quick tagging bar.
 #   On = "icons/printer.png"
 
 Position = "bottom"
+Rating = "inline"
 
 [[Tag]]
 Tag = "favorite"
@@ -221,9 +249,10 @@ func writeFileMkdir(path string, data []byte) error {
 }
 
 // normalized returns a copy of set with blank-tag entries dropped, Position
-// lowercased with "bottom" as the fallback, and position-based default keys
-// filled in for entries without one (buttons 1-9). Keys are not deduplicated:
-// a user who binds two buttons to one key toggles both, which is a feature.
+// and Rating reduced to their known values ("bottom" / "inline" fallbacks),
+// and position-based default keys filled in for entries without one (buttons
+// 1-9). Keys are not deduplicated: a user who binds two buttons to one key
+// toggles both, which is a feature.
 func (set QuickTagSet) normalized() QuickTagSet {
 	out := set
 	out.Tags = nil
@@ -238,6 +267,14 @@ func (set QuickTagSet) normalized() QuickTagSet {
 	}
 	if out.Position != "top" {
 		out.Position = "bottom"
+	}
+	switch out.Rating {
+	case ratingTop, ratingBottom, ratingOff:
+	default:
+		out.Rating = ratingInline
+	}
+	if len(out.RatingKeys) > 5 {
+		out.RatingKeys = out.RatingKeys[:5]
 	}
 	return out
 }

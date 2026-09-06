@@ -440,6 +440,16 @@ The reverse direction is wired too: the tagger's `OnTagsAdded` callback (fired
 after successful tie writes) lets the sidebar grow its trie and full-list
 snapshot without a selection-clearing reload.
 
+**Starring from the sidebar:** the sidebar sets `ts.ShowStars = true`, so its
+quick-pick rows and search results carry the same ☆/★ button as the image
+tagger. `ts.OnStar` persists via `tc.RegisterFavorite`/`UnregisterFavorite`
+(optimistic, rolled back on error) and `setStarred` updates the local
+`starred` list, the ☆/★ state (`ts.ToggleStar`), the default quick-pick
+view (`applyFavoritesView`: favorites, or every tag while none are starred —
+only re-shown when no selection narrows the list) and the tagger
+(`tagger.SetFavoriteTags`). The tagger's `OnStarChanged` feeds the same
+`setStarred` without a second write, so both star sets stay identical.
+
 ---
 
 ## Settings tab (`cmd/tie-view/settings.go`)
@@ -567,7 +577,10 @@ tagger's search trie up to date without a separate network request.
 | `OnHide func()` | Called after the panel hides; used to restore keyboard focus on desktop |
 | `OnTagsAdded func([]string)` | Called on the UI goroutine with tags successfully written to tie; the sidebar uses it to grow its search trie |
 | `OnTagsChanged func(hash, tags)` | Called on the UI goroutine with the panel image's full tag list after a user edit (and after a failure reconcile); wired to `quickTagBar.SetTags` |
+| `OnRatingChanged func(hash, rating)` | Called on the UI goroutine when the user rates the panel image; wired to `quickTagBar.SetRating` |
+| `OnStarChanged func(tag, starred)` | Called on the UI goroutine after a ☆/★ toggle here (and with the reverted state on write failure); the sidebar's `setStarred` consumes it |
 | `SetTags(hash, tags)` | External update (from the quick tag bar) of the panel's applied list via `SetSelected` — no tie write; ignored unless `panelHash == hash` |
+| `SetRating(hash, rating)` | External update of the panel's star rating — no tie write; ignored unless `panelHash == hash` |
 
 ---
 
@@ -577,9 +590,23 @@ A mode for tagging many images fast: the picture stays full-size and a
 translucent pill of icon buttons (`quickTagBar`) overlays the top or bottom
 edge. Each button is one configured tag; tapping it (or pressing its key)
 toggles the tag on the displayed image and writes to tie immediately
-(optimistic flip, revert + "failed: tag" flash on error). A status line
-above/below the pill names the hovered button on desktop and confirms
-toggles ("+ favorite" / "− favorite").
+(optimistic flip, revert + "failed: tag" flash on error). A 1–5 star
+`starRating` (shared with the tagger panel, `rating.go`) sits next to the
+buttons and writes `(hash, "rating", n)` the same way (`rate`: delete old,
+add new). A status line above/below the pill names the hovered control on
+desktop and confirms changes ("+ favorite" / "− favorite" / "rating 3").
+
+**Rating placement** (`Rating` in the set): `inline` (default) puts the
+stars in the tags' pill as one row `[★★★★★ | ♥ …]`; `barLayout` builds
+both that row and two stacked pills and shows the row only while it fits
+the bar width, else the stars wrap onto a row above the tags (a phone in
+portrait) — the mode flips in `Layout` and reschedules `Overlay.Refresh` so
+the Border gives the bar its new height. `top`/`bottom` put the stars in
+their own strip on that edge (on the tags' edge they become the row nearer
+the image); `off` hides them. Because a canvas object has one parent, each
+pill rendering gets its own `starRating` (`b.stars` slice), all painted
+alike. `RatingKeys` optionally binds one key per star (the current rating's
+key clears it).
 
 **Toggling the mode:** `[Image] ShowTagbar` key (**T**, previously an
 unbound config slot) or ☰ menu → "Quick tagging mode". The on/off state
@@ -589,15 +616,17 @@ open tag panel covers the bar) and calls `quickBar.SetImage(curReader)`;
 toggling while an image is shown adds/removes the overlay in place
 (`syncQuickOverlay`, using `Gallery.ImageViewActive()`).
 
-**Speed:** `tieReader.tags`/`tagsKnown` cache the image's tags from the
-query's expanded attributes (`buildReaders` reads `RowValues(row, "tag")`),
-so the bar paints correctly the instant an image opens; a background
-`tc.Get(hash)` then reconciles (directory listings carry no tags). Toggles
-made while that fetch is in flight are kept via `pending` and a `gen`
-counter drops stale results. The bar mirrors its applied set back into the
-reader (`syncReader`) and to the image tagger (`OnTagsChanged` ↔ `SetTags`
-in both directions, no ping-pong since `SetTags` never writes). Adds also
-register the tag in `("tags","all")` once per session.
+**Speed:** `tieReader.tags`/`rating`/`tagsKnown` cache the image's tags and
+rating from the query's expanded attributes (`buildReaders` reads
+`RowValues(row, "tag")` and `rowRating`), so the bar paints correctly the
+instant an image opens; a background `tc.Get(hash)` then reconciles
+(directory listings carry no tags). Changes made while that fetch is in
+flight are kept via `pending`/`ratingPending` and a `gen` counter drops
+stale results. The bar mirrors its state back into the reader
+(`syncReader`) and to the image tagger (`OnTagsChanged` ↔ `SetTags`,
+`OnRatingChanged` ↔ `SetRating` in both directions, no ping-pong since the
+`Set*` methods never write). Adds also register the tag in `("tags","all")`
+once per session.
 
 **Hotkeys:** `Gallery.RegisterHotkey(name, fn)` (new, `gallery/gallery.go`)
 appends to `viewer.hotkeys` so bindings reach the desktop via the focused
@@ -623,11 +652,13 @@ unexported embedded fields); `[Collections.<name>]` tables are
 ```toml
 Position = "bottom"   # or "top"
 IconSize = 40         # optional; default 40 desktop / 56 mobile
+Rating = "inline"     # or "top" / "bottom" / "off"
+RatingKeys = ["F1", "F2", "F3", "F4", "F5"]   # optional, one per star
 
 [[Tag]]
 Tag = "favorite"
 On  = "heart.png"      # applied
-Off = "heart-grey.png" # not applied; empty = dimmed On icon; both empty = text button
+Off = "heart-grey.png" # not applied; empty = grayscale On icon (grayscaleResource); both empty = text button
 Key = "1"              # optional Fyne key name
 
 [Collections.photos]   # this collection gets its own bar
@@ -638,8 +669,8 @@ On  = "icons/printer.png"
 ```
 `quickTagConfig.For(collection)` resolves the set to show: an override's
 `Tag` list replaces the default list entirely (even when empty), while its
-`Position`/`IconSize` fall back to the top-level values when unset; `""` or
-an unknown collection yields the default. The active collection is
+`Position`/`IconSize`/`Rating`/`RatingKeys` fall back to the top-level
+values when unset; `""` or an unknown collection yields the default. The active collection is
 `tieClient.Config.DefaultCollection` (the connection editor sets it to the
 applied entry); `applyQuickTagConfig` in main.go re-resolves it and is also
 run from the settings tab's `onApply` (`onCollectionChanged`) so the bar
@@ -677,6 +708,7 @@ type tieReader struct {
     dimensions string       // "WxH" from tie metadata, e.g. "3840x2160"
     isVideo    bool
     tags       []string     // cached tie tags (quick tag bar); tagsKnown marks them loaded
+    rating     int          // cached 1-5 rating (0 = unrated), same lifecycle as tags
     tagsKnown  bool
 }
 ```

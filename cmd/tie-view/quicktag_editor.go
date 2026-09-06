@@ -44,6 +44,7 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 	// Form model for the set being edited.
 	var entries []quickTagEntry
 	position := "bottom"
+	rating := ratingInline
 	editing := "" // "" = default set, else a collection name
 
 	status := widget.NewLabel("")
@@ -55,6 +56,13 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 	positionSelect := widget.NewSelect([]string{"bottom", "top"}, func(s string) { position = s })
 	iconSize := widget.NewEntry()
 	iconSize.SetPlaceHolder("auto")
+	ratingSelect := widget.NewSelect(quickTagRatingLabels(), func(label string) {
+		if v, ok := quickTagRatingByLabel[label]; ok {
+			rating = v
+		}
+	})
+	ratingKeys := widget.NewEntry()
+	ratingKeys.SetPlaceHolder("e.g. F1, F2, F3, F4, F5")
 
 	var rebuild func()
 
@@ -148,7 +156,15 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 
 	// collect reads the form back into a set.
 	collect := func() (QuickTagSet, error) {
-		out := QuickTagSet{Position: position, Tags: append([]quickTagEntry(nil), entries...)}
+		out := QuickTagSet{Position: position, Rating: rating, Tags: append([]quickTagEntry(nil), entries...)}
+		for _, k := range strings.Split(ratingKeys.Text, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				out.RatingKeys = append(out.RatingKeys, k)
+			}
+		}
+		if len(out.RatingKeys) > 5 {
+			return out, fmt.Errorf("at most five rating keys (one per star)")
+		}
 		if s := strings.TrimSpace(iconSize.Text); s != "" {
 			v, err := strconv.ParseFloat(s, 32)
 			if err != nil || v <= 0 {
@@ -171,6 +187,9 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 			position = "bottom"
 		}
 		positionSelect.SetSelected(position)
+		rating = set.normalized().Rating
+		ratingSelect.SetSelected(quickTagRatingLabel(rating))
+		ratingKeys.SetText(strings.Join(set.RatingKeys, ", "))
 		if set.IconSize > 0 {
 			iconSize.SetText(strconv.FormatFloat(float64(set.IconSize), 'f', -1, 32))
 		} else {
@@ -298,12 +317,16 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 		status.SetText("Reloaded " + path)
 	})
 
-	help := widget.NewLabel("Buttons appear left to right. Icons are square PNGs; leave Off empty to dim the On icon, or both empty for a text button. Built-in: heart.png, heart-grey.png, star-filled.png, star-empty.png. Keys default to 1-9. Toggle the bar with T or the ☰ menu.\n\nFile: " + path)
+	help := widget.NewLabel("Buttons appear left to right. Icons are square PNGs; leave Off empty for a grayscale copy of the On icon, or both empty for a text button. Built-in: heart.png, heart-grey.png, star-filled.png, star-empty.png. Keys default to 1-9; rating keys are comma-separated, one per star (the current rating's key clears it). Toggle the bar with T or the ☰ menu.\n\nFile: " + path)
 	help.Wrapping = fyne.TextWrapWord
 
-	general := container.NewGridWithColumns(2,
-		container.NewBorder(nil, nil, widget.NewLabel("Position"), nil, positionSelect),
-		container.NewBorder(nil, nil, widget.NewLabel("Icon size"), nil, iconSize),
+	general := container.NewVBox(
+		container.NewGridWithColumns(2,
+			container.NewBorder(nil, nil, widget.NewLabel("Position"), nil, positionSelect),
+			container.NewBorder(nil, nil, widget.NewLabel("Icon size"), nil, iconSize),
+		),
+		container.NewBorder(nil, nil, widget.NewLabel("Rating stars"), nil, ratingSelect),
+		container.NewBorder(nil, nil, widget.NewLabel("Rating keys"), nil, ratingKeys),
 	)
 
 	_, active := collections()
@@ -336,18 +359,44 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 	return page, refresh
 }
 
-// quickTagSetsEqual compares two sets field by field (nil and empty Tags
-// are equal).
-func quickTagSetsEqual(a, b QuickTagSet) bool {
-	if a.Position != b.Position || a.IconSize != b.IconSize || len(a.Tags) != len(b.Tags) {
-		return false
+// quickTagRatingOptions maps the rating Select's labels to config values.
+var quickTagRatingOptions = []struct{ label, value string }{
+	{"Next to the tags", ratingInline},
+	{"Top edge", ratingTop},
+	{"Bottom edge", ratingBottom},
+	{"Hidden", ratingOff},
+}
+
+var quickTagRatingByLabel = func() map[string]string {
+	m := make(map[string]string, len(quickTagRatingOptions))
+	for _, o := range quickTagRatingOptions {
+		m[o.label] = o.value
 	}
-	for i := range a.Tags {
-		if a.Tags[i] != b.Tags[i] {
-			return false
+	return m
+}()
+
+func quickTagRatingLabels() []string {
+	labels := make([]string, 0, len(quickTagRatingOptions))
+	for _, o := range quickTagRatingOptions {
+		labels = append(labels, o.label)
+	}
+	return labels
+}
+
+func quickTagRatingLabel(value string) string {
+	for _, o := range quickTagRatingOptions {
+		if o.value == value {
+			return o.label
 		}
 	}
-	return true
+	return quickTagRatingOptions[0].label
+}
+
+// quickTagSetsEqual compares two sets field by field (nil and empty slices
+// are equal).
+func quickTagSetsEqual(a, b QuickTagSet) bool {
+	return a.Position == b.Position && a.IconSize == b.IconSize && a.Rating == b.Rating &&
+		slices.Equal(a.Tags, b.Tags) && slices.Equal(a.RatingKeys, b.RatingKeys)
 }
 
 // importQuickTagIcon copies a picked icon into <baseDir>/icons and returns its

@@ -65,6 +65,13 @@ type imageTagger struct {
 	// panel image's full tag list whenever the user edits it here, so other
 	// views of the same image (the quick tag bar) stay in step.
 	OnTagsChanged func(hash string, tags []string)
+	// OnRatingChanged, when non-nil, is called on the UI goroutine when the
+	// user rates the panel image here (0 = cleared), for the same reason.
+	OnRatingChanged func(hash string, rating int)
+	// OnStarChanged, when non-nil, is called on the UI goroutine after the
+	// user stars/unstars a tag here (and again with the reverted state if the
+	// tie write fails), so the sidebar's ☆/★ buttons stay in step.
+	OnStarChanged func(tag string, starred bool)
 }
 
 // newImageTagger creates an imageTagger. Call SetAllTags and SetFavoriteTags
@@ -120,6 +127,9 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 		// Optimistically update UI
 		it.ts.ToggleStar(tag, isStarred)
 		it.ts.SetFavoritesWithStars(it.ts.StarredTags())
+		if it.OnStarChanged != nil {
+			it.OnStarChanged(tag, isStarred)
+		}
 
 		go func() {
 			var err error
@@ -133,6 +143,9 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 				fyne.Do(func() {
 					it.ts.ToggleStar(tag, !isStarred) // reverse the toggle
 					it.ts.SetFavoritesWithStars(it.ts.StarredTags())
+					if it.OnStarChanged != nil {
+						it.OnStarChanged(tag, !isStarred)
+					}
 					// TODO: Show error dialog to user (requires window reference)
 					fmt.Printf("imageTagger: failed to %s tag %q: %v\n",
 						map[bool]string{true: "star", false: "unstar"}[isStarred], tag, err)
@@ -178,6 +191,9 @@ func (it *imageTagger) syncRating(rating int) {
 		return
 	}
 	it.appliedRating = rating
+	if it.OnRatingChanged != nil {
+		it.OnRatingChanged(hash, rating)
+	}
 	go func() {
 		if old != 0 {
 			if _, err := it.tc.Delete(hash, "rating", strconv.Itoa(old)); err != nil {
@@ -296,6 +312,17 @@ func (it *imageTagger) loadCurrentTags() {
 			it.rating.SetRating(rating)
 		})
 	}()
+}
+
+// SetRating replaces the panel's rating for hash from an external source
+// (the quick tag bar) without writing to tie. Ignored unless the panel
+// currently holds that image. starRating.SetRating does not fire OnChanged.
+func (it *imageTagger) SetRating(hash string, rating int) {
+	if hash == "" || it.panelHash != hash {
+		return
+	}
+	it.appliedRating = rating
+	it.rating.SetRating(rating)
 }
 
 // SetTags replaces the panel's applied-tag list for hash from an external
