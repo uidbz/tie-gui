@@ -439,6 +439,11 @@ inline with no extra round-trips.
 
 ## Tag sidebar (`cmd/tie-view/main.go` — `makeTagSidebar`)
 
+The tie-view sidebar is an `AppTabs` with **Tags** (below), **Files**
+(`tree.go`: the tie virtual filesystem tree — directories as branches, image
+files as leaves; selecting a directory shows its images, hidden dirs toggled
+via the ☰ menu) and **Settings** (see above).
+
 **Initial load:** `tc.Get("tags")` returns two relations:
 - `"all"` — every tag ever applied in the collection
 - `"favorite"` — curated quick-pick tags (falls back to `"all"` if empty)
@@ -517,14 +522,32 @@ file (setting its `DefaultCollection`, which the tie CLI then follows).
 
 ## tie-audio sidebar & settings (`cmd/tie-audio/internal/ui/`)
 
-The browse sidebar mirrors tie-view's tag-sidebar semantics: `ShowStars = true`,
-the quick-pick list shows the starred `("tags","favorite")` tags (falling back
-to every tag while none are starred, labeled "All tags" / "Favorites"), ☆/★
-toggles persist via `RegisterFavorite`/`UnregisterFavorite` (optimistic,
-rolled back on error), and co-tag refinement narrows the list on selection.
-Both tag relations arrive in one `tc.Get("tags")` fetch (`Session.TagSets`).
-The whole `TagSelection` sits in a `container.NewVScroll` so a large tag
-count doesn't inflate the window's minimum size.
+The browse sidebar is an `AppTabs` (bar at the bottom) with **Tags / Files /
+Settings** tabs, mirroring tie-view's sidebar.
+
+- **Tags** mirrors tie-view's tag-sidebar semantics: `ShowStars = true`, the
+  quick-pick list shows the starred `("tags","favorite")` tags (falling back
+  to every tag while none are starred, labeled "All tags" / "Favorites"),
+  ☆/★ toggles persist via `RegisterFavorite`/`UnregisterFavorite`
+  (optimistic, rolled back on error), and co-tag refinement narrows the list
+  on selection. Both tag relations arrive in one `tc.Get("tags")` fetch
+  (`Session.TagSets`). The whole `TagSelection` sits in a
+  `container.NewVScroll` so a large tag count doesn't inflate the window's
+  minimum size.
+- **Files** (`fstree.go`) is the tie virtual filesystem tree, an audio
+  variant of tie-view's `tree.go`: directories are branches, audio files
+  (media-type `audio/*` or tie-type audio-file) are leaves. Selecting a
+  directory replaces the cover wall with its subdirectories as album tiles
+  (titles from the subdir's own album/name triple, else the folder name)
+  followed by its standalone tracks as single-track albums; selecting a file
+  opens it as a single-track album. Listings are cached per session,
+  failures included (a dead server would otherwise be re-queried per tree
+  layout pass). Hidden directories (leading `.`) are toggled via the
+  gallery ☰ menu (matching tie-view).
+- **Settings** is built by the App shell (`buildSettingsTab`) and appended
+  to the same `AppTabs`; the shell reuses the tab item's content to open the
+  settings view full-screen on mobile, and the page's Back button re-selects
+  its own tab instead of leaving the settings view.
 
 The settings page shares `tieconfig.Editor` with tie-view and applies a
 collection switch the same way: picking a collection in the dropdown calls
@@ -537,6 +560,12 @@ collection (profile)" above). The sidebar then reloads its tags (selection
 cleared) and `clearAlbums` empties the wall in the background, so stale
 albums from the prior collection can neither display nor be opened; the user
 stays on the settings page (no `ChangeGallery`).
+
+**Mobile nav bar:** on mobile the cover wall carries a bottom bar under the
+transport with **Playlist** / **Settings** buttons (plus the swipe gestures);
+the queue and settings views are full-screen without it. `App.showBrowseView`
+is the shared back target; `shellWindow.SetBottom` swaps the pinned bottom
+bar without touching the window content.
 
 ---
 

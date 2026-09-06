@@ -16,9 +16,10 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
-// browsePage is the album cover wall: a gallery grid driven by a tie tag
-// selection sidebar with co-tag refinement. Opening a tile swaps the page to
-// the album's track list (see album.go).
+// browsePage is the album cover wall: a gallery grid driven by a Tags/Files/
+// Settings sidebar (tag selection with co-tag refinement; a tie filesystem
+// tree; the settings page). Opening a tile swaps the page to the album's
+// track list (see album.go).
 type browsePage struct {
 	app     fyne.App
 	win     fyne.Window
@@ -31,11 +32,17 @@ type browsePage struct {
 	// labels when albums are played or enqueued. Wired by the App shell.
 	transport *transportBar
 
-	// onSettings, when set, opens the settings sub-view. Wired by the App shell.
-	onSettings func()
-	// onQueue, when set, opens the queue sub-view. Wired by the App shell (mobile
-	// only; on desktop the queue is always visible in the right pane).
-	onQueue func()
+	// fsTree is the file-browser tab: the tie virtual filesystem as a tree,
+	// mirroring tie-view. Built before the sidebar (it is one of its tabs).
+	fsTree *tieFSTree
+	// tabs is the sidebar's Tags / Files / Settings tab container, kept so
+	// the settings page can switch back to its own tab (e.g. its Back
+	// button) instead of leaving the settings view.
+	tabs *container.AppTabs
+	// settingsTab is the Settings tab item (created by the App shell via
+	// buildSettingsTab); the App shell needs the same object to open the
+	// settings view.
+	settingsTab *container.TabItem
 
 	// mobile is true on touch platforms, where the queue is a swipe-reached
 	// full-screen view rather than a persistent pane.
@@ -84,8 +91,20 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session) *browse
 		page:      b,
 		tileWidth: int(config.General.TileWidth),
 	}
+	b.fsTree = newTieFSTree(b)
 	b.viewer.Sidebar = b.buildSidebar()
 	b.viewer.Init()
+	// The file-browser tab shows hidden directories only on demand, toggled
+	// from the gallery ☰ menu (matching tie-view).
+	b.viewer.MenuItems = func() []*fyne.MenuItem {
+		label := "Show hidden directories"
+		if b.fsTree.showHidden {
+			label = "Hide hidden directories"
+		}
+		return []*fyne.MenuItem{
+			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
+		}
+	}
 	b.viewer.ToggleLabels() // album titles under covers, on by default
 
 	b.viewer.LoadGallery()
@@ -96,11 +115,10 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session) *browse
 // Content is the gallery's root object, used as the window's initial content.
 func (b *browsePage) Content() fyne.CanvasObject { return b.viewer.Content }
 
-// buildSidebar creates the tag selection widget with a top toolbar (Settings)
-// and wires selection changes to re-query albums, with co-tag faceted
-// refinement in the background. The quick-pick list shows the starred
-// favorites (falling back to every tag while none are starred) and its rows
-// carry a ☆/★ toggle, matching tie-view's sidebar.
+// buildSidebar creates the navigation sidebar: a Tags tab (tag selection
+// with co-tag faceted refinement and ☆/★ favorites, matching tie-view), a
+// Files tab (the tie virtual filesystem tree), and — appended later via
+// setSettingsTab — a Settings tab.
 func (b *browsePage) buildSidebar() fyne.CanvasObject {
 	ts := tagselection.NewTagSelection(b.win)
 	ts.ShowIncludeExclude = true
@@ -137,27 +155,28 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 
 	b.loadTags()
 
-	settingsBtn := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), func() {
-		if b.onSettings != nil {
-			b.onSettings()
-		}
-	})
-	// On desktop the queue lives in a persistent right pane, so no nav button is
-	// needed; on mobile it is reached via the Queue button (and swipe).
-	var nav fyne.CanvasObject
-	if b.mobile {
-		queueBtn := widget.NewButtonWithIcon("Playlist", theme.ListIcon(), func() {
-			if b.onQueue != nil {
-				b.onQueue()
-			}
-		})
-		nav = container.NewGridWithColumns(2, queueBtn, settingsBtn)
-	} else {
-		nav = settingsBtn
-	}
 	// The tag list grows with the store; wrap it in a scroll so a large tag
 	// count doesn't inflate the window's minimum size.
-	return container.NewBorder(nav, nil, nil, nil, container.NewVScroll(ts))
+	tagTab := container.NewTabItemWithIcon("Tags", theme.ListIcon(), container.NewVScroll(ts))
+	filesTab := container.NewTabItemWithIcon("Files", theme.FolderIcon(), b.fsTree.tree)
+	b.tabs = container.NewAppTabs(tagTab, filesTab)
+	b.tabs.SetTabLocation(container.TabLocationBottom)
+	return b.tabs
+}
+
+// setSettingsTab installs the Settings tab (created by the App shell, which
+// owns the settings page) as the sidebar's last tab, so the sidebar shows
+// Tags / Files / Settings like tie-view's.
+func (b *browsePage) setSettingsTab(tab *container.TabItem) {
+	b.settingsTab = tab
+	b.tabs.Append(tab)
+}
+
+// showSettingsTab switches the sidebar to the Settings tab.
+func (b *browsePage) showSettingsTab() {
+	if b.settingsTab != nil {
+		b.tabs.Select(b.settingsTab)
+	}
 }
 
 // refreshAlbums re-queries the album wall for the current tag selection.

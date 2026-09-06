@@ -7,6 +7,8 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
@@ -21,13 +23,20 @@ import (
 // (an HSplit whose trailing child is queuePanel), so the queue sits beside every
 // view. The split instance is kept across navigations so the user's divider
 // position survives the gallery's own SetContent calls. On mobile there is no
-// pane — the queue is a separate full-screen view reached by swiping.
+// pane — the queue is a separate full-screen view reached by swiping or the
+// bottom nav bar.
 type shellWindow struct {
 	fyne.Window
 	bar        fyne.CanvasObject
 	queuePanel fyne.CanvasObject
 	isMobile   bool
 	split      *container.Split
+}
+
+// SetBottom swaps the pinned bottom bar (mobile: with or without the nav bar
+// underneath the transport) without touching the window content.
+func (w *shellWindow) SetBottom(bar fyne.CanvasObject) {
+	w.bar = bar
 }
 
 // wrap composes o with the transport bar (and, on desktop, the queue pane)
@@ -61,6 +70,12 @@ type App struct {
 	browse    *browsePage
 	transport *transportBar
 	queue     *queuePage
+	// settingsContent is the Settings tab's content object, reused when the
+	// settings view is opened full-screen (mobile bottom nav bar).
+	settingsContent fyne.CanvasObject
+	// onBrowse tracks whether the cover wall is the current view (mobile:
+	// whether the bottom bar carries the nav bar).
+	onBrowse bool
 }
 
 // NewApp builds the UI for the given window and session.
@@ -84,7 +99,7 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	// then so the very first render already includes the queue pane. The browse
 	// callbacks are reached via closures over a.browse, which is assigned below.
 	a.queue = newQueuePage(shell, session, a.transport, mobile,
-		func() { a.browse.showBrowse() },
+		func() { a.showBrowseView() },
 		func(keys []string) { a.browse.saveQueueColumns(keys) },
 	)
 	if !mobile {
@@ -93,24 +108,19 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 
 	a.browse = newBrowsePage(fyne.CurrentApp(), shell, session)
 	a.browse.transport = a.transport
-	a.browse.onSettings = func() { a.win.SetContent(a.buildSettings()) }
+	// The Settings tab lives in the sidebar (Tags / Files / Settings, like
+	// tie-view); the same tab item is reused to open the settings view.
+	settingsTab := a.buildSettingsTab()
+	a.browse.setSettingsTab(settingsTab)
+	a.settingsContent = settingsTab.Content
 
 	if mobile {
-		// The queue is a full-screen view; the sidebar button and a right→left
-		// swipe both open it, a left→right swipe (or the queue's Back button)
-		// returns to the wall.
-		a.browse.onQueue = func() {
-			a.win.SetContent(a.queue.object)
-			a.queue.show()
-		}
-		a.browse.viewer.OnSwipeLeft = func() {
-			a.win.SetContent(a.queue.object)
-			a.queue.show()
-		}
-		a.browse.viewer.OnSwipeRight = func() {
-			a.queue.hide()
-			a.browse.showBrowse()
-		}
+		// The cover wall carries a bottom nav bar (Playlist / Settings) under
+		// the transport bar; the queue and the settings page are full-screen
+		// views without it. Swipes mirror the buttons.
+		a.browse.viewer.OnSwipeLeft = a.showQueueView
+		a.browse.viewer.OnSwipeRight = a.showBrowseView
+		a.showBrowseView() // install the bottom bar for the initial cover wall
 	} else {
 		// The queue is always visible in the right pane, so it subscribes to the
 		// status poll immediately rather than on navigation.
@@ -132,4 +142,59 @@ func (a *App) Root() fyne.CanvasObject {
 		return container.NewBorder(nil, a.transport.Object(), nil, nil, a.browse.Content())
 	}
 	return shell.wrap(a.browse.Content())
+}
+
+// navBar is the mobile bottom bar: Playlist and Settings buttons opening the
+// full-screen queue and settings views.
+func (a *App) navBar() fyne.CanvasObject {
+	playlist := widget.NewButtonWithIcon("Playlist", theme.ListIcon(), a.showQueueView)
+	playlist.Importance = widget.LowImportance
+	settings := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), a.showSettingsView)
+	settings.Importance = widget.LowImportance
+	return container.NewVBox(
+		widget.NewSeparator(),
+		container.NewGridWithColumns(2, playlist, settings),
+	)
+}
+
+// showBrowseView restores the cover wall with its bottom nav bar (mobile) or
+// as-is (desktop). It is the back target of the queue and settings views.
+func (a *App) showBrowseView() {
+	a.queue.hide()
+	a.onBrowse = true
+	a.refreshBottom()
+	a.browse.showBrowse()
+}
+
+// showQueueView opens the full-screen play queue (mobile).
+func (a *App) showQueueView() {
+	a.onBrowse = false
+	a.refreshBottom()
+	a.win.SetContent(a.queue.object)
+	a.queue.show()
+}
+
+// showSettingsView opens the settings page full-screen (mobile), mirroring
+// the sidebar's own tab selection.
+func (a *App) showSettingsView() {
+	a.onBrowse = false
+	a.refreshBottom()
+	a.win.SetContent(a.settingsContent)
+	a.browse.showSettingsTab()
+}
+
+// refreshBottom pins the bottom bar for the current view on mobile: the
+// transport plus the nav bar on the cover wall, the transport alone on the
+// full-screen queue and settings views. A no-op on desktop, where the
+// transport is the only bottom bar.
+func (a *App) refreshBottom() {
+	shell, ok := a.win.(*shellWindow)
+	if !ok || !shell.isMobile {
+		return
+	}
+	if a.onBrowse {
+		shell.SetBottom(container.NewVBox(a.transport.Object(), a.navBar()))
+		return
+	}
+	shell.SetBottom(a.transport.Object())
 }

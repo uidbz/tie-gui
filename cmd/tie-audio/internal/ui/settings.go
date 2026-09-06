@@ -14,7 +14,11 @@ import (
 	"github.com/uidbz/tie-gui/tieconfig"
 )
 
-func (a *App) buildSettings() fyne.CanvasObject {
+// buildSettingsTab builds the Settings tab of the sidebar (the tie config
+// connection editor plus the app-level form). The App shell uses the same tab
+// item to open the settings view, so the sidebar shows Tags / Files /
+// Settings like tie-view's.
+func (a *App) buildSettingsTab() *container.TabItem {
 	server := widget.NewEntry()
 	server.SetText(a.session.Cfg.PwplayServer)
 	server.SetPlaceHolder("http://host:8080")
@@ -68,7 +72,14 @@ func (a *App) buildSettings() fyne.CanvasObject {
 		dialog.ShowInformation("Connected", "pwplay server reachable.", a.win)
 	})
 
+	// Back returns to the settings view's own tab (when it lives in the
+	// sidebar); elsewhere (the full-screen settings view on mobile) it
+	// returns to the cover wall.
 	back := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), func() {
+		if a.browse.settingsTab != nil {
+			a.browse.showSettingsTab()
+			return
+		}
 		a.browse.showBrowse()
 	})
 
@@ -113,7 +124,7 @@ func (a *App) buildSettings() fyne.CanvasObject {
 	// the editor is itself a scroll container, whose MinSize is only the
 	// small scroll minimum (~32px), so the VBox handed it just that — the
 	// collection dropdown was the only row visible.
-	return container.NewBorder(header, nil, nil, nil,
+	content := container.NewBorder(header, nil, nil, nil,
 		container.NewBorder(
 			container.NewVBox(
 				container.NewVScroll(container.NewVBox(
@@ -126,4 +137,5 @@ func (a *App) buildSettings() fyne.CanvasObject {
 			nil, nil, nil,
 			connEditor,
 		))
+	return container.NewTabItemWithIcon("Settings", theme.SettingsIcon(), content)
 }
