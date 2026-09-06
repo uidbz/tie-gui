@@ -19,11 +19,22 @@
 # pass NOMPV=1 — it adds `-tags nompv` and skips the bundling step.
 #
 # Requirements:
-#   - the fyne command: go install fyne.io/fyne/v2/cmd/fyne@latest
 #   - Android SDK + NDK, with ANDROID_HOME / ANDROID_NDK_HOME set (or the
 #     defaults below adjusted to your machine)
 #   - the fyne fork submodule checked out: git submodule update --init
+#     (the `fyne` packaging tool is built from the fork, see below)
 #   - vendored native libs in third_party/android-libs/ (viewers only, unless NOMPV=1)
+#
+# The packaging tool MUST be the fork's cmd/fyne, not the upstream
+# fyne.io/tools CLI: `fyne package` embeds a precompiled classes.dex of
+# GoNativeActivity.java (cmd/fyne/internal/mobile/dex.go), and the fork's
+# Java adds `setSystemBarsVisible` (SetFullScreen → immersive mode). An APK
+# packaged with the upstream tool silently lacks that method, so hiding the
+# system bars becomes a no-op. This script builds the fork's tool into
+# .build/fyne and uses it; FYNE_CMD=/path/to/fyne overrides that.
+# After editing GoNativeActivity.java, regenerate dex.go:
+#   cd third_party/fyne/cmd/fyne/internal/mobile && go generate  (needs javac,
+#   ANDROID_HOME with an API 30+ platform and build-tools ≥ 34 for d8)
 #
 # Usage:
 #   ./build-android.sh                    # build all APKs, arm64, with libmpv
@@ -94,17 +105,29 @@ echo "Using Android NDK: $ANDROID_NDK_HOME"
 VENDOR="$ROOT/third_party/android-libs"
 ABI_DIR="$VENDOR/arm64-v8a"
 
-if ! command -v fyne >/dev/null 2>&1; then
-    echo "error: 'fyne' command not found. Install it with:" >&2
-    echo "  go install fyne.io/fyne/v2/cmd/fyne@latest" >&2
-    exit 1
-fi
-
 # The libmpv fork lives in a submodule; without it the replace directive in
 # go.mod points at an empty directory and the build fails.
 if [ ! -f third_party/fyne/go.mod ]; then
     echo "fyne submodule missing; initializing..." >&2
     git submodule update --init --recursive
+fi
+
+# Build the packaging tool from the fork (see header). Rebuilt on every run;
+# Go's build cache makes this a no-op when nothing changed.
+if [ -z "${FYNE_CMD:-}" ]; then
+    FYNE_CMD="$ROOT/.build/fyne"
+    mkdir -p "$ROOT/.build"
+    echo "Building fork fyne tool -> ${FYNE_CMD#$ROOT/}"
+    ( cd "$ROOT/third_party/fyne" && go build -o "$FYNE_CMD" ./cmd/fyne )
+fi
+if [ ! -x "$FYNE_CMD" ]; then
+    echo "error: fyne tool not executable: $FYNE_CMD" >&2
+    exit 1
+fi
+# The fork's dex must carry the system-bar hook; the upstream tool's does not.
+if ! "$FYNE_CMD" version 2>/dev/null | grep -q "fyne cli version: (devel)"; then
+    echo "warning: $FYNE_CMD does not look like the fork's cmd/fyne;" >&2
+    echo "         Android system-bar hiding will not work in the APK." >&2
 fi
 
 # For the libmpv-backed build, point cgo at the vendored headers/libs so the
@@ -142,7 +165,7 @@ build() {
     fi
 
     echo "Building $app for $TARGET (this may take a while on first compile)..."
-    ( cd "$ROOT/cmd/$app" && fyne "${args[@]}" )
+    ( cd "$ROOT/cmd/$app" && "$FYNE_CMD" "${args[@]}" )
     local apk
     apk="$(apk_path "$app")"
     echo "  -> ${apk#$ROOT/}"

@@ -88,6 +88,26 @@ the stub is what keeps a solo `build-android.sh tie-audio` (the per-app path
 `build-install-android.sh` uses) from failing on `mpv/client.h` — and keeps
 the APK from linking a libmpv it never ships.
 
+**The APK packager must be the fork's `cmd/fyne`.** `build-android.sh`
+builds `third_party/fyne/cmd/fyne` into `.build/fyne` (git-ignored;
+`FYNE_CMD=` overrides) and never uses a `fyne` from `$PATH`. `fyne package`
+compiles no Java: it writes the precompiled `classes.dex` embedded in
+`cmd/fyne/internal/mobile/dex.go` of *the tool you run*. The fork's
+`GoNativeActivity.java` adds `setSystemBarsVisible(boolean)`, which
+`Window.SetFullScreen` reaches via `canvas_android.go` →
+`app.SetSystemBarsVisible` → JNI; an APK packaged with the upstream
+`fyne.io/tools` CLI lacks that method in its dex, `android.c` logs
+`Fyne: cannot find method setSystemBarsVisible (Z)V` at startup, and every
+`SetFullScreen` is a silent no-op (the bars stay visible while the gallery
+believes it is fullscreen — the cause of the earlier failed attempts). The
+Java hides bars in immersive-sticky mode (`WindowInsetsController` on API
+30+, `SYSTEM_UI_FLAG_*` below) and re-applies the hidden state in
+`onWindowFocusChanged`. After editing the Java, regenerate the dex with
+`cd third_party/fyne/cmd/fyne/internal/mobile && go generate` (needs
+`javac`, `ANDROID_HOME` with an API 30+ platform and build-tools ≥ 34; the
+gendex picks the highest-numbered ones) and commit `dex.go` with it. See
+`docs/ANDROID.md`.
+
 ---
 
 ## Memory Optimization
@@ -586,27 +606,40 @@ tagger's search trie up to date without a separate network request.
 
 ## Quick tagging mode (`cmd/tie-view/quicktag.go`, `quicktagconfig.go`, `quicktag_editor.go`)
 
-A mode for tagging many images fast: the picture stays full-size and a
-translucent pill of icon buttons (`quickTagBar`) overlays the top or bottom
-edge. Each button is one configured tag; tapping it (or pressing its key)
-toggles the tag on the displayed image and writes to tie immediately
-(optimistic flip, revert + "failed: tag" flash on error). A 1–5 star
-`starRating` (shared with the tagger panel, `rating.go`) sits next to the
-buttons and writes `(hash, "rating", n)` the same way (`rate`: delete old,
-add new). A status line above/below the pill names the hovered control on
-desktop and confirms changes ("+ favorite" / "− favorite" / "rating 3").
+A mode for tagging many images fast: the picture stays full-size and two
+translucent pills (`quickTagBar`) overlay its edges. The **tags bar**
+(`Position`, bottom by default) holds one icon button per configured tag;
+the **rating bar** holds the 1–5 star `starRating` (shared with the tagger
+panel, `rating.go`) plus every tag flagged `RatingBar = true` (the favorite
+heart by default) and sits on the opposite edge unless `Rating` says
+otherwise. Tapping a button (or pressing its key) toggles the tag on the
+displayed image and writes to tie immediately (optimistic flip, revert +
+"failed: tag" flash on error); the stars write `(hash, "rating", n)` the same
+way (`rate`: delete old, add new). A status line beside the tags bar names
+the hovered control on desktop and confirms changes ("+ favorite" /
+"− favorite" / "rating 3").
 
-**Rating placement** (`Rating` in the set): `inline` (default) puts the
-stars in the tags' pill as one row `[★★★★★ | ♥ …]`; `barLayout` builds
-both that row and two stacked pills and shows the row only while it fits
-the bar width, else the stars wrap onto a row above the tags (a phone in
-portrait) — the mode flips in `Layout` and reschedules `Overlay.Refresh` so
-the Border gives the bar its new height. `top`/`bottom` put the stars in
-their own strip on that edge (on the tags' edge they become the row nearer
-the image); `off` hides them. Because a canvas object has one parent, each
-pill rendering gets its own `starRating` (`b.stars` slice), all painted
-alike. `RatingKeys` optionally binds one key per star (the current rating's
+**Layout** (`Rebuild`): the `quickTagBar` widget itself is the column at the
+tags' edge — a plain `VBox` of status line and tags pill (image → edge
+order, reversed for `Position = "top"`), and `Overlay` is a Border layout
+anchoring it to that edge and the rating pill to the other. When
+`Rating` names the tags' edge, the rating pill joins the column as the row
+nearer the image; `off` drops the stars (flagged tags still form the pill).
+There is exactly one `starRating` (`b.stars`, nil when off) and one
+rendering of each button; `b.cells` keeps config order across both pills.
+The earlier design (`Rating = "inline"`: stars inside the tags pill, with a
+`barLayout` that swapped a merged row for stacked pills at layout time via
+hidden duplicate renderings and a `fyne.Do(Overlay.Refresh)` from inside
+`Layout`) drew the tag buttons over the stars on narrow screens and is
+gone. `RatingKeys` optionally binds one key per star (the current rating's
 key clears it).
+
+**Size** (`Size` in the set): one of five presets `xs`/`s`/`m`/`l`/`xl`
+(`quickTagSizes`), scaling the platform base icon size (40 desktop / 56
+mobile, `quickTagIconSize`) by `quickTagSizeScale` (0.7 … 1.4); stars are
+0.75× the icon and the pill padding is 0.12× (min theme padding). A numeric
+`IconSize > 0` (hand edit) overrides the preset; the editor clears it when a
+Size is picked.
 
 **Toggling the mode:** `[Image] ShowTagbar` key (**T**, previously an
 unbound config slot) or ☰ menu → "Quick tagging mode". The on/off state
@@ -650,9 +683,9 @@ top level is the **default set** (`QuickTagSet`, embedded in
 unexported embedded fields); `[Collections.<name>]` tables are
 **per-collection overrides** keyed by the tie config's collection name.
 ```toml
-Position = "bottom"   # or "top"
-IconSize = 40         # optional; default 40 desktop / 56 mobile
-Rating = "inline"     # or "top" / "bottom" / "off"
+Position = "bottom"   # tags bar edge: "bottom" or "top"
+Size = "m"            # "xs" / "s" / "m" / "l" / "xl"
+Rating = "auto"       # rating bar edge: "auto" (opposite the tags), "top", "bottom", "off" (no stars)
 RatingKeys = ["F1", "F2", "F3", "F4", "F5"]   # optional, one per star
 
 [[Tag]]
@@ -660,6 +693,7 @@ Tag = "favorite"
 On  = "heart.png"      # applied
 Off = "heart-grey.png" # not applied; empty = grayscale On icon (grayscaleResource); both empty = text button
 Key = "1"              # optional Fyne key name
+RatingBar = true       # show next to the stars instead of in the tags bar
 
 [Collections.photos]   # this collection gets its own bar
 Position = "top"       # optional; falls back to the top-level value
@@ -669,8 +703,14 @@ On  = "icons/printer.png"
 ```
 `quickTagConfig.For(collection)` resolves the set to show: an override's
 `Tag` list replaces the default list entirely (even when empty), while its
-`Position`/`IconSize`/`Rating`/`RatingKeys` fall back to the top-level
-values when unset; `""` or an unknown collection yields the default. The active collection is
+`Position`/`Size`/`IconSize`/`Rating`/`RatingKeys` fall back to the
+top-level values when unset; `""` or an unknown collection yields the
+default. `loadQuickTagConfig` runs `migrateLegacy`: a file whose default set
+has `Rating = "inline"` or neither `Rating` nor `Size` predates the two-bar
+layout, so every set gets `inline` → `auto` and, if it flags no tag, its
+`favorite` entry gets `RatingBar = true` (the top level also gets
+`Size = "m"` so the file counts as migrated on the next save). The active
+collection is
 `tieClient.Config.DefaultCollection` (the connection editor sets it to the
 applied entry); `applyQuickTagConfig` in main.go re-resolves it and is also
 run from the settings tab's `onApply` (`onCollectionChanged`) so the bar
@@ -682,7 +722,9 @@ Icon paths are absolute or relative to the config dir; `heart.png`,
 (`makeQuickTagEditor`) edits the same file in-app: a "Bar for" dropdown
 (Default / each configured collection, plus any override-only names so
 stale ones can be removed) picks the set being edited; per-tag cards with a
-PNG file picker (picked files are copied into `<config dir>/icons/`),
+PNG file picker, an "In rating bar" check (`RatingBar`), a Size select
+(XS–XL) and a rating-bar placement select (Opposite edge / Top / Bottom / No
+stars), plus (picked files are copied into `<config dir>/icons/`)
 reorder, delete, Apply (save + `quickBar.Rebuild`), "Use default bar"
 (drops the selected collection's override) and "Reload file" for hand edits.
 Switching scope stores unsaved edits in memory (`storeForm`), but a

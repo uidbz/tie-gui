@@ -5,9 +5,9 @@
 # immediately installs them on a connected Android device.
 #
 # Requirements:
-#   - the fyne command: go install fyne.io/fyne/v2/cmd/fyne@latest
 #   - Android SDK + NDK, with ANDROID_HOME / ANDROID_NDK_HOME set
-#   - the fyne fork submodule: git submodule update --init
+#   - the fyne fork submodule: git submodule update --init (build-android.sh
+#     builds the `fyne` packaging tool from it — see its header for why)
 #   - adb (Android platform-tools) and a connected device
 #
 # Usage:
@@ -39,12 +39,6 @@ export PATH="$ANDROID_HOME/platform-tools:$PATH"
 # ═══════════════════════════════════════════════════════════════════════════
 # Build phase
 # ═══════════════════════════════════════════════════════════════════════════
-
-if ! command -v fyne >/dev/null 2>&1; then
-    echo "error: 'fyne' command not found. Install it with:" >&2
-    echo "  go install fyne.io/fyne/v2/cmd/fyne@latest" >&2
-    exit 1
-fi
 
 if [ ! -f third_party/fyne/go.mod ]; then
     echo "fyne submodule missing; initializing..." >&2

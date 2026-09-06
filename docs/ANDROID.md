@@ -46,6 +46,42 @@ RELEASE=1 ./build-android.sh         # signed release build
 `CGO_LDFLAGS=-L third_party/android-libs/arm64-v8a` before `fyne package`, then
 runs `bundle-native-libs.sh` to inject the `.so` files and re-sign (see below).
 
+## The packaging tool must come from the fork
+
+`build-android.sh` compiles `third_party/fyne/cmd/fyne` into `.build/fyne`
+(git-ignored) and runs *that* — never a `fyne` from `$PATH`. Override with
+`FYNE_CMD=/path/to/fyne` if you must.
+
+Why: `fyne package` does not compile any Java at build time. It writes a
+precompiled `classes.dex` of `GoNativeActivity.java`, embedded as a base64
+string in `cmd/fyne/internal/mobile/dex.go` of whichever tool you run. The
+fork's Java adds `setSystemBarsVisible(boolean)`, which `Window.SetFullScreen`
+calls through JNI to enter/leave immersive mode (status + navigation bars
+hidden; edge swipe shows them transiently; re-applied on window focus). The
+upstream `fyne.io/tools` CLI has no such method in its dex, so an APK built
+with it logs `Fyne: cannot find method setSystemBarsVisible (Z)V` at startup
+and every `SetFullScreen` call becomes a silent no-op — the app thinks it is
+fullscreen while the bars stay on screen. Check an APK with:
+
+```sh
+unzip -p cmd/tie-view/tie_view.apk classes.dex | grep -c setSystemBarsVisible   # must be ≥ 1
+```
+
+After editing `GoNativeActivity.java`, regenerate the embedded dex and
+commit both the Java and `dex.go` in the submodule:
+
+```sh
+cd third_party/fyne/cmd/fyne/internal/mobile && go generate
+```
+
+`gendex` needs `javac` on `$PATH` and `ANDROID_HOME` with a platform whose
+`android.jar` is API 30+ (the Java uses `WindowInsetsController`) plus
+`build-tools` ≥ 34 (older `d8` NPEs on class files from JDK 21+). It picks the
+highest-numbered platform and build-tools directories. Platforms and
+build-tools can be dropped in from the official zips, e.g.
+`platform-35_r02.zip` → `$ANDROID_HOME/platforms/android-35` and
+`build-tools_r35_linux.zip` → `$ANDROID_HOME/build-tools/35.0.0`.
+
 ## Toolchain discovery (no hardcoded paths)
 
 All the Android scripts source `android-env.sh`, which finds the Android SDK,

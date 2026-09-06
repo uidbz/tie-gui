@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -22,7 +23,7 @@ import (
 	"github.com/uidbz/tie/client"
 )
 
-// quickTagIconSize returns the default quick tag button edge length.
+// quickTagIconSize returns the base quick tag button edge length (Size "m").
 func quickTagIconSize(mobile bool) float32 {
 	if mobile {
 		return 56
@@ -30,13 +31,15 @@ func quickTagIconSize(mobile bool) float32 {
 	return 40
 }
 
-// quickTagBar is the quick tagging mode's control strip: a translucent pill of
-// icon buttons, one per configured tag, plus a 1-5 star rating control, laid
-// over the top or bottom edge of the single-image view so the picture stays
-// fully visible. Tapping a button (or pressing its key) toggles that tag on
-// the displayed image and writes the change to tie immediately; the icon flips
+// quickTagBar is the quick tagging mode's controls: two translucent pills
+// laid over the edges of the single-image view so the picture stays fully
+// visible. The tags bar holds one icon button per configured tag; the rating
+// bar holds the 1-5 stars plus the tags flagged RatingBar (the favorite
+// heart by default) and sits on the opposite edge unless configured
+// otherwise. Tapping a button (or pressing its key) toggles that tag on the
+// displayed image and writes the change to tie immediately; the icon flips
 // optimistically and reverts if the write fails. The stars set the image's
-// rating the same way. A one-line status above/below the pill names the
+// rating the same way. A one-line status next to the tags bar names the
 // hovered control (desktop) and confirms changes.
 //
 // The applied-tag set and rating are seeded from the tieReader's expanded
@@ -55,17 +58,17 @@ type quickTagBar struct {
 
 	cfg      QuickTagSet // normalized; the active collection's set
 	iconSize float32
-	cells    []*quickTagCell
-	stars    []*starRating // one per pill rendering (row and stacked); all painted alike
+	cells    []*quickTagCell // every button, both bars
+	stars    *starRating     // nil while Rating is off
 	status   *widget.Label
 	statusBg *canvas.Rectangle
 	// statusBox centers the status label over its backdrop; it is refreshed
 	// on every text change so the backdrop re-fits the new text width.
 	statusBox *fyne.Container
 	root      *fyne.Container // renderer content; rebuilt by Rebuild
-	// Overlay is the full-size container that anchors the bar to the image
-	// edge selected by cfg.Position (and, with Rating on the opposite edge,
-	// the rating strip to that edge). Append it to viewer.Content.Objects.
+	// Overlay is the full-size container that anchors this widget (status
+	// line + tags pill) to the edge selected by cfg.Position and the rating
+	// pill to its edge. Append it to viewer.Content.Objects.
 	Overlay *fyne.Container
 
 	hash          string          // content hash of the displayed image ("" = none)
@@ -114,12 +117,18 @@ func (b *quickTagBar) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(b.root)
 }
 
-// pill wraps content in the translucent rounded backdrop; the tapSink keeps
-// near-miss taps from falling through to the image.
+// pill wraps content in the translucent rounded backdrop, padded in
+// proportion to the icon size; the tapSink keeps near-miss taps from falling
+// through to the image.
 func (b *quickTagBar) pill(content fyne.CanvasObject) fyne.CanvasObject {
 	bg := canvas.NewRectangle(color.NRGBA{A: 150})
 	bg.CornerRadius = 10
-	return container.NewCenter(newTapSink(container.NewStack(bg, container.NewPadded(content))))
+	p := b.iconSize * 0.12
+	if p < theme.Padding() {
+		p = theme.Padding()
+	}
+	padded := container.New(layout.NewCustomPaddedLayout(p, p, p, p), content)
+	return container.NewCenter(newTapSink(container.NewStack(bg, padded)))
 }
 
 // Rebuild replaces the bar's controls from cfg (after the settings editor
@@ -129,85 +138,81 @@ func (b *quickTagBar) Rebuild(cfg QuickTagSet) {
 	b.cfg = cfg.normalized()
 	b.iconSize = b.cfg.IconSize
 	if b.iconSize <= 0 {
-		b.iconSize = quickTagIconSize(b.mobile)
+		b.iconSize = float32(int(quickTagIconSize(b.mobile)*quickTagSizeScale(b.cfg.Size) + 0.5))
 	}
 
-	// Tag buttons.
+	// Buttons, in config order, split between the two pills.
 	b.cells = b.cells[:0]
-	cellObjs := make([]fyne.CanvasObject, 0, len(b.cfg.Tags)+2)
+	var tagCells, ratingCells []fyne.CanvasObject
 	for _, e := range b.cfg.Tags {
 		c := newQuickTagCell(b, e, resolveQuickTagIcon(b.baseDir, e.On), resolveQuickTagIcon(b.baseDir, e.Off))
 		b.cells = append(b.cells, c)
-		cellObjs = append(cellObjs, c)
+		if e.RatingBar {
+			ratingCells = append(ratingCells, c)
+		} else {
+			tagCells = append(tagCells, c)
+		}
 	}
 
-	// Rating stars: slightly smaller than the icons so five of them plus a
-	// few buttons still fit a phone width when inline. Each pill rendering
-	// gets its own widget (a canvas object has one parent); paint syncs them.
-	b.stars = b.stars[:0]
-	newStars := func() fyne.CanvasObject {
-		sr := newStarRating(b.iconSize*0.75, b.rate)
-		sr.OnHover = func(n int) {
+	// Rating stars: slightly smaller than the buttons so five of them plus a
+	// heart still fit a phone width.
+	b.stars = nil
+	if b.cfg.Rating != ratingOff {
+		b.stars = newStarRating(b.iconSize*0.75, b.rate)
+		b.stars.OnHover = func(n int) {
 			if n == 0 {
 				b.setStatus("")
 			} else {
 				b.setStatus(fmt.Sprintf("rating %d", n))
 			}
 		}
-		b.stars = append(b.stars, sr)
-		return container.NewCenter(sr)
-	}
-	var starsObj fyne.CanvasObject
-	if b.cfg.Rating != ratingOff {
-		starsObj = newStars()
 	}
 
-	// Pills. Inline rating gets two renderings — one row [stars | tags] and
-	// the two stacked pills — and barLayout shows whichever fits the width
-	// (a phone in portrait rarely fits five stars plus several buttons).
-	var starsPill, tagsPill, rowPill fyne.CanvasObject
-	if starsObj != nil {
-		starsPill = b.pill(starsObj)
+	// Pills.
+	var tagsPill, ratingPill fyne.CanvasObject
+	if len(tagCells) > 0 {
+		tagsPill = b.pill(container.NewHBox(tagCells...))
 	}
-	if len(cellObjs) > 0 {
-		tagsPill = b.pill(container.NewHBox(cellObjs...))
-	} else if starsObj == nil {
+	var ratingRow []fyne.CanvasObject
+	if b.stars != nil {
+		ratingRow = append(ratingRow, container.NewCenter(b.stars))
+	}
+	if len(ratingCells) > 0 {
+		if len(ratingRow) > 0 {
+			ratingRow = append(ratingRow, widget.NewSeparator())
+		}
+		ratingRow = append(ratingRow, ratingCells...)
+	}
+	if len(ratingRow) > 0 {
+		ratingPill = b.pill(container.NewHBox(ratingRow...))
+	}
+	if tagsPill == nil && ratingPill == nil {
 		tagsPill = b.pill(widget.NewLabel("No quick tags configured — see Settings → Quick tags"))
 	}
-	if b.cfg.Rating == ratingInline && starsObj != nil && len(cellObjs) > 0 {
-		row := append([]fyne.CanvasObject{newStars(), widget.NewSeparator()}, cellObjs...)
-		rowPill = b.pill(container.NewHBox(row...))
-	}
 
-	// The column at the tags' edge: status line nearest the image, then the
-	// pills (stars nearer the image than the tags), tags at the very edge.
-	// A rating strip on the opposite edge is anchored there instead.
+	// This widget is the column at the tags' edge, ordered image → edge:
+	// status line, then (when the rating bar shares the edge) the rating
+	// pill, then the tags pill at the very edge. Otherwise the rating pill
+	// is anchored to the far edge on its own.
 	top := b.cfg.Position == "top"
-	var farStrip fyne.CanvasObject
-	lay := &barLayout{bar: b, top: top, status: b.statusBox, row: rowPill, tags: tagsPill}
-	switch b.cfg.Rating {
-	case ratingInline:
-		lay.stars = starsPill
-	case ratingTop, ratingBottom:
-		if b.cfg.Rating == b.cfg.Position {
-			lay.stars = starsPill
+	var far fyne.CanvasObject
+	col := []fyne.CanvasObject{b.statusBox}
+	if ratingPill != nil {
+		if b.cfg.ratingEdge() == b.cfg.Position {
+			col = append(col, ratingPill)
 		} else {
-			farStrip = starsPill
+			far = ratingPill
 		}
 	}
-	// Without a merged row there is nothing to switch between: always show
-	// the separate pills (stars alone, tags alone, or both stacked).
-	lay.stacked = rowPill == nil
-	var colObjs []fyne.CanvasObject
-	for _, o := range []fyne.CanvasObject{b.statusBox, rowPill, starsPill, tagsPill} {
-		if o != nil && o != farStrip {
-			colObjs = append(colObjs, o)
-		}
+	if tagsPill != nil {
+		col = append(col, tagsPill)
 	}
-	lay.apply()
-	b.root.Objects = []fyne.CanvasObject{container.New(lay, colObjs...)}
+	if top {
+		slices.Reverse(col)
+	}
+	b.root.Objects = []fyne.CanvasObject{container.NewVBox(col...)}
 
-	// Anchor: the bar widget at its edge, the far rating strip opposite.
+	// Anchor: this widget at its edge, the rating pill opposite.
 	objs := []fyne.CanvasObject{b}
 	var edgeTop, edgeBottom fyne.CanvasObject
 	if top {
@@ -215,12 +220,12 @@ func (b *quickTagBar) Rebuild(cfg QuickTagSet) {
 	} else {
 		edgeBottom = b
 	}
-	if farStrip != nil {
-		objs = append(objs, farStrip)
+	if far != nil {
+		objs = append(objs, far)
 		if top {
-			edgeBottom = farStrip
+			edgeBottom = far
 		} else {
-			edgeTop = farStrip
+			edgeTop = far
 		}
 	}
 	b.Overlay.Layout = layout.NewBorderLayout(edgeTop, edgeBottom, nil, nil)
@@ -230,97 +235,6 @@ func (b *quickTagBar) Rebuild(cfg QuickTagSet) {
 	b.root.Refresh()
 	b.Refresh()
 	b.Overlay.Refresh()
-}
-
-// barLayout stacks the bar's status line and pills vertically, ordered so the
-// status is nearest the image and the tags at the screen edge. When both a
-// single-row pill (row) and the split pills (stars, tags) exist, Layout picks
-// the row while it fits the available width and the stacked pair otherwise;
-// a mode change reschedules the parent's layout so the bar's height follows.
-type barLayout struct {
-	bar         *quickTagBar
-	top         bool
-	status, row fyne.CanvasObject
-	stars, tags fyne.CanvasObject
-	stacked     bool
-}
-
-// rows returns the visible objects in image→edge order.
-func (l *barLayout) rows() []fyne.CanvasObject {
-	var pills []fyne.CanvasObject
-	if l.stacked {
-		if l.stars != nil {
-			pills = append(pills, l.stars)
-		}
-		if l.tags != nil {
-			pills = append(pills, l.tags)
-		}
-	} else if l.row != nil {
-		pills = append(pills, l.row)
-	}
-	return append([]fyne.CanvasObject{l.status}, pills...)
-}
-
-// apply shows the objects of the current mode and hides the others.
-func (l *barLayout) apply() {
-	for _, o := range []fyne.CanvasObject{l.row, l.stars, l.tags} {
-		if o == nil {
-			continue
-		}
-		if o == l.row {
-			if l.stacked {
-				o.Hide()
-			} else {
-				o.Show()
-			}
-		} else if l.stacked {
-			o.Show()
-		} else {
-			o.Hide()
-		}
-	}
-}
-
-func (l *barLayout) MinSize(_ []fyne.CanvasObject) fyne.Size {
-	var w, h float32
-	for i, o := range l.rows() {
-		m := o.MinSize()
-		if m.Width > w {
-			w = m.Width
-		}
-		if i > 0 {
-			h += theme.Padding()
-		}
-		h += m.Height
-	}
-	return fyne.NewSize(w, h)
-}
-
-func (l *barLayout) Layout(_ []fyne.CanvasObject, size fyne.Size) {
-	if l.row != nil && l.stars != nil && l.tags != nil {
-		stacked := l.row.MinSize().Width > size.Width
-		if stacked != l.stacked {
-			l.stacked = stacked
-			l.apply()
-			// Our MinSize changed; let the Border layout re-run with it.
-			overlay := l.bar.Overlay
-			fyne.Do(overlay.Refresh)
-		}
-	}
-	rows := l.rows()
-	if l.top {
-		// Edge first: tags at the top, status nearest the image.
-		for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-			rows[i], rows[j] = rows[j], rows[i]
-		}
-	}
-	var y float32
-	for _, o := range rows {
-		h := o.MinSize().Height
-		o.Move(fyne.NewPos(0, y))
-		o.Resize(fyne.NewSize(size.Width, h))
-		y += h + theme.Padding()
-	}
 }
 
 // Keys returns the bar's shortcut bindings: pressing an entry's key toggles
@@ -478,8 +392,8 @@ func (b *quickTagBar) paint() {
 	for _, c := range b.cells {
 		c.setApplied(b.applied[c.entry.Tag])
 	}
-	for _, sr := range b.stars {
-		sr.SetRating(b.rating)
+	if b.stars != nil {
+		b.stars.SetRating(b.rating)
 	}
 }
 

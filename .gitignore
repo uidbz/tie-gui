@@ -22,3 +22,6 @@ package/*
 
 # mpv-android buildscripts checkout + cross-compile tree (build-libmpv-android.sh)
 /build/
+
+# Fork fyne packaging tool built by build-android.sh
+/.build/

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 
@@ -40,15 +42,22 @@ var builtinQuickTagIcons = map[string]fyne.Resource{
 // to flatten its fields to the TOML top level, and go-toml's marshaler skips
 // embedded fields whose type name is unexported.
 type QuickTagSet struct {
-	// Position places the bar at the "bottom" (default) or "top" of the image.
+	// Position places the tags bar at the "bottom" (default) or "top" of the
+	// image.
 	Position string `toml:"Position,omitempty"`
-	// IconSize is the button edge length in points; 0 selects the platform
-	// default (see quickTagIconSize).
+	// Size picks one of five bar sizes: "xs", "s", "m" (default), "l" or
+	// "xl". It scales the buttons, the stars and the pill padding (see
+	// quickTagSizeScale).
+	Size string `toml:"Size,omitempty"`
+	// IconSize, when > 0, overrides Size with an exact button edge length in
+	// points (hand-edit only; the settings editor clears it when a Size is
+	// picked).
 	IconSize float32 `toml:"IconSize,omitempty"`
-	// Rating places the 1-5 star rating control: "inline" (default, in the
-	// same pill as the tag buttons), "top" or "bottom" (its own strip on that
-	// edge; when that is the tags' edge the stars sit on a row above/below
-	// them), or "off".
+	// Rating places the rating bar (the 1-5 stars plus every tag with
+	// RatingBar set): "auto" (default, the edge opposite the tags bar),
+	// "top" or "bottom" (that edge; on the tags' edge it becomes the row
+	// nearer the image), or "off" (no stars; RatingBar tags still get their
+	// own pill). The legacy value "inline" is migrated to "auto" on load.
 	Rating string `toml:"Rating,omitempty"`
 	// RatingKeys are optional shortcut keys for 1..5 stars, in order.
 	// Pressing the key of the current rating clears it, like tapping it.
@@ -59,11 +68,59 @@ type QuickTagSet struct {
 
 // Rating placements.
 const (
-	ratingInline = "inline"
+	ratingAuto   = "auto"
 	ratingTop    = "top"
 	ratingBottom = "bottom"
 	ratingOff    = "off"
+	// ratingInline is the pre-Size config's default ("stars in the tags
+	// pill"); migrateLegacy rewrites it.
+	ratingInline = "inline"
 )
+
+// quickTagSizes are the Size presets, smallest first.
+var quickTagSizes = []string{"xs", "s", "m", "l", "xl"}
+
+// quickTagSizeScale returns the multiplier a Size preset applies to the
+// platform's base icon size (quickTagIconSize); unknown values are "m".
+func quickTagSizeScale(size string) float32 {
+	switch size {
+	case "xs":
+		return 0.7
+	case "s":
+		return 0.85
+	case "l":
+		return 1.2
+	case "xl":
+		return 1.4
+	}
+	return 1
+}
+
+// ratingEdge returns the edge the rating bar sits on ("top" / "bottom"), or
+// "" when Rating is off. Call on a normalized set.
+func (set QuickTagSet) ratingEdge() string {
+	switch set.Rating {
+	case ratingOff:
+		return ""
+	case ratingTop, ratingBottom:
+		return set.Rating
+	}
+	if set.Position == "top" {
+		return "bottom"
+	}
+	return "top"
+}
+
+// ratingBarTags returns the entries flagged for the rating bar, in order.
+func (set QuickTagSet) ratingBarTags() []quickTagEntry {
+	var out []quickTagEntry
+	for _, e := range set.Tags {
+		if e.RatingBar {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 // quickTagConfig is the on-disk quicktags.toml: a default set at the top
 // level plus optional per-collection overrides keyed by the tie config's
@@ -72,8 +129,8 @@ type quickTagConfig struct {
 	QuickTagSet
 	// Collections maps a tie collection name to its override. A collection
 	// with an entry here uses the entry's Tag list instead of the default one
-	// (even an empty list); its Position, IconSize, Rating and RatingKeys
-	// fall back to the top-level values when unset.
+	// (even an empty list); its Position, Size, IconSize, Rating and
+	// RatingKeys fall back to the top-level values when unset.
 	Collections map[string]QuickTagSet `toml:"Collections,omitempty"`
 }
 
@@ -88,6 +145,9 @@ func (cfg quickTagConfig) For(collection string) QuickTagSet {
 	set.Tags = ov.Tags
 	if ov.Position != "" {
 		set.Position = ov.Position
+	}
+	if ov.Size != "" {
+		set.Size = ov.Size
 	}
 	if ov.IconSize > 0 {
 		set.IconSize = ov.IconSize
@@ -140,32 +200,39 @@ type quickTagEntry struct {
 	// Empty defaults to the button's 1-based position for the first nine
 	// buttons.
 	Key string `toml:"Key,omitempty"`
+	// RatingBar moves the button from the tags bar into the rating bar, next
+	// to the stars (e.g. the favorite heart).
+	RatingBar bool `toml:"RatingBar,omitempty"`
 }
 
 // defaultQuickTagTOML is written to quickTagConfigPath on first run so users
 // find a commented, editable file rather than having to discover the format.
-const defaultQuickTagTOML = `# tie-view quick tagging bar.
+const defaultQuickTagTOML = `# tie-view quick tagging bars.
 #
-# Each [[Tag]] entry is one button on the bar, left to right. Icons are square
-# PNGs: "On" is shown while the tag is applied to the image, "Off" while it is
-# not. Leave Off empty to show a grayscale copy of On; leave both empty for a
-# text button. Paths are relative to this file's directory unless absolute. The
-# built-in icons heart.png, heart-grey.png, star-filled.png and star-empty.png
-# need no file.
+# Two translucent pills overlay the image: the tags bar (one button per
+# [[Tag]] entry, left to right) and the rating bar (1-5 stars plus every
+# [[Tag]] with RatingBar = true, e.g. the favorite heart).
+#
+# Icons are square PNGs: "On" is shown while the tag is applied to the image,
+# "Off" while it is not. Leave Off empty to show a grayscale copy of On; leave
+# both empty for a text button. Paths are relative to this file's directory
+# unless absolute. The built-in icons heart.png, heart-grey.png,
+# star-filled.png and star-empty.png need no file.
 #
 # Key is the keyboard shortcut (a Fyne key name, e.g. "1" or "F"). Unset keys
-# default to the button's position: 1, 2, ... 9. Position is "bottom" or "top".
-# The bar itself is toggled with the [Image] ShowTagbar key (T) or the menu.
+# default to the button's position: 1, 2, ... 9. The bars are toggled with
+# the [Image] ShowTagbar key (T) or the menu.
 #
-# Rating places the 1-5 star control: "inline" (next to the tag buttons),
-# "top" / "bottom" (its own strip; on the tags' edge it becomes a second row),
-# or "off". RatingKeys optionally binds keys to 1..5 stars, e.g.
-# RatingKeys = ["F1", "F2", "F3", "F4", "F5"]; the current rating's key clears.
+# Position puts the tags bar at the "bottom" or "top" edge. Rating puts the
+# rating bar at "auto" (the opposite edge), "top", "bottom" or "off" (no
+# stars). Size is one of "xs", "s", "m", "l", "xl". RatingKeys optionally
+# binds keys to 1..5 stars, e.g. RatingKeys = ["F1", "F2", "F3", "F4", "F5"];
+# the current rating's key clears.
 #
 # The top-level entries are the default bar. A tie collection can get its own
 # bar with a [Collections.<name>] table (name as in the tie config), whose
-# [[Collections.<name>.Tag]] entries replace the default list; Position and
-# IconSize in that table are optional overrides:
+# [[Collections.<name>.Tag]] entries replace the default list; Position,
+# Size, Rating and RatingKeys in that table are optional overrides:
 #
 #   [Collections.photos]
 #   Position = "top"
@@ -174,12 +241,14 @@ const defaultQuickTagTOML = `# tie-view quick tagging bar.
 #   On = "icons/printer.png"
 
 Position = "bottom"
-Rating = "inline"
+Rating = "auto"
+Size = "m"
 
 [[Tag]]
 Tag = "favorite"
 On = "heart.png"
 Off = "heart-grey.png"
+RatingBar = true
 `
 
 // defaultQuickTagConfig is the in-memory equivalent of defaultQuickTagTOML.
@@ -228,7 +297,46 @@ func loadQuickTagConfig(path string) quickTagConfig {
 		fmt.Printf("quicktag: config error in %s: %v\n", path, err)
 		return defaultQuickTagConfig()
 	}
+	cfg.migrateLegacy()
 	return cfg
+}
+
+// migrateLegacy updates in-memory state written by older versions, so the
+// next save persists the current schema. A legacy file is one whose default
+// set says Rating = "inline" (stars inside the tags pill, the old default) or
+// predates both Rating and Size (files written by the current editor and the
+// default template always carry Size). In such a file every set gets Rating
+// "inline" rewritten to "auto" and — since that layout had no separate
+// rating bar to flag tags into — a set with no RatingBar entries moves its
+// "favorite" button next to the stars, which is what the inline row
+// approximated. Size is set to "m" so the file is recognized as migrated.
+func (cfg *quickTagConfig) migrateLegacy() {
+	legacy := cfg.Rating == ratingInline || (cfg.Rating == "" && cfg.Size == "")
+	if !legacy {
+		return
+	}
+	cfg.QuickTagSet.migrateLegacy()
+	if cfg.Size == "" {
+		cfg.Size = "m"
+	}
+	for name, set := range cfg.Collections {
+		set.migrateLegacy()
+		cfg.Collections[name] = set
+	}
+}
+
+func (set *QuickTagSet) migrateLegacy() {
+	if set.Rating == ratingInline {
+		set.Rating = ratingAuto
+	}
+	if len(set.ratingBarTags()) > 0 {
+		return
+	}
+	for i := range set.Tags {
+		if set.Tags[i].Tag == "favorite" {
+			set.Tags[i].RatingBar = true
+		}
+	}
 }
 
 // saveQuickTagConfig writes cfg to path as TOML, creating the directory.
@@ -248,11 +356,11 @@ func writeFileMkdir(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// normalized returns a copy of set with blank-tag entries dropped, Position
-// and Rating reduced to their known values ("bottom" / "inline" fallbacks),
-// and position-based default keys filled in for entries without one (buttons
-// 1-9). Keys are not deduplicated: a user who binds two buttons to one key
-// toggles both, which is a feature.
+// normalized returns a copy of set with blank-tag entries dropped, Position,
+// Size and Rating reduced to their known values ("bottom" / "m" / "auto"
+// fallbacks), and position-based default keys filled in for entries without
+// one (buttons 1-9). Keys are not deduplicated: a user who binds two buttons
+// to one key toggles both, which is a feature.
 func (set QuickTagSet) normalized() QuickTagSet {
 	out := set
 	out.Tags = nil
@@ -268,10 +376,14 @@ func (set QuickTagSet) normalized() QuickTagSet {
 	if out.Position != "top" {
 		out.Position = "bottom"
 	}
+	out.Size = strings.ToLower(out.Size)
+	if !slices.Contains(quickTagSizes, out.Size) {
+		out.Size = "m"
+	}
 	switch out.Rating {
 	case ratingTop, ratingBottom, ratingOff:
 	default:
-		out.Rating = ratingInline
+		out.Rating = ratingAuto
 	}
 	if len(out.RatingKeys) > 5 {
 		out.RatingKeys = out.RatingKeys[:5]
