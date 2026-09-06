@@ -3,7 +3,7 @@
 package data
 
 import (
-	pwclient "github.com/uidbz/tie-gui/cmd/tie-audio/internal/pwplay/client"
+	pwclient "github.com/uidbz/pwplay/client"
 	tieclient "github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"

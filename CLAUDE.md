@@ -32,7 +32,12 @@ The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
 Go module proxy; no local checkout is needed. (It was previously referenced via
 a `replace` directive to a sibling `../tie` checkout — removed when v0.4.2 was
 tagged — and was imported as `git.sr.ht/~uid/tie` before the sourcehut→GitHub
-migration.)
+migration.) The pwplay client (`github.com/uidbz/pwplay/client`, stdlib-only
+HTTP client for the pwplay-server REST API that tie-audio drives) is a pinned
+dependency the same way; its old vendored copy under
+`cmd/tie-audio/internal/pwplay/` was deleted. The pwplay *server* itself stays
+in its own repo — tie-audio's `test-env` builds it from the sibling `../pwplay`
+checkout.
 
 Note: the `gallery` library serves only `imgview` and `tie-view`; `tie-fm` and
 `tie-audio` have their own UI code and share only the `tagselection`
