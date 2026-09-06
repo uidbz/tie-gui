@@ -3,6 +3,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/uidbz/conf"
 	tieclient "github.com/uidbz/tie/client"
 
@@ -51,20 +54,54 @@ func Default() AppConfig {
 	return AppConfig{PwplayServer: "http://localhost:8080"}
 }
 
-// Load reads the app config from the user config dir, returning defaults (and
-// the path it would be saved to) if no config file exists yet.
-func Load() (AppConfig, string) {
-	cfg := Default()
-	if path, err := conf.LoadFromUserConfigDir(appName, configFile, &cfg); err == nil {
-		return cfg, path
+// savePath caches the path Load resolved, so Save never re-derives it via
+// os.UserConfigDir — which fails on Android (no $HOME/$XDG_CONFIG_HOME,
+// surfaced as an "xdg" error) every time settings are saved. FILESDIR (the
+// app's internal files dir, set by Fyne's native code) takes priority, then
+// the path Load resolved on this platform.
+var savePath string
+
+// resolveSavePath returns the file settings are written to: $FILESDIR on
+// Android, else the path Load already resolved (or the user config dir).
+func resolveSavePath() string {
+	if savePath != "" {
+		return savePath
+	}
+	if d := os.Getenv("FILESDIR"); d != "" {
+		savePath = filepath.Join(d, appName, configFile)
+		return savePath
 	}
 	path, _ := conf.PathUserConfigDir(appName, configFile)
+	savePath = path
+	return savePath
+}
+
+// Load reads the app config, preferring $FILESDIR on Android (so it sits in
+// the app's internal files dir, which survives reinstalls and is the only
+// writable location there), then the user config dir. Returns the config
+// and the path it was loaded from (or would be saved to).
+func Load() (AppConfig, string) {
+	path := resolveSavePath()
+	if d := os.Getenv("FILESDIR"); d != "" {
+		cfg := Default()
+		if err := conf.ReadConfig(path, &cfg); err == nil {
+			return cfg, path
+		}
+	}
+	cfg := Default()
+	if p, err := conf.LoadFromUserConfigDir(appName, configFile, &cfg); err == nil {
+		return cfg, p
+	}
 	return Default(), path
 }
 
-// Save writes the app config to the user config dir.
+// Save writes the app config back to the file Load resolved (Android-safe:
+// never re-derives a path via os.UserConfigDir).
 func Save(cfg AppConfig) error {
-	return conf.SaveToUserConfigDir(appName, configFile, &cfg)
+	if d := os.Getenv("FILESDIR"); d != "" {
+		return conf.WriteConfig(filepath.Join(d, appName, configFile), &cfg)
+	}
+	return conf.WriteConfig(resolveSavePath(), &cfg)
 }
 
 // LoadTieConfig resolves the tie client config named by AppConfig.TieConfig via

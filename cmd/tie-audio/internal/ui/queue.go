@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -136,6 +137,18 @@ func (q *queuePage) hide() {
 	q.transport.SetStatusListener(nil)
 }
 
+// refreshSoon polls the backend once it has had a moment to apply a just-issued
+// add (Enqueue applies asynchronously), so the table reflects it immediately
+// instead of at the next periodic tick.
+func (q *queuePage) refreshSoon() {
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		if s, err := q.backend.Status(); err == nil {
+			fyne.Do(func() { q.applyStatus(s) })
+		}
+	}()
+}
+
 // leave unsubscribes from the poll and returns to the cover wall.
 func (q *queuePage) leave() {
 	q.hide()
@@ -221,9 +234,9 @@ func (q *queuePage) gapAt(pos fyne.Position) int { return q.table.gapAt(pos) }
 func (q *queuePage) clearDropLine() { q.table.hideInsertionLine() }
 
 // insertTracksAt registers the tracks' metadata and inserts their stream URLs at
-// playlist position gap. The rows appear at the drop point on the next status
-// poll, matching the append path (enqueueTracks), so there is no optimistic
-// local edit to reconcile.
+// playlist position gap, then forces an immediate refresh: the periodic poll
+// has an up-to-500ms lag, which made a dropped album appear to not land in
+// the list.
 func (q *queuePage) insertTracksAt(gap int, urls []string, meta []data.Track) {
 	if len(urls) == 0 {
 		return
@@ -232,6 +245,13 @@ func (q *queuePage) insertTracksAt(gap int, urls []string, meta []data.Track) {
 	go func() {
 		if err := q.backend.Insert(gap, urls...); err != nil {
 			fyne.Do(func() { dialog.ShowError(err, q.win) })
+			return
+		}
+		// Insert blocks until the backend has applied the add (and the move),
+		// so the status fetched here already lists the tracks; update the
+		// table now rather than at the next poll tick.
+		if s, err := q.backend.Status(); err == nil {
+			fyne.Do(func() { q.applyStatus(s) })
 		}
 	}()
 }

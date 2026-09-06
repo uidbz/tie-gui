@@ -145,7 +145,9 @@ func (b *browsePage) playTracks(tracks []data.Track, start int) {
 	}()
 }
 
-// enqueueTracks appends the album's tracks to the current queue.
+// enqueueTracks appends the album's tracks to the current queue, then forces
+// an immediate queue-table refresh (the periodic poll has an up-to-500ms
+// lag, which made an enqueued album appear to not land).
 func (b *browsePage) enqueueTracks(tracks []data.Track) {
 	urls, meta := b.streamable(tracks)
 	if len(urls) == 0 {
@@ -156,6 +158,10 @@ func (b *browsePage) enqueueTracks(tracks []data.Track) {
 	go func() {
 		if err := b.session.Backend.Enqueue(urls...); err != nil {
 			fyne.Do(func() { b.reportPlaybackError(err) })
+			return
+		}
+		if b.queue != nil {
+			b.queue.refreshSoon()
 		}
 	}()
 }

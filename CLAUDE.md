@@ -547,7 +547,14 @@ Settings** tabs, mirroring tie-view's sidebar.
 - **Settings** is built by the App shell (`buildSettingsTab`) and appended
   to the same `AppTabs`; the shell reuses the tab item's content to open the
   settings view full-screen on mobile, and the page's Back button re-selects
-  its own tab instead of leaving the settings view.
+  its own tab instead of leaving the settings view. The page is a nested
+  border (app form on top, connection editor as the center) — a VBox would
+  collapse the scroll-wrapped editor to its small scroll minimum, and border
+  sections size to their own MinSize even on narrow mobile windows.
+  tie-audio's own `config.Save` writes back to the path `Load` resolved
+  (`$FILESDIR` on Android), never re-deriving it via `os.UserConfigDir`
+  (which fails on Android — no `$HOME`/`$XDG_CONFIG_HOME` — surfacing an
+  "xdg" error on every settings save).
 
 The settings page shares `tieconfig.Editor` with tie-view and applies a
 collection switch the same way: picking a collection in the dropdown calls

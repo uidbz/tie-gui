@@ -119,23 +119,19 @@ func (a *App) buildSettingsTab() *container.TabItem {
 			switchCollection(a.session.Collection)
 		})
 
-	// The connection editor is the border's center, so it gets all remaining
-	// space. Nesting it in the form's scroll VBox instead would collapse it:
-	// the editor is itself a scroll container, whose MinSize is only the
-	// small scroll minimum (~32px), so the VBox handed it just that — the
-	// collection dropdown was the only row visible.
+	connLabel := widget.NewLabelWithStyle("Connection (tie config)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
+	// The page is a nested border: the app form sits in the top section, the
+	// connection editor is the center and gets all remaining space. The
+	// editor scrolls itself, so it must NOT live in a VBox (that would
+	// collapse it to its small scroll minimum) — and the sections above it
+	// (header, form, label) are border sections, which size to their own
+	// MinSize even on narrow mobile windows, so nothing collapses.
 	content := container.NewBorder(header, nil, nil, nil,
 		container.NewBorder(
-			container.NewVBox(
-				container.NewVScroll(container.NewVBox(
-					form,
-					container.NewHBox(save, test),
-					widget.NewSeparator(),
-					widget.NewLabelWithStyle("Connection (tie config)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-				)),
-			),
+			container.NewVBox(form, container.NewHBox(save, test)),
 			nil, nil, nil,
-			connEditor,
+			container.NewBorder(connLabel, nil, nil, nil, connEditor),
 		))
 	return container.NewTabItemWithIcon("Settings", theme.SettingsIcon(), content)
 }
