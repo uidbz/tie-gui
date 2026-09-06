@@ -108,12 +108,22 @@ func (a *App) buildSettings() fyne.CanvasObject {
 			switchCollection(a.session.Collection)
 		})
 
+	// The connection editor is the border's center, so it gets all remaining
+	// space. Nesting it in the form's scroll VBox instead would collapse it:
+	// the editor is itself a scroll container, whose MinSize is only the
+	// small scroll minimum (~32px), so the VBox handed it just that — the
+	// collection dropdown was the only row visible.
 	return container.NewBorder(header, nil, nil, nil,
-		container.NewVScroll(container.NewVBox(
-			form,
-			container.NewHBox(save, test),
-			widget.NewSeparator(),
-			widget.NewLabelWithStyle("Connection (tie config)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewBorder(
+			container.NewVBox(
+				container.NewVScroll(container.NewVBox(
+					form,
+					container.NewHBox(save, test),
+					widget.NewSeparator(),
+					widget.NewLabelWithStyle("Connection (tie config)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				)),
+			),
+			nil, nil, nil,
 			connEditor,
-		)))
+		))
 }

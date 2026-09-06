@@ -29,9 +29,15 @@ func makeSettingsTab(tc *client.TieClient, activeCollection func() string, onSwi
 				onApply()
 			}
 		})
+	// AppTabs' MinSize is the max of its tab contents' MinSizes, and both
+	// editors are scroll containers — whose MinSize is only the small scroll
+	// minimum (~32px). In the narrow sidebar that makes the tabs report a
+	// tiny height, so the tab content collapses and only the editor's
+	// dropdown row is visible. Anchoring the tabs in a border center gives
+	// them a stable frame to fill instead.
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Connection", editor),
 		container.NewTabItem("Quick tags", quickEditor),
 	)
-	return container.NewTabItem("Settings", tabs)
+	return container.NewTabItem("Settings", container.NewBorder(nil, nil, nil, nil, tabs))
 }
