@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"slices"
+	"sort"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -51,10 +53,11 @@ type browsePage struct {
 	dragAlbum data.Album
 	dragGhost *widget.PopUp
 
-	// allTags is the full tag list from the last load, restored when the
-	// selection is cleared.
-	allTags        []string
-	favoritesLabel string
+	// allTags is the full tag list and starred the tie favorites from the
+	// most recent fetch, kept current by star toggles. All reads and writes
+	// happen on the UI goroutine (inside fyne.Do), so no mutex is needed.
+	allTags []string
+	starred []string
 }
 
 // newBrowsePage builds the cover wall and its sidebar for the given session.
@@ -95,10 +98,13 @@ func (b *browsePage) Content() fyne.CanvasObject { return b.viewer.Content }
 
 // buildSidebar creates the tag selection widget with a top toolbar (Settings)
 // and wires selection changes to re-query albums, with co-tag faceted
-// refinement in the background.
+// refinement in the background. The quick-pick list shows the starred
+// favorites (falling back to every tag while none are starred) and its rows
+// carry a ☆/★ toggle, matching tie-view's sidebar.
 func (b *browsePage) buildSidebar() fyne.CanvasObject {
 	ts := tagselection.NewTagSelection(b.win)
 	ts.ShowIncludeExclude = true
+	ts.ShowStars = true
 	b.ts = ts
 
 	ts.OnSelectedChanged = func() {
@@ -106,6 +112,27 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 		b.win.Canvas().Unfocus()
 		b.refreshAlbums(in, ex)
 		go b.refineTags(in, ex)
+	}
+
+	// Starring here persists to tie's ("tags","favorite") registry like
+	// tie-view's sidebar does; the optimistic update is rolled back if the
+	// write fails.
+	ts.OnStar = func(tag string, starred bool) {
+		b.win.Canvas().Unfocus() // the star button took keyboard focus
+		b.setStarred(tag, starred)
+		go func() {
+			var err error
+			if starred {
+				err = b.session.StarTag(tag)
+			} else {
+				err = b.session.UnstarTag(tag)
+			}
+			if err != nil {
+				fmt.Printf("sidebar: failed to %s tag %q: %v\n",
+					map[bool]string{true: "star", false: "unstar"}[starred], tag, err)
+				fyne.Do(func() { b.setStarred(tag, !starred) })
+			}
+		}()
 	}
 
 	b.loadTags()
@@ -128,7 +155,9 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 	} else {
 		nav = settingsBtn
 	}
-	return container.NewBorder(nav, nil, nil, nil, ts)
+	// The tag list grows with the store; wrap it in a scroll so a large tag
+	// count doesn't inflate the window's minimum size.
+	return container.NewBorder(nav, nil, nil, nil, container.NewVScroll(ts))
 }
 
 // refreshAlbums re-queries the album wall for the current tag selection.
@@ -153,31 +182,80 @@ func (b *browsePage) readers(albums []data.Album) []gallery.CustomReader {
 	return readers
 }
 
-// loadTags fetches the full tag list and populates the sidebar.
+// clearAlbums empties the cover wall without changing the window content.
+// Used after a collection switch (from Settings) so albums carried over from
+// the prior collection can neither be displayed nor opened; the empty wall
+// renders when the user returns via showBrowse.
+func (b *browsePage) clearAlbums() {
+	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
+		return []gallery.CustomReader{}
+	})
+}
+
+// loadTags fetches the tag lists (all tags + starred favorites) and populates
+// the sidebar. It clears the selection and tag state first, so it also serves
+// as the reload after a collection switch (matching tie-view's reloadTags);
+// the network fetch runs in a goroutine.
 func (b *browsePage) loadTags() {
+	b.ts.ClearSelected()
+	b.ts.ClearAllTags()
+	b.ts.ClearFavorites()
+	b.ts.SetStarred(nil)
+	b.allTags = nil
+	b.starred = nil
 	b.ts.SetListLabel("Loading…")
 	go func() {
-		tags, err := b.session.AllTags()
+		all, favorites, err := b.session.TagSets()
 		fyne.Do(func() {
 			if err != nil {
 				b.ts.SetListLabel("Error loading tags")
 				fmt.Println("Error loading tags:", err)
 				return
 			}
-			b.allTags = tags
-			b.favoritesLabel = "All tags"
-			b.ts.ClearAllTags()
-			for _, tag := range tags {
+			b.allTags = all
+			b.starred = favorites
+			for _, tag := range all {
 				b.ts.AddTag(tag)
 			}
-			b.ts.SetListLabel(b.favoritesLabel)
-			b.ts.SetFavorites(tags)
+			b.ts.SetStarred(favorites)
+			b.applyFavoritesView()
 		})
 	}()
 }
 
+// applyFavoritesView shows the default quick-pick list — the starred tags,
+// or every tag while none are starred — when no selection narrows the list
+// (matching tie-view).
+func (b *browsePage) applyFavoritesView() {
+	favorites, label := b.starred, "Favorites"
+	if len(b.starred) == 0 {
+		favorites, label = b.allTags, "All tags"
+	}
+	if in, ex := b.ts.SelectedTags(); len(in) == 0 && len(ex) == 0 {
+		b.ts.SetListLabel(label)
+		b.ts.SetFavorites(favorites)
+	}
+}
+
+// setStarred records a star toggle locally (no tie write): the ☆/★ button
+// state and the default quick-pick list.
+func (b *browsePage) setStarred(tag string, starred bool) {
+	idx := slices.Index(b.starred, tag)
+	switch {
+	case starred && idx < 0:
+		b.starred = append(b.starred, tag)
+		sort.Strings(b.starred)
+	case !starred && idx >= 0:
+		b.starred = slices.Delete(b.starred, idx, idx+1)
+	default:
+		return
+	}
+	b.ts.ToggleStar(tag, starred)
+	b.applyFavoritesView()
+}
+
 // refineTags narrows the sidebar to tags co-occurring with the current
-// selection; an empty selection restores the full list.
+// selection; an empty selection restores the default quick-pick list.
 func (b *browsePage) refineTags(include, exclude []string) {
 	if len(include) == 0 && len(exclude) == 0 {
 		fyne.Do(func() {
@@ -185,8 +263,7 @@ func (b *browsePage) refineTags(include, exclude []string) {
 			for _, tag := range b.allTags {
 				b.ts.AddTag(tag)
 			}
-			b.ts.SetListLabel(b.favoritesLabel)
-			b.ts.SetFavorites(b.allTags)
+			b.applyFavoritesView()
 		})
 		return
 	}

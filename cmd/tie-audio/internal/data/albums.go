@@ -163,11 +163,29 @@ func isImageFile(f client.File) bool {
 	return f.TieType == client.TieImageFile || strings.HasPrefix(f.MediaType, "image/")
 }
 
-// AllTags returns every tag known to the tie store, for the sidebar.
-func (s *Session) AllTags() ([]string, error) {
-	tags, _, err := s.Tie.ListTags(0, -1)
-	return tags, err
+// TagSets returns the sidebar tag lists: every tag registered in the
+// ("tags","all",<tag>) registry plus the curated ("tags","favorite",<tag>)
+// set. One Get fetches both relations (matching tie-view). A store with no
+// tags yields empty lists, not an error.
+func (s *Session) TagSets() (all, favorites []string, err error) {
+	row, err := s.Tie.Get(client.TieTags.String())
+	if errors.Is(err, client.ErrNotFound) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	all = client.RowValues(row, client.TieAll.String())
+	favorites = client.RowValues(row, client.TieFavorite.String())
+	sort.Strings(favorites)
+	return all, favorites, nil
 }
+
+// StarTag registers tag in tie's ("tags","favorite") registry (the sidebar's
+// ☆/★ toggle); UnstarTag removes it. The favorite set is shared by every
+// client on the collection.
+func (s *Session) StarTag(tag string) error   { return s.Tie.RegisterFavorite(tag) }
+func (s *Session) UnstarTag(tag string) error { return s.Tie.UnregisterFavorite(tag) }
 
 // CoTags returns tags co-occurring with the current selection, for refinement.
 func (s *Session) CoTags(include, exclude []string) ([]string, error) {

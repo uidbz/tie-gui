@@ -4,6 +4,7 @@ package main
 
 import (
 	"image/color"
+	"sort"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -20,6 +21,7 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/devices"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/ui"
+	"github.com/uidbz/tie-gui/tieconfig"
 )
 
 func main() {
@@ -33,9 +35,11 @@ func main() {
 
 	// The tie client is built from the configured tie config (a local server by
 	// default) but only connects when a tie: path is visited; connection errors
-	// surface as dialogs at that point.
+	// surface as dialogs at that point. The bound collection is tie-fm's own
+	// profile selection (TieCollection, preferring the "files" entry when
+	// unset), not the tie config's shared DefaultCollection.
 	tieCfg, _ := config.LoadTieConfig(appCfg.TieConfig)
-	tc := client.NewTieClient(tieCfg)
+	tc := client.NewTieClientFor(tieCfg, tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))
 
 	registry := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(tc))
 
@@ -180,15 +184,30 @@ func main() {
 	leftPane := container.NewBorder(nil, devicesBox, nil, nil, sidebar)
 
 	// applyTieConfig rebuilds the tie client from path, persists the choice, and
-	// reloads both panels so any open tie: view refreshes.
+	// reloads both panels so any open tie: view refreshes. The app's own
+	// collection selection is kept; AppCollection falls back to the "files"
+	// entry or the new file's DefaultCollection when it doesn't exist there.
 	applyTieConfig := func(path string) {
 		cfg, err := config.LoadTieConfig(path)
 		if err != nil {
 			dialog.ShowError(err, mainWin)
 			return
 		}
-		registry.SetTie(fs.NewTieFS(client.NewTieClient(cfg)))
+		tieCfg = cfg
+		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))))
 		appCfg.TieConfig = path
+		if err := appCfg.Save(); err != nil {
+			dialog.ShowError(err, mainWin)
+		}
+		left.Reload()
+		right.Reload()
+	}
+
+	// applyTieCollection binds the named collection of the loaded tie config,
+	// persists it as tie-fm's own profile selection, and reloads both panels.
+	applyTieCollection := func(name string) {
+		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, name)))
+		appCfg.TieCollection = name
 		if err := appCfg.Save(); err != nil {
 			dialog.ShowError(err, mainWin)
 		}
@@ -214,6 +233,24 @@ func main() {
 		}),
 		fyne.NewMenuItem("Use default tie config (local server)", func() {
 			applyTieConfig("")
+		}),
+		fyne.NewMenuItem("Select tie collection…", func() {
+			names := make([]string, 0, len(tieCfg.Collections))
+			for name := range tieCfg.Collections {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			if len(names) == 0 {
+				dialog.ShowInformation("Tie collection", "The loaded tie config has no collections.", mainWin)
+				return
+			}
+			sel := widget.NewSelect(names, nil)
+			sel.SetSelected(tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))
+			dialog.NewCustomConfirm("Tie collection", "Apply", "Cancel", sel, func(ok bool) {
+				if ok && sel.Selected != "" {
+					applyTieCollection(sel.Selected)
+				}
+			}, mainWin).Show()
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Add current location to bookmarks", func() {

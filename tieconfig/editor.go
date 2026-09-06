@@ -16,17 +16,28 @@ import (
 // entries as plain TOML (no Fyne Preferences): a dropdown selects the active
 // collection, "+"/"-" add and delete entries, and the form edits that
 // collection's triplestore, namespace and credentials plus its primary filehost
-// (URL, store, credentials, TLS). Apply writes the config to savePath and calls
-// onApply with the saved config (DefaultCollection set to the active
-// collection) so the caller can rebuild its client. It returns a scrollable
-// CanvasObject, so callers wrap it in whatever tab/page they need. Persisting to
-// savePath (under Dir) is what makes settings survive an Android reinstall.
-func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyne.CanvasObject {
+// (URL, store, credentials, TLS). active names the collection the caller is
+// currently bound to (its own stored/default profile — see AppCollection); the
+// dropdown preselects it, falling back to DefaultCollection and then the first
+// entry.
+//
+// Picking a collection in the dropdown fires onSelect (not on programmatic
+// selections), so the caller can switch its live client to the chosen profile
+// immediately and remember the choice in its own config; the tie file itself
+// is only written by Apply. Apply writes the config to savePath and calls
+// onApply with the saved config (DefaultCollection set to the applied
+// collection) so the caller can rebuild its client. The editor returns a
+// scrollable CanvasObject, so callers wrap it in whatever tab/page they need.
+// Persisting to savePath (under Dir) is what makes settings survive an Android
+// reinstall.
+func Editor(cfg client.Config, savePath, active string, onSelect func(name string), onApply func(client.Config)) fyne.CanvasObject {
 	// Edit a copy with cloned maps; mutations only reach the caller on Apply.
 	cfg = clone(cfg)
 	ensureCollections(&cfg)
 
-	active := cfg.DefaultCollection
+	if _, ok := cfg.Collections[active]; !ok {
+		active = cfg.DefaultCollection
+	}
 	if _, ok := cfg.Collections[active]; !ok {
 		if ks := collectionKeys(cfg); len(ks) > 0 {
 			active = ks[0]
@@ -79,12 +90,24 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 	}
 
 	dropdown := widget.NewSelect(collectionKeys(cfg), nil)
-	dropdown.SetSelected(active)
+	// suppressSelect stops programmatic SetSelected calls (init, add, delete,
+	// Apply) from firing onSelect; only user picks switch the caller's client.
+	suppressSelect := false
+	setSelected := func(key string) {
+		suppressSelect = true
+		dropdown.SetSelected(key)
+		suppressSelect = false
+	}
+
+	dropdown.SetSelected(active) // no OnChanged assigned yet
 	loadIntoForm(active)
 	dropdown.OnChanged = func(key string) {
 		if _, ok := cfg.Collections[key]; ok {
 			loadIntoForm(key)
 			status.SetText("")
+			if !suppressSelect && onSelect != nil {
+				onSelect(key)
+			}
 		}
 	}
 
@@ -100,7 +123,7 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 		cfg.Collections[name] = client.CollectionEntry{}
 		dropdown.Options = collectionKeys(cfg)
 		dropdown.Refresh()
-		dropdown.SetSelected(name) // triggers OnChanged -> loadIntoForm
+		setSelected(name) // triggers OnChanged -> loadIntoForm
 		status.SetText("Collection created; edit and Apply.")
 	})
 
@@ -117,7 +140,7 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 		keys := collectionKeys(cfg)
 		dropdown.Options = keys
 		dropdown.Refresh()
-		dropdown.SetSelected(keys[0])
+		setSelected(keys[0])
 		status.SetText("Collection deleted; Apply to persist.")
 	})
 
@@ -184,7 +207,7 @@ func Editor(cfg client.Config, savePath string, onApply func(client.Config)) fyn
 
 		dropdown.Options = collectionKeys(cfg)
 		dropdown.Refresh()
-		dropdown.SetSelected(key)
+		setSelected(key)
 
 		if onApply != nil {
 			onApply(clone(cfg))

@@ -54,7 +54,13 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	tieClient := client.NewTieClient(tieConfig)
+	// The collection (profile) this app binds is its own choice, not the tie
+	// config's shared DefaultCollection: the stored Preferences selection
+	// wins, then a collection named like the app ("images"), so images and
+	// sound can live in different profiles without the apps fighting over the
+	// shared default.
+	activeName := tieconfig.AppCollection(tieConfig, myApp.Preferences().String(prefTieCollection), "images")
+	tieClient := client.NewTieClientFor(tieConfig, activeName)
 
 	tagger := newImageTagger(myWindow, tieClient)
 	// taggerOverlay is a persistent border container that anchors the tag
@@ -71,8 +77,8 @@ func main() {
 	quickCfgPath := quickTagConfigPath()
 	quickCfg := loadQuickTagConfig(quickCfgPath)
 	// activeCollection names the tie collection the live client is bound to
-	// (the settings editor sets DefaultCollection to the applied one).
-	activeCollection := func() string { return tieClient.Config.DefaultCollection }
+	// (the app's own profile selection, tracked in activeName).
+	activeCollection := func() string { return activeName }
 	quickBar := newQuickTagBar(tieClient, quickCfg.For(activeCollection()), filepath.Dir(quickCfgPath), platform.IsMobile())
 	const quickPref = "quicktag.enabled"
 	quickEnabled := myApp.Preferences().BoolWithFallback(quickPref, false)
@@ -197,7 +203,15 @@ func main() {
 		applyQuickTagConfig(quickCfg)
 		refreshQuickEditor()
 	}
-	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger, quickEditor, onCollectionChanged)
+	// onSwitchCollection rebinds the live client to the named collection of
+	// cfg (picked in or applied from the settings editor) and remembers the
+	// choice in Preferences so the app keeps its own profile across restarts.
+	onSwitchCollection := func(cfg client.Config, name string) {
+		*tieClient = *client.NewTieClientFor(cfg, name)
+		activeName = name
+		myApp.Preferences().SetString(prefTieCollection, name)
+	}
+	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger, quickEditor, activeCollection, onSwitchCollection, onCollectionChanged)
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
@@ -312,6 +326,11 @@ func main() {
 // saved back to by the settings tab. Set once in main.
 var tieConfigPath string
 
+// prefTieCollection is the Preferences key holding tie-view's own tie
+// collection (profile) selection, so it survives restarts without depending
+// on the tie config's shared DefaultCollection.
+const prefTieCollection = "tie.collection"
+
 // fileHostNames returns the sorted names of the filehosts in a tie config,
 // for error messages.
 func fileHostNames(c client.Config) []string {
@@ -325,9 +344,11 @@ func fileHostNames(c client.Config) []string {
 
 // makeSidebar builds the navigation sidebar: the first tab browses images
 // by tag, the second navigates the tie virtual filesystem, the third holds
-// the connection and quick tag settings. onCollectionChanged runs after a
-// connection change is applied, once the tag list reload has been kicked off.
-func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger, quickEditor fyne.CanvasObject, onCollectionChanged func()) *container.AppTabs {
+// the connection and quick tag settings. onSwitchCollection rebinds the live
+// client to a collection (and remembers it) when the user picks or applies
+// one in the settings editor; onCollectionChanged runs after either, once
+// the tag list reload has been kicked off.
+func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger, quickEditor fyne.CanvasObject, activeCollection func() string, onSwitchCollection func(client.Config, string), onCollectionChanged func()) *container.AppTabs {
 	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir, tagger)
 	onApply := func() {
 		reloadTags()
@@ -338,7 +359,7 @@ func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClie
 	return container.NewAppTabs(
 		container.NewTabItem("Tags", tagWidget),
 		container.NewTabItem("Files", fsTree.tree),
-		makeSettingsTab(tc, onApply, quickEditor),
+		makeSettingsTab(tc, activeCollection, onSwitchCollection, onApply, quickEditor),
 	)
 }
 

@@ -12,6 +12,12 @@ import (
 const (
 	appName    = "tie-audio"
 	configFile = "config.toml"
+
+	// DefaultTieCollection is tie-audio's own default profile: the
+	// [Collections] entry it binds when the user hasn't picked one yet, so
+	// images and sound can live in different profiles without the apps
+	// fighting over the tie config's shared DefaultCollection.
+	DefaultTieCollection = "audio"
 )
 
 // AppConfig is persisted to the user config dir
@@ -23,6 +29,11 @@ type AppConfig struct {
 	// user config, a value containing '/' = that file path, otherwise a named
 	// config under the tie app config dir.
 	TieConfig string
+	// TieCollection is this app's own tie collection selection (a
+	// [Collections] entry name in the loaded tie config). Empty means "not
+	// chosen yet": DefaultTieCollection is preferred at startup, then the tie
+	// config's DefaultCollection.
+	TieCollection string
 	// FileHost optionally selects a filehost by name; empty uses the tie
 	// config's default.
 	FileHost string

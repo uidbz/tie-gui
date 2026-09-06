@@ -16,6 +16,12 @@ import (
 const (
 	appName  = "tie-fm"
 	fileName = "config.toml"
+
+	// DefaultTieCollection is tie-fm's own default profile: the [Collections]
+	// entry it binds when the user hasn't picked one yet, so each app can use
+	// its own profile without fighting over the tie config's shared
+	// DefaultCollection.
+	DefaultTieCollection = "files"
 )
 
 // Bookmark is one entry in the favorites sidebar.
@@ -39,6 +45,11 @@ type Config struct {
 	// TieConfig is the path to the tie client config file to load. Empty means
 	// use the embedded default (a local tie server; see DefaultTieConfig).
 	TieConfig string
+	// TieCollection is this app's own tie collection selection (a
+	// [Collections] entry name in the loaded tie config). Empty means "not
+	// chosen yet": DefaultTieCollection is preferred at startup, then the tie
+	// config's DefaultCollection.
+	TieCollection string
 	// Bookmarks populate the favorites sidebar.
 	Bookmarks []Bookmark
 	// FileApps maps a lowercase file extension (without the leading dot) to the

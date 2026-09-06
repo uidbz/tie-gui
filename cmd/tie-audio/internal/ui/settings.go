@@ -32,10 +32,12 @@ func (a *App) buildSettings() fyne.CanvasObject {
 			PwplayServer: server.Text,
 			TieConfig:    tieCfg.Text,
 			FileHost:     fileHost.Text,
-			// Preserve column customization, which is edited from the album/queue
-			// views, not this form; rebuilding the config from scratch would drop it.
-			AlbumColumns: a.session.Cfg.AlbumColumns,
-			QueueColumns: a.session.Cfg.QueueColumns,
+			// Preserve the collection selection and column customization: the
+			// collection is picked via the connection editor below and columns
+			// from the album/queue views; rebuilding from scratch would drop both.
+			TieCollection: a.session.Cfg.TieCollection,
+			AlbumColumns:  a.session.Cfg.AlbumColumns,
+			QueueColumns:  a.session.Cfg.QueueColumns,
 		}
 	}
 
@@ -44,14 +46,6 @@ func (a *App) buildSettings() fyne.CanvasObject {
 		widget.NewFormItem("tie config", tieCfg),
 		widget.NewFormItem("filehost", fileHost),
 	)
-
-	// rebuildSession reloads the tie + pwplay clients from the persisted app
-	// config so a connection change takes effect immediately.
-	rebuildSession := func() {
-		a.session = data.NewSession(a.session.Cfg)
-		a.browse.session = a.session
-		a.browse.loadTags()
-	}
 
 	save := widget.NewButton("Save", func() {
 		cfg := current()
@@ -84,12 +78,35 @@ func (a *App) buildSettings() fyne.CanvasObject {
 		widget.NewSeparator(),
 	)
 
-	// Connection editor: edit the tie config (triplestore/collection/filehosts) as
-	// TOML in-app, so the connection can be set up comfortably on Android
-	// (matching tie-view). Save the file the current tie config resolves to and
-	// rebuild the session on Apply.
+	// Connection editor: edit the tie config's [Collections.*] entries as
+	// TOML in-app (matching tie-view's Settings tab), so a connection or
+	// collection can be set up comfortably on Android. Picking a collection in
+	// the dropdown switches this app to it immediately and remembers the
+	// choice in tie-audio's own config — the tie file's shared
+	// DefaultCollection is only touched by Apply, so the apps don't fight
+	// over it. Both paths swap the client in place (the tie-view
+	// struct-overwrite pattern), so every existing *TieClient holder (browse
+	// page, queue page) sees the new collection, then reload the tag sidebar
+	// and clear the album wall (stale albums from the prior collection can
+	// neither display nor be opened).
+	switchCollection := func(name string) {
+		a.session.Cfg.TieCollection = name
+		if err := config.Save(a.session.Cfg); err != nil {
+			dialog.ShowError(err, a.win)
+		}
+		a.browse.loadTags()
+		a.browse.clearAlbums()
+	}
 	connEditor := tieconfig.Editor(a.session.Tie.Config, tieconfig.ResolvePath(a.session.Cfg.TieConfig),
-		func(_ tieclient.Config) { rebuildSession() })
+		a.session.Collection,
+		func(name string) {
+			a.session.SetCollection(name)
+			switchCollection(name)
+		},
+		func(saved tieclient.Config) {
+			a.session.SetTieConfig(saved)
+			switchCollection(a.session.Collection)
+		})
 
 	return container.NewBorder(header, nil, nil, nil,
 		container.NewVScroll(container.NewVBox(

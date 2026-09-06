@@ -26,6 +26,7 @@ Fyne fork — hence the monorepo.
 | `tagselection/` | Tag-picker widget used by tie-view sidebar, image tagger, and tie-fm tag panel |
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
 | `mpvplayer/` | libmpv video player window |
+| `tieconfig/` | Shared tie client config: Android-safe path resolution (`Dir`/`ResolvePath`/`Load`), the `[Collections.*]` connection editor (`Editor`), and per-app collection resolution (`AppCollection`) |
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
 The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
@@ -480,16 +481,62 @@ an inner `AppTabs`:
 - **Connection** — the shared `tieconfig.Editor` (`tieconfig/editor.go`),
   which edits the tie client config's `[Collections.*]` entries as plain TOML
   at `tieConfigPath` (resolved once in `main` via `tieconfig.ResolvePath`; on
-  Android this is under `$FILESDIR`, so it survives reinstalls). Apply writes
-  the file, then `*tc = *client.NewTieClientFor(saved, saved.DefaultCollection)`
-  and `onApply()` (→ `reloadTags`). The struct-overwrite pattern (`*tc = *newTc`)
-  propagates the rebuilt inner client (private fields baked at construction)
-  to every existing `*TieClient` pointer without tie module changes.
+  Android this is under `$FILESDIR`, so it survives reinstalls). Picking a
+  collection in the dropdown fires `onSelect` (immediate switch, no file
+  write); Apply writes the file and fires `onApply`. Both rebind the live
+  client via the struct-overwrite pattern (`*tc = *client.NewTieClientFor(...)`),
+  which propagates the rebuilt inner client (private fields baked at
+  construction) to every existing `*TieClient` pointer without tie module
+  changes. tie-view remembers its collection selection in Preferences
+  (`tie.collection`); see "Per-app tie collection (profile)" below.
 - **Quick tags** — `makeQuickTagEditor` (see "Quick tagging mode").
 
-Fyne Preferences are used only for the quick-tagging on/off flag
-(`quicktag.enabled`); there are no Preferences-based connection profiles
-anymore.
+---
+
+## Per-app tie collection (profile)
+
+The tie config file is shared by all GUI apps and the tie CLI, so its
+`DefaultCollection` cannot be per-app — apps that bound it directly kept
+clobbering each other's selection. Instead each app stores its own selection
+and has its own default profile name, and `tieconfig.AppCollection(cfg,
+stored, appDefault)` resolves what to bind at startup: the stored selection
+(when it still names an entry) → the app's default entry (when present) →
+the file's DefaultCollection.
+
+| App | Selection stored in | Default profile |
+|-----|---------------------|-----------------|
+| tie-view | Fyne Preferences `tie.collection` | `images` |
+| tie-audio | `AppConfig.TieCollection` | `audio` |
+| tie-fm | `Config.TieCollection` (Menu → "Select tie collection…") | `files` |
+
+In the shared connection editor, picking a collection in the dropdown switches
+the picking app immediately (no tie-file write); only Apply writes the tie
+file (setting its `DefaultCollection`, which the tie CLI then follows).
+
+---
+
+## tie-audio sidebar & settings (`cmd/tie-audio/internal/ui/`)
+
+The browse sidebar mirrors tie-view's tag-sidebar semantics: `ShowStars = true`,
+the quick-pick list shows the starred `("tags","favorite")` tags (falling back
+to every tag while none are starred, labeled "All tags" / "Favorites"), ☆/★
+toggles persist via `RegisterFavorite`/`UnregisterFavorite` (optimistic,
+rolled back on error), and co-tag refinement narrows the list on selection.
+Both tag relations arrive in one `tc.Get("tags")` fetch (`Session.TagSets`).
+The whole `TagSelection` sits in a `container.NewVScroll` so a large tag
+count doesn't inflate the window's minimum size.
+
+The settings page shares `tieconfig.Editor` with tie-view and applies a
+collection switch the same way: picking a collection in the dropdown calls
+`Session.SetCollection` (and Apply calls `Session.SetTieConfig`), which
+overwrite `*session.Tie` in place with `NewTieClientFor(...)` (the
+struct-overwrite pattern), so every existing `*TieClient` holder — browse
+page, queue page — sees the new collection. The selection persists as
+`AppConfig.TieCollection` (default profile `audio`; see "Per-app tie
+collection (profile)" above). The sidebar then reloads its tags (selection
+cleared) and `clearAlbums` empties the wall in the background, so stale
+albums from the prior collection can neither display nor be opened; the user
+stays on the settings page (no `ChangeGallery`).
 
 ---
 
@@ -512,8 +559,8 @@ anymore.
 | `SetStarred([]string)` | Replace the starred-tag set and refresh the quick-pick list |
 | `OnSelectedChanged func()` | Callback fired on any selection change |
 | `OnNewTag func(tag string)` | Called when user presses Enter with typed text but no row highlighted; nil in sidebar, set by image tagger |
-| `OnStar func(tag string, starred bool)` | Called when user clicks ☆/★ on a quick-pick item; nil in sidebar, set by image tagger |
-| `ShowStars bool` | When true, quick-pick items show a ☆/★ toggle button; must be set before first render |
+| `OnStar func(tag string, starred bool)` | Called when user clicks ☆/★ on a quick-pick item; set by the tie-view/tie-audio sidebars and the image tagger |
+| `ShowStars bool` | When true, quick-pick items show a ☆/★ toggle button; must be set before first render; used by the tie-view/tie-audio sidebars and the image tagger |
 | `KeepSearchFocus bool` | When true, the search entry keeps keyboard focus after a dropdown selection or Escape (image tagger: lets the user type the next query). Sidebar leaves it false so focus is released and window-level gallery hotkeys keep working; the sidebar additionally calls `window.Canvas().Unfocus()` in `OnSelectedChanged` because Fyne List/Check widgets grab focus on tap |
 
 **Critical:** `ClearFavorites()` calls `Refresh`. If you then call `AddFavorite`
