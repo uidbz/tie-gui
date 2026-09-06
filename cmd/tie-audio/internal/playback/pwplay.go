@@ -68,10 +68,14 @@ func (r *pwplayRemote) Insert(at int, urls ...string) error {
 	return r.c.MoveItems(oldCount, len(urls), at)
 }
 
-// Clear empties the queue by removing index 0 repeatedly (pwplay has no
-// clear-playlist call). Removals are applied asynchronously; removing the front
-// oldCount times drains exactly the tracks present when Clear was called.
+// Clear empties the queue. Servers with the /clear endpoint drain the whole
+// playlist in one decoder-loop step (instant, and stops playback even when
+// nothing was ever loaded); older servers fall back to removing the front
+// oldCount times, which the decoder loop drains one at a time.
 func (r *pwplayRemote) Clear() error {
+	if err := r.c.ClearTracks(); err == nil {
+		return nil
+	}
 	s, err := r.c.Status()
 	if err != nil {
 		return err

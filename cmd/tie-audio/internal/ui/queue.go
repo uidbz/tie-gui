@@ -400,8 +400,9 @@ func (q *queuePage) saveQueue() {
 	}, q.win)
 }
 
-// clearPlaylist empties the queue after a confirmation prompt. The next status
-// poll reflects the now-empty playlist (and stopped playback).
+// clearPlaylist empties the queue after a confirmation prompt: the table
+// clears immediately (the backend applies the clear in one step), then a
+// refresh reflects the now-empty, stopped state.
 func (q *queuePage) clearPlaylist() {
 	if len(q.playlist) == 0 {
 		return
@@ -410,9 +411,15 @@ func (q *queuePage) clearPlaylist() {
 		if !ok {
 			return
 		}
+		q.playlist = q.playlist[:0]
+		q.rebuildTracks()
 		go func() {
 			if err := q.backend.Clear(); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
+				return
+			}
+			if s, err := q.backend.Status(); err == nil {
+				fyne.Do(func() { q.applyStatus(s) })
 			}
 		}()
 	}, q.win)

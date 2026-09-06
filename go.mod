@@ -76,3 +76,8 @@ require (
 )
 
 replace fyne.io/fyne/v2 => ./third_party/fyne
+
+// TODO: pin github.com/uidbz/pwplay to v0.0.0-...-2c44241 once the module
+// proxy picks it up (the /clear endpoint commit); replace keeps local builds
+// working against the sibling checkout until then.
+replace github.com/uidbz/pwplay => ../pwplay
