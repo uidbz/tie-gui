@@ -95,7 +95,10 @@ tie-fm keeps its own settings (separate from the tie client config) at
 
 - `TieConfig` — path to the tie client config to use (empty ⇒ built-in local
   default: triplestore `:1161`, filehost `:1162`).
-- `Bookmarks` — the favorites sidebar entries (directory bookmarks).
+- `Bookmarks` — the favorites sidebar entries (directory bookmarks). A
+  bookmark for a `tie:` path also remembers the tie collection it was created
+  under, and activating it switches back to that collection first (a tie path
+  only resolves in its own collection); local bookmarks carry no collection.
 - `FileApps` — per-extension open commands (see below).
 
 Favorite *tags* are not kept here — they live in the tie collection itself (the
@@ -120,6 +123,17 @@ natively (mpv, vlc, …); for everything else leave it off and tie files are
 materialized to `/tmp` as before. Streaming applies only to backends that can
 serve a URL (tie); local and MTP entries are always opened from a real path.
 
+There is also an **App understands tie: URLs** flag: when set, a tie entry is
+handed to the app as `tie:<content hash>` — the receiving app (e.g. tie-view)
+resolves metadata and content itself, so tie-fm neither downloads nor streams
+anything. For tie entries this takes precedence over streaming; local and MTP
+entries always fall back to a real path.
+
+In preview mode (the per-pane thumbnail grid), clicking an image or video tile
+opens it with the associated application when one is configured for its file
+type — including the streaming/tie: URL hand-off above; without an association
+the built-in in-pane image viewer / video player is used as before.
+
 Example `config.toml` fragment:
 
 ```toml
@@ -129,6 +143,10 @@ Command = "okular %f"
 [FileApps.mkv]
 Command = "mpv %f"
 Stream = true
+
+[FileApps.jpg]
+Command = "tie-view %f"
+TieURL = true
 
 [FileApps.png]
 Command = "gimp"

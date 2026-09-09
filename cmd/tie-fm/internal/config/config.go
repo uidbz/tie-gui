@@ -28,16 +28,24 @@ const (
 type Bookmark struct {
 	Label string
 	Path  string
+	// Collection names the tie [Collections] entry the bookmark was created
+	// under (tie: paths only); empty for local paths and legacy bookmarks —
+	// activation then uses whatever collection is currently bound.
+	Collection string `toml:",omitempty"`
 }
 
 // AppAssoc is a file association: the command used to open files of one type.
 // Command may contain a "%f" placeholder for the file path; if absent the path
 // is appended as the final argument. Stream marks apps that can open an HTTP
 // URL directly (e.g. mpv/vlc): for such apps a tie entry's filehost URL is
-// passed instead of a downloaded temporary copy.
+// passed instead of a downloaded temporary copy. TieURL marks apps that
+// understand tie: URLs (e.g. tie-view): a tie entry is passed as
+// "tie:<content hash>" and the app resolves metadata and content itself;
+// for tie entries TieURL takes precedence over Stream.
 type AppAssoc struct {
 	Command string
 	Stream  bool
+	TieURL  bool
 }
 
 // Config is tie-fm's persisted settings.

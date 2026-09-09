@@ -18,6 +18,7 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/widget/tablewidget"
+	"github.com/uidbz/tie-gui/gallery"
 )
 
 const (
@@ -73,6 +74,11 @@ type FileManager struct {
 
 	dragGhost *widget.PopUp // floating indicator shown while dragging rows
 	dragLabel string        // text for the drag indicator (empty when not dragging)
+
+	// preview is the per-pane thumbnail grid (folders, images, videos),
+	// created on first toggle via the toolbar button; nil until InitPreview
+	// wires it.
+	preview *previewController
 
 	history []string
 	histIdx int
@@ -163,6 +169,39 @@ func (fm *FileManager) SetOnActive(fn func(*FileManager)) { fm.onActivate = fn }
 // SetBookmarkHandler registers the handler invoked by the toolbar bookmark
 // button with this panel's current path.
 func (fm *FileManager) SetBookmarkHandler(fn func(path string)) { fm.onBookmark = fn }
+
+// InitPreview attaches the pane's preview mode: a toolbar button toggles
+// between the table and a gallery grid of folder/image/video thumbnails fed
+// from the pane's listing. cfg and thumb are shared between panes (main
+// builds them once); each pane gets its own embedded gallery on first use.
+func (fm *FileManager) InitPreview(cfg gallery.Config, thumb gallery.Thumbnailer) {
+	fm.preview = newPreviewController(fm, cfg, thumb)
+	fm.toolbar.Append(widget.NewToolbarAction(theme.MediaPhotoIcon(), fm.togglePreview))
+}
+
+func (fm *FileManager) togglePreview() {
+	fm.markActive()
+	if fm.preview != nil {
+		fm.preview.toggle()
+	}
+}
+
+// refreshPreview re-feeds the preview grid from the current (sorted) listing;
+// a no-op while preview is off.
+func (fm *FileManager) refreshPreview() {
+	if fm.preview != nil {
+		fm.preview.refresh()
+	}
+}
+
+// PreviewHandlesKey routes key events to the preview grid while it is on.
+// Returns true when the key was consumed (always, while preview is on).
+func (fm *FileManager) PreviewHandlesKey(key *fyne.KeyEvent) bool {
+	if fm.preview == nil {
+		return false
+	}
+	return fm.preview.HandleKey(key)
+}
 
 // bookmarkCurrent notifies the registered handler of the panel's current path.
 func (fm *FileManager) bookmarkCurrent() {
@@ -278,6 +317,7 @@ func (fm *FileManager) reload() {
 	fm.entries = entries
 	fm.applySort()
 	fm.table.Refresh()
+	fm.refreshPreview()
 }
 
 func (fm *FileManager) goUp() {
@@ -459,6 +499,7 @@ func (fm *FileManager) onSort(colId string, ascending bool) {
 	fm.tagPanel.OnSelectionChanged()
 	fm.applySort()
 	fm.table.Refresh()
+	fm.refreshPreview()
 }
 
 func (fm *FileManager) applySort() {
@@ -519,21 +560,28 @@ func (fm *FileManager) activate(row int) {
 	fm.openEntry(e)
 }
 
-// openEntry opens a file entry: when its association supports streaming and
-// the backend serves a direct URL (fs.Streamer, e.g. tie over HTTP) the URL is
-// handed to the app; otherwise the entry is materialized to a local temp copy
-// first. Requires a configured association to stream — we never hand a URL to
-// xdg-open (which would open a browser).
+// openEntry opens a file entry. A tie: URL association is handed the entry
+// as "tie:<content hash>" (the app, e.g. tie-view, resolves metadata and
+// content itself); a streaming association gets the backend's direct URL
+// (fs.Streamer, e.g. tie over HTTP); otherwise the entry is materialized to
+// a local temp copy first. Requires a configured association for either URL
+// form — we never hand a URL to xdg-open (which would open a browser).
 func (fm *FileManager) openEntry(e fs.Entry) {
 	provider := fm.registry.For(e.Path)
 	assoc, hasAssoc := config.AppAssoc{}, false
 	if fm.cfg != nil {
 		assoc, hasAssoc = fm.cfg.AppFor(e.Name)
 	}
+	if hasAssoc && assoc.TieURL && fs.IsTie(e.Path) && e.Hash != "" {
+		if err := launch(fm.cfg, "tie:"+e.Hash, e.Name); err != nil {
+			dialog.ShowError(err, fm.win)
+		}
+		return
+	}
 	if hasAssoc && assoc.Stream {
 		if s, ok := provider.(fs.Streamer); ok {
 			if url, err := s.StreamURL(e); err == nil {
-				if err := openLocal(fm.cfg, url, e.Name); err != nil {
+				if err := launch(fm.cfg, url, e.Name); err != nil {
 					dialog.ShowError(err, fm.win)
 				}
 				return
@@ -545,7 +593,7 @@ func (fm *FileManager) openEntry(e fs.Entry) {
 		dialog.ShowError(err, fm.win)
 		return
 	}
-	if err := openLocal(fm.cfg, local, e.Name); err != nil {
+	if err := launch(fm.cfg, local, e.Name); err != nil {
 		dialog.ShowError(err, fm.win)
 	}
 }

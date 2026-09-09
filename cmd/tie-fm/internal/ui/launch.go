@@ -31,9 +31,14 @@ func isStreamable(name string) bool {
 	return streamableExts[config.ExtKey(name)]
 }
 
-// openLocal launches a local file (or, for streaming associations on tie
-// entries, a filehost URL) using the command configured for its file type,
-// falling back to xdg-open when none is set.
+// launch is the hook FileManager.openEntry uses to start the configured
+// command; a variable so tests can capture the handed-over target instead of
+// spawning processes.
+var launch = openLocal
+
+// openLocal launches a local file (or, for streaming/tie: URL associations on
+// tie entries, a filehost HTTP URL or tie: URL) using the command configured
+// for its file type, falling back to xdg-open when none is set.
 func openLocal(cfg *config.Config, target, name string) error {
 	if cfg != nil {
 		if assoc, ok := cfg.AppFor(name); ok {
@@ -82,23 +87,26 @@ func promptOpenWith(win fyne.Window, cfg *config.Config, name string, onSaved fu
 	}
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("e.g. mpv %f  or  gimp")
-	streamCheck := widget.NewCheck("App supports streaming (pass tie URL instead of downloading)", nil)
+	streamCheck := widget.NewCheck("App supports streaming (pass filehost HTTP URL instead of downloading)", nil)
 	streamCheck.Checked = isStreamable(ext)
+	tieURLCheck := widget.NewCheck("App understands tie: URLs (pass tie:<hash> instead of downloading)", nil)
 	if assoc, ok := cfg.AppFor(name); ok {
 		entry.SetText(assoc.Command)
 		streamCheck.Checked = assoc.Stream
+		tieURLCheck.Checked = assoc.TieURL
 	}
 	dialog.ShowForm(fmt.Sprintf("Open .%s with", ext), "Save", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("Command", entry),
-			widget.NewFormItem("", widget.NewLabel("%f is replaced by the file path (else appended).")),
+			widget.NewFormItem("", widget.NewLabel("%f is replaced by the file path / URL (else appended).")),
 			widget.NewFormItem("", streamCheck),
+			widget.NewFormItem("", tieURLCheck),
 		},
 		func(ok bool) {
 			if !ok {
 				return
 			}
-			cfg.SetApp(ext, config.AppAssoc{Command: entry.Text, Stream: streamCheck.Checked})
+			cfg.SetApp(ext, config.AppAssoc{Command: entry.Text, Stream: streamCheck.Checked, TieURL: tieURLCheck.Checked})
 			if err := cfg.Save(); err != nil {
 				dialog.ShowError(err, win)
 			}
@@ -135,11 +143,13 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 		extEntry.SetText(ext)
 		cmdEntry := widget.NewEntry()
 		cmdEntry.SetPlaceHolder("e.g. mpv %f")
-		streamCheck := widget.NewCheck("App supports streaming (pass tie URL instead of downloading)", nil)
+		streamCheck := widget.NewCheck("App supports streaming (pass filehost HTTP URL instead of downloading)", nil)
+		tieURLCheck := widget.NewCheck("App understands tie: URLs (pass tie:<hash> instead of downloading)", nil)
 		if ext != "" {
 			assoc := cfg.FileApps[ext]
 			cmdEntry.SetText(assoc.Command)
 			streamCheck.Checked = assoc.Stream
+			tieURLCheck.Checked = assoc.TieURL
 		} else {
 			// New association: pre-check for media extensions until the user
 			// toggles the checkbox explicitly.
@@ -157,6 +167,7 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 				widget.NewFormItem("Extension", extEntry),
 				widget.NewFormItem("Command", cmdEntry),
 				widget.NewFormItem("", streamCheck),
+				widget.NewFormItem("", tieURLCheck),
 			},
 			func(ok bool) {
 				if !ok {
@@ -167,7 +178,7 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 				if ext != "" && newExt != ext {
 					cfg.SetApp(ext, config.AppAssoc{})
 				}
-				cfg.SetApp(newExt, config.AppAssoc{Command: cmdEntry.Text, Stream: streamCheck.Checked})
+				cfg.SetApp(newExt, config.AppAssoc{Command: cmdEntry.Text, Stream: streamCheck.Checked, TieURL: tieURLCheck.Checked})
 				save()
 			}, win)
 	}
@@ -188,6 +199,9 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 			label := fmt.Sprintf(".%s  →  %s", ext, cfg.FileApps[ext].Command)
 			if cfg.FileApps[ext].Stream {
 				label += "  (streams)"
+			}
+			if cfg.FileApps[ext].TieURL {
+				label += "  (tie URL)"
 			}
 			b.Objects[0].(*widget.Label).SetText(label)
 			btns := b.Objects[1].(*fyne.Container).Objects

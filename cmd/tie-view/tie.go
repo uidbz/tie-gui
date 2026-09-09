@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"image/jpeg"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -16,32 +15,24 @@ import (
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/io/archivelib"
 	"github.com/uidbz/tie/io/getlib"
-	"github.com/uidbz/tie/io/putlib"
 
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/tiethumb"
 )
 
 // tieHostName names the filehost to fetch content from, set by the -host
-// flag. Empty means the default resolution in tieFileHost.
+// flag. Empty means the default resolution in tiethumb.FileHost.
 var tieHostName string
 
 // tieFileHost resolves the filehost used to fetch tie content: the host
-// named by -host when given, the "fast" host when configured, otherwise the
-// first configured default host.
+// named by -host when given, otherwise the default resolution (the "fast"
+// host, else the first configured default host).
 func tieFileHost(tc *client.TieClient) client.FileHost {
 	if tieHostName != "" {
 		// Validated against the config at startup, so this always hits.
 		return tc.Config.FileHosts[tieHostName]
 	}
-	if host, ok := tc.Config.FileHosts["fast"]; ok {
-		return host
-	}
-	for _, name := range tc.Config.DefaultFileHosts {
-		if host, ok := tc.Config.FileHosts[name]; ok {
-			return host
-		}
-	}
-	return client.FileHost{}
+	return tiethumb.FileHost(tc)
 }
 
 type tieReader struct {
@@ -87,25 +78,26 @@ func (t *tieReader) setRating(rating int) {
 // stored in tie metadata and returns the original image pixel dimensions.
 // Returns (0, 0) when no dimensions have been stored yet.
 func (t *tieReader) Dimensions() (int, int) {
-	w, h, ok := parseDimensions(t.dimensions)
+	w, h, ok := tiethumb.ParseDimensions(t.dimensions)
 	if !ok {
 		return 0, 0
 	}
 	return w, h
 }
 
-// parseDimensions parses a "WxH" string into width and height integers.
-func parseDimensions(s string) (w, h int, ok bool) {
-	parts := strings.SplitN(s, "x", 2)
-	if len(parts) != 2 {
-		return 0, 0, false
+// ThumbHash implements tiethumb.ThumbReader: the content hash of the
+// filehost-cached thumbnail, pre-populated from the query's expanded
+// attributes or after the thumbnailer generated one.
+func (t *tieReader) ThumbHash() string { return t.thumbHash }
+
+// SetThumbCache implements tiethumb.ThumbReader: records the thumbnail hash
+// (and, when non-empty, the "WxH" dimensions) the thumbnailer just resolved
+// or generated, so later lookups skip the Get round-trip.
+func (t *tieReader) SetThumbCache(thumbHash, dimensions string) {
+	t.thumbHash = thumbHash
+	if dimensions != "" {
+		t.dimensions = dimensions
 	}
-	w, err1 := strconv.Atoi(parts[0])
-	h, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || w <= 0 || h <= 0 {
-		return 0, 0, false
-	}
-	return w, h, true
 }
 
 // IsVideo implements gallery.VideoFile so ReadCustom can set InputIsVideo.
@@ -251,7 +243,7 @@ func (t *tieArchiveReader) Previews() ([]gallery.CustomReader, error) {
 	archiveFetchSem <- struct{}{}
 	defer func() { <-archiveFetchSem }()
 
-	data, err := fetchBlob(t.host, t.hash)
+	data, err := tiethumb.FetchBlob(t.host, t.hash)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +279,7 @@ func (t *tieArchiveReader) CoverThumbnail() (io.ReadSeeker, error) {
 		}
 		t.thumbHash = thumbHash
 	}
-	data, err := fetchBlob(t.host, thumbHash)
+	data, err := tiethumb.FetchBlob(t.host, thumbHash)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +291,7 @@ func (t *tieArchiveReader) CoverThumbnail() (io.ReadSeeker, error) {
 // mapping. Failures are logged; the generated thumbnail remains usable,
 // just uncached.
 func (t *tieArchiveReader) StoreCoverThumbnail(jpegBytes []byte) {
-	thumbHash, err := uploadThumbnail(t.tc, t.host, t.hash, jpegBytes)
+	thumbHash, err := tiethumb.UploadThumbnail(t.tc, t.host, t.hash, jpegBytes)
 	if err != nil {
 		fmt.Println("Error storing archive cover thumbnail:", err)
 		return
@@ -625,153 +617,5 @@ func queryGallery(viewer *gallery.Gallery, tc *client.TieClient, gf galleryFilte
 	})
 }
 
-// uploadThumbnail stores jpegBytes on the filehost and records the
-// (ownerHash, "thumbnail", thumbHash) mapping, returning the thumbHash.
-// Set (not Add) keeps the relation single-valued, so regenerated values
-// replace ones whose blobs were reaped from the filehost.
-func uploadThumbnail(tc *client.TieClient, host client.FileHost, ownerHash string, jpegBytes []byte) (string, error) {
-	if host.URL == "" {
-		return "", errors.New("no filehost URL configured")
-	}
-	pc := putlib.PutConfig{Client: client.HTTPClientFor(host), Store: host.Store}
-	thumbHash, err := pc.AddressOf(bytes.NewReader(jpegBytes))
-	if err != nil {
-		return "", err
-	}
-	item := pc.UploadMultipart(host.URL+"/upload/"+thumbHash, bytes.NewReader(jpegBytes), len(jpegBytes), ownerHash+".jpg")
-	if item.ErrorMsg != "" {
-		return "", errors.New(item.ErrorMsg)
-	}
-	if item.Hash != thumbHash {
-		return "", errors.New("checksum mismatch uploading thumbnail")
-	}
-	if err := tc.Set(ownerHash, "thumbnail", []string{thumbHash}); err != nil {
-		return "", err
-	}
-	return thumbHash, nil
-}
-
-// fetchBlob downloads a blob from the filehost.
-func fetchBlob(host client.FileHost, hash string) ([]byte, error) {
-	r, err := getlib.ReadFile(client.HTTPClientFor(host), host.URL, hash)
-	if err != nil {
-		return nil, err
-	}
-	return io.ReadAll(r)
-}
-
-// filehostThumbnailer implements gallery.Thumbnailer on top of the tie
-// stores: thumbnails are cached on the filehost (mapped by a
-// (imageHash, "thumbnail", thumbHash) triple), not in a local directory, so
-// the cache is shared by every machine with access to the same tie stores.
-// On a cache miss the thumbnail is generated from the full blob and uploaded.
-type filehostThumbnailer struct {
-	tie       *client.TieClient
-	tileWidth int
-}
-
-func (t *filehostThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker, error) {
-	switch info.CustomReader.(type) {
-	case *tieDirReader, *tieArchiveReader:
-		// Fallback for collections without usable previews (empty directory,
-		// fetch failure, ...): a plain folder icon marks the tile as
-		// browsable. When the entry has preview images, the gallery badges a
-		// content thumbnail via PreviewProvider and never reaches this case.
-		info.ThumbnailIsScaled = true
-		return folderIcon(t.tileWidth * 2), nil
-	}
-	// tr is nil for readers that carry image bytes but have no filehost thumbnail
-	// cache (e.g. archive members): they fall through to on-the-fly generation
-	// without the cache lookup/upload.
-	tr, _ := info.CustomReader.(*tieReader)
-	if tr != nil {
-		if tr.isVideo {
-			// Video thumbnails are handled upstream (InputIsVideo → loading placeholder).
-			return nil, errors.New("video thumbnail not available")
-		}
-		if rs, ok := t.thumbnailReader(tr); ok {
-			info.ThumbnailIsScaled = true
-			return rs, nil
-		}
-	}
-
-	reader, err := info.GetReader()
-	if err != nil {
-		return nil, err
-	}
-	decoded, _, err := gallery.Decode(reader)
-	if err != nil {
-		return nil, err
-	}
-	origW := decoded.Bounds().Max.X
-	origH := decoded.Bounds().Max.Y
-	scaled := gallery.ScaleImage(decoded, t.tileWidth*2)
-	decoded = nil
-	buf := &bytes.Buffer{}
-	if err := jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, err
-	}
-	if tr != nil {
-		t.upload(tr, buf.Bytes(), origW, origH)
-	}
-	// Make dimensions available for the current session without waiting for
-	// the next query to return them.
-	info.Width = origW
-	info.Height = origH
-	info.ThumbnailIsScaled = true
-
-	return bytes.NewReader(buf.Bytes()), nil
-}
-
-// thumbnailReader returns the filehost-cached thumbnail for tr by following
-// the (hash, "thumbnail", thumbHash) mapping. The mapping usually arrives
-// with the query's expanded attributes (tr.thumbHash); otherwise it is
-// looked up with a single Get. ok is false when no mapping exists or the
-// blob is unavailable (e.g. reaped from the filehost), in which case the
-// caller regenerates and re-uploads.
-func (t *filehostThumbnailer) thumbnailReader(tr *tieReader) (rs io.ReadSeeker, ok bool) {
-	host := tieFileHost(t.tie)
-	if host.URL == "" {
-		return nil, false
-	}
-	thumbHash := tr.thumbHash
-	if thumbHash == "" {
-		row, err := t.tie.Get(tr.hash)
-		if err != nil {
-			return nil, false
-		}
-		thumbHash = client.RowFirst(row, "thumbnail")
-		if thumbHash == "" {
-			return nil, false
-		}
-		tr.thumbHash = thumbHash
-	}
-	r, err := getlib.ReadFile(client.HTTPClientFor(host), host.URL, thumbHash)
-	if err != nil {
-		return nil, false
-	}
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, false
-	}
-	return bytes.NewReader(data), true
-}
-
-// upload stores jpegBytes on the filehost and records the
-// (tr.hash, "thumbnail", thumbHash) and (tr.hash, "dimensions", "WxH")
-// mappings. Failures are logged; the generated thumbnail remains usable,
-// just uncached.
-func (t *filehostThumbnailer) upload(tr *tieReader, jpegBytes []byte, origW, origH int) {
-	thumbHash, err := uploadThumbnail(t.tie, tieFileHost(t.tie), tr.hash, jpegBytes)
-	if err != nil {
-		fmt.Println("Error uploading thumbnail:", err)
-		return
-	}
-	dims := fmt.Sprintf("%dx%d", origW, origH)
-	if err := t.tie.Set(tr.hash, "dimensions", []string{dims}); err != nil {
-		fmt.Println("Error saving dimensions:", err)
-		return
-	}
-	tr.thumbHash = thumbHash
-	tr.dimensions = dims
-}
+// The filehost thumbnailer, thumbnail upload and blob fetching live in the
+// shared tiethumb package (used by tie-fm's preview grid as well).

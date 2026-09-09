@@ -43,3 +43,26 @@ func TestMoveBookmark(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultLabel(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/", "/"},
+		{"", "/"},
+		{"/home/user", "user"},
+		{"/music/rock", "rock"},
+		{"/music/rock/", "rock"}, // trailing slash
+		{"tie:", "tie"},
+		{"tie:/", "tie"},
+		{"tie:/music", "music"},
+		{"tie:/music/rock", "rock"},
+		{"tie:/music/rock/", "rock"},
+	}
+	for _, c := range cases {
+		if got := defaultLabel(c.path); got != c.want {
+			t.Errorf("defaultLabel(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}

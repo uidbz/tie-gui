@@ -3,8 +3,10 @@
 package main
 
 import (
+	"fmt"
 	"image/color"
 	"sort"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -21,7 +23,9 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/devices"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/ui"
+	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tiethumb"
 )
 
 func main() {
@@ -87,6 +91,36 @@ func main() {
 	left.SetSibling(right)
 	right.SetSibling(left)
 
+	// Preview mode: each pane's toolbar gains a button that swaps the table
+	// for a gallery grid of folder/image/video thumbnails. Both panes share
+	// one gallery config and one tie thumbnailer; each builds its own
+	// embedded gallery on first use. The thumbnailer resolves the tie client
+	// and filehost lazily, so tie config/collection switches (which replace
+	// the registry's TieFS) are picked up without rewiring.
+	galCfg := gallery.LoadConfig(mainWin, "")
+	if gallery.NewPlatform().IsMobile() {
+		galCfg.AdjustForMobile()
+	}
+	galCfg.General.TileWidth = 150 // pane-width rows (panes are ~half a window)
+	previewThumb := tiethumb.New(
+		func() *client.TieClient {
+			if t, ok := registry.For("tie:/").(*fs.TieFS); ok {
+				return t.Client()
+			}
+			return nil
+		},
+		func() client.FileHost {
+			if t, ok := registry.For("tie:/").(*fs.TieFS); ok {
+				return tiethumb.FileHost(t.Client())
+			}
+			return client.FileHost{}
+		},
+		int(galCfg.General.TileWidth),
+		nil,
+	)
+	left.InitPreview(galCfg, previewThumb)
+	right.InitPreview(galCfg, previewThumb)
+
 	// One panel is "active" at a time (highlighted); interacting with a panel
 	// makes it active. Shared actions (bookmark navigation, add-bookmark) target
 	// the active panel.
@@ -100,7 +134,53 @@ func main() {
 	right.SetOnActive(setActive)
 	setActive(left)
 
+	// While a pane is in preview mode it owns the keyboard: route window
+	// key events to the active pane's gallery (scroll, image nav); Escape
+	// backs out of an image/video or leaves preview mode.
+	mainWin.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
+		active.PreviewHandlesKey(key)
+	})
+
 	twin := container.NewHSplit(left.View(), right.View())
+
+	// applyTieConfig rebuilds the tie client from path, persists the choice, and
+	// reloads both panels so any open tie: view refreshes. The app's own
+	// collection selection is kept; AppCollection falls back to the "files"
+	// entry or the new file's DefaultCollection when it doesn't exist there.
+	applyTieConfig := func(path string) {
+		cfg, err := config.LoadTieConfig(path)
+		if err != nil {
+			dialog.ShowError(err, mainWin)
+			return
+		}
+		tieCfg = cfg
+		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))))
+		appCfg.TieConfig = path
+		if err := appCfg.Save(); err != nil {
+			dialog.ShowError(err, mainWin)
+		}
+		left.Reload()
+		right.Reload()
+	}
+
+	// applyTieCollection binds the named collection of the loaded tie config,
+	// persists it as tie-fm's own profile selection, and reloads both panels.
+	applyTieCollection := func(name string) {
+		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, name)))
+		appCfg.TieCollection = name
+		if err := appCfg.Save(); err != nil {
+			dialog.ShowError(err, mainWin)
+		}
+		left.Reload()
+		right.Reload()
+	}
+
+	// currentCollection resolves the collection actually bound right now
+	// (appCfg.TieCollection may be empty on first run while a fallback
+	// profile is bound).
+	currentCollection := func() string {
+		return tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection)
+	}
 
 	sidebar := widget.NewList(
 		func() int { return len(appCfg.Bookmarks) },
@@ -115,14 +195,27 @@ func main() {
 		})
 	sidebar.OnSelected = func(id int) {
 		if id >= 0 && id < len(appCfg.Bookmarks) {
-			active.NavigateTo(appCfg.Bookmarks[id].Path)
+			bm := appCfg.Bookmarks[id]
+			// A bookmark that remembers its collection switches to it first —
+			// a tie: path only resolves under the collection it was created in
+			// (under any other the listing comes back silently empty).
+			if bm.Collection != "" && bm.Collection != currentCollection() {
+				if _, ok := tieCfg.Collections[bm.Collection]; !ok {
+					dialog.ShowInformation("Tie collection",
+						fmt.Sprintf("The bookmark's collection %q is not in the loaded tie config.", bm.Collection), mainWin)
+					sidebar.UnselectAll()
+					return
+				}
+				applyTieCollection(bm.Collection)
+			}
+			active.NavigateTo(bm.Path)
 		}
 		sidebar.UnselectAll()
 	}
 
 	// Each panel's toolbar bookmark button targets that panel's current path
 	// (rather than only the active panel, which the shared menu entry uses).
-	addBookmarkPath := func(path string) { addBookmark(mainWin, &appCfg, path, sidebar) }
+	addBookmarkPath := func(path string) { addBookmark(mainWin, &appCfg, path, currentCollection(), sidebar) }
 	left.SetBookmarkHandler(addBookmarkPath)
 	right.SetBookmarkHandler(addBookmarkPath)
 
@@ -183,38 +276,6 @@ func main() {
 
 	leftPane := container.NewBorder(nil, devicesBox, nil, nil, sidebar)
 
-	// applyTieConfig rebuilds the tie client from path, persists the choice, and
-	// reloads both panels so any open tie: view refreshes. The app's own
-	// collection selection is kept; AppCollection falls back to the "files"
-	// entry or the new file's DefaultCollection when it doesn't exist there.
-	applyTieConfig := func(path string) {
-		cfg, err := config.LoadTieConfig(path)
-		if err != nil {
-			dialog.ShowError(err, mainWin)
-			return
-		}
-		tieCfg = cfg
-		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))))
-		appCfg.TieConfig = path
-		if err := appCfg.Save(); err != nil {
-			dialog.ShowError(err, mainWin)
-		}
-		left.Reload()
-		right.Reload()
-	}
-
-	// applyTieCollection binds the named collection of the loaded tie config,
-	// persists it as tie-fm's own profile selection, and reloads both panels.
-	applyTieCollection := func(name string) {
-		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, name)))
-		appCfg.TieCollection = name
-		if err := appCfg.Save(); err != nil {
-			dialog.ShowError(err, mainWin)
-		}
-		left.Reload()
-		right.Reload()
-	}
-
 	// A native main menu is intentionally avoided: on Linux Fyne draws it as an
 	// overlay that the desktop's Alt+RightMouse resize gesture pops open (the Alt
 	// release toggles the menu). The same actions are exposed via an in-app menu
@@ -254,7 +315,7 @@ func main() {
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Add current location to bookmarks", func() {
-			addBookmark(mainWin, &appCfg, active.CurrentPath(), sidebar)
+			addBookmark(mainWin, &appCfg, active.CurrentPath(), currentCollection(), sidebar)
 		}),
 		fyne.NewMenuItem("Manage bookmarks…", func() {
 			manageBookmarks(mainWin, &appCfg, sidebar)
@@ -326,20 +387,29 @@ func deviceIcon(k devices.Kind) fyne.Resource {
 	return theme.StorageIcon()
 }
 
-// addBookmark appends a bookmark for path (prompting for a label) and persists.
-func addBookmark(win fyne.Window, cfg *config.Config, path string, sidebar *widget.List) {
+// addBookmark appends a bookmark for path (prompting for a label) and
+// persists. collection is the currently bound tie collection; it is remembered
+// for tie: paths so activation can switch back to it.
+func addBookmark(win fyne.Window, cfg *config.Config, path, collection string, sidebar *widget.List) {
 	entry := widget.NewEntry()
 	entry.SetText(defaultLabel(path))
+	items := []*widget.FormItem{
+		widget.NewFormItem("Label", entry),
+		widget.NewFormItem("Path", widget.NewLabel(path)),
+	}
+	bm := config.Bookmark{Path: path}
+	if fs.IsTie(path) {
+		bm.Collection = collection
+		items = append(items, widget.NewFormItem("Collection", widget.NewLabel(collection)))
+	}
 	dialog.ShowForm("Add bookmark", "Add", "Cancel",
-		[]*widget.FormItem{
-			widget.NewFormItem("Label", entry),
-			widget.NewFormItem("Path", widget.NewLabel(path)),
-		},
+		items,
 		func(ok bool) {
 			if !ok {
 				return
 			}
-			cfg.Bookmarks = append(cfg.Bookmarks, config.Bookmark{Label: entry.Text, Path: path})
+			bm.Label = entry.Text
+			cfg.Bookmarks = append(cfg.Bookmarks, bm)
 			if err := cfg.Save(); err != nil {
 				dialog.ShowError(err, win)
 			}
@@ -511,13 +581,19 @@ func (h *dragHandle) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(widget.NewIcon(theme.MenuIcon()))
 }
 
+// defaultLabel derives a bookmark label from the path's base name, e.g.
+// "rock" for both "/music/rock" and "tie:/music/rock". Roots fall back to
+// "tie" (tie:/ root) and "/" (filesystem root).
 func defaultLabel(path string) string {
+	root := "/"
 	if fs.IsTie(path) {
-		return "tie"
+		root = "tie"
+		path = strings.TrimPrefix(path, "tie:")
 	}
 	if path == "" || path == "/" {
-		return "/"
+		return root
 	}
+	path = strings.TrimRight(path, "/")
 	name := path
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i] == '/' {
@@ -526,7 +602,7 @@ func defaultLabel(path string) string {
 		}
 	}
 	if name == "" {
-		return path
+		return root
 	}
 	return name
 }

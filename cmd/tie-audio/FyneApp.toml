@@ -1,9 +1,9 @@
 [Details]
-Icon = "Icon.png"
-Name = "tie-audio"
-ID = "github.com.uidbz.tieaudio"
-Version = "1.0.0"
-Build = 2
+  Icon = "Icon.png"
+  Name = "tie-audio"
+  ID = "github.com.uidbz.tieaudio"
+  Version = "1.0.0"
+  Build = 13
 
 [Migrations]
-fyneDo = true
+  fyneDo = true

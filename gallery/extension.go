@@ -106,9 +106,9 @@ package gallery
 // (see Config.TileWidth). The gallery decodes it and renders it directly; no
 // additional scaling occurs.
 //
-// Example: filehostThumbnailer (cmd/tie-view/thumbnailer.go) fetches cached
-// thumbnails from tie or generates them on-demand and persists them back to
-// the tie metadata store.
+// Example: tiethumb.Thumbnailer (tiethumb/, used by tie-view and tie-fm)
+// fetches cached thumbnails from tie or generates them on-demand and persists
+// them back to the tie metadata store.
 //
 // Lifecycle: GetThumbnail is called by thumbnail worker goroutines during
 // gallery load. Multiple workers may call it concurrently for different items.

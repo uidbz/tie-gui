@@ -807,6 +807,19 @@ func (viewer *Gallery) showGallery() {
 	viewer.window.SetContent(viewer.Content)
 }
 
+// ShowGrid returns to the gallery grid from the single-image or video view,
+// releasing playback/image resources. It is the exported form of the
+// Q/Escape/Back handler, for embedding apps that need to force the grid back
+// (e.g. after replacing the gallery's contents while an image was open).
+func (viewer *Gallery) ShowGrid() {
+	viewer.showGallery()
+}
+
+// VideoActive reports whether the in-window video player is currently shown.
+func (viewer *Gallery) VideoActive() bool {
+	return viewer.currentVideo != nil
+}
+
 // ShowVideo plays a video in the main window (mirroring ChangeImage's in-window
 // swap) instead of spawning a separate window. On mobile it auto-enters
 // fullscreen. onClose, if non-nil, runs after the player is closed (temp-file

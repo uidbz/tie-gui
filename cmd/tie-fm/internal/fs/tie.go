@@ -22,6 +22,10 @@ func NewTieFS(tc *client.TieClient) *TieFS { return &TieFS{tc: tc} }
 
 func (t *TieFS) Scheme() string { return "tie" }
 
+// Client returns the underlying tie client (e.g. for the preview grid's
+// thumbnailer and dimension lookups).
+func (t *TieFS) Client() *client.TieClient { return t.tc }
+
 // tiePath returns the path portion of a "tie:" URI, always starting with "/".
 func tiePath(uri string) string {
 	p := strings.TrimPrefix(uri, tieScheme)

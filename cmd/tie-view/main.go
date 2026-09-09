@@ -22,6 +22,7 @@ import (
 	"github.com/uidbz/tie-gui/mpvplayer"
 	"github.com/uidbz/tie-gui/tagselection"
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tiethumb"
 	// "github.com/pkg/profile"
 )
 
@@ -35,6 +36,14 @@ func main() {
 	tieConfigName := gallery.ConfigFlag("Tie config file to load: a name searched in tie's config dirs (like `tie -c`), or a file path (default: config.toml from the user config dir)")
 	flag.StringVar(&tieHostName, "host", "", "Fetch content from this filehost named in the tie config (default: \"fast\" when configured, else the first DefaultFileHosts entry)")
 	flag.Parse()
+
+	// The first positional argument may be a tie: URL to open at startup
+	// (tie:<hash> for a single subject, tie:/path for a virtual-filesystem
+	// location) — e.g. handed over by tie-fm's "tie URL" file association.
+	tieURL := ""
+	if args := flag.Args(); len(args) > 0 {
+		tieURL = args[0]
+	}
 
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.tieview", "tieview", icon)
 
@@ -95,7 +104,19 @@ func main() {
 		}
 		t.Viewer.ChangeImage(t.Info)
 	})
-	viewer.Thumbnailer = &filehostThumbnailer{tie: tieClient, tileWidth: int(config.General.TileWidth)}
+	viewer.Thumbnailer = tiethumb.New(
+		func() *client.TieClient { return tieClient },
+		func() client.FileHost { return tieFileHost(tieClient) },
+		int(config.General.TileWidth),
+		func(info *gallery.ImageInfo) (io.ReadSeeker, error) {
+			// Fallback for collections without usable previews (empty
+			// directory, fetch failure, ...): a plain folder icon marks the
+			// tile as browsable. When the entry has preview images, the
+			// gallery badges a content thumbnail via PreviewProvider and
+			// never reaches this fallback.
+			info.ThumbnailIsScaled = true
+			return folderIcon(int(config.General.TileWidth) * 2), nil
+		})
 	toggleTagger := func() {
 		tagger.Toggle(tagger.hash)
 		viewer.Content.Refresh()
@@ -266,10 +287,13 @@ func main() {
 		}, myWindow)
 	}
 
-	// On mobile, load the default image directory (DCIM/Camera). On desktop,
-	// load images by tag (default "favorite") to populate the gallery with
-	// quick-access content.
-	if viewer.Platform().IsMobile() {
+	// A tie: URL argument loads its subject instead of the default startup
+	// view. On mobile, load the default image directory (DCIM/Camera). On
+	// desktop, load images by tag (default "favorite") to populate the
+	// gallery with quick-access content.
+	if tieURL != "" {
+		go loadTieURL(myWindow, viewer, tieClient, fsTree, browseDir, tieURL)
+	} else if viewer.Platform().IsMobile() {
 		// Try /DCIM/Camera first (typical Android camera directory), then /DCIM,
 		// then fall back to root if neither exists. DirUIDFromPath and showDir
 		// are network calls, so they must not run on the main thread: with a

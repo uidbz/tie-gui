@@ -11,7 +11,7 @@ Fyne fork — hence the monorepo.
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tie-view/` | tie-network image viewer entry point |
 | `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted) |
-| `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui`, `widget/tablewidget` |
+| `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
@@ -27,6 +27,7 @@ Fyne fork — hence the monorepo.
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
 | `mpvplayer/` | libmpv video player window |
 | `tieconfig/` | Shared tie client config: Android-safe path resolution (`Dir`/`ResolvePath`/`Load`), the `[Collections.*]` connection editor (`Editor`), and per-app collection resolution (`AppCollection`) |
+| `tiethumb/` | Shared filehost-backed `gallery.Thumbnailer` (tie relation `(hash, "thumbnail", thumbHash)` + `dimensions`), used by tie-view and tie-fm's preview grid; the tie client and filehost resolve per call so collection/config switches need no rewiring |
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
 The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
@@ -40,9 +41,9 @@ dependency the same way; its old vendored copy under
 in its own repo — tie-audio's `test-env` builds it from the sibling `../pwplay`
 checkout.
 
-Note: the `gallery` library serves only `imgview` and `tie-view`; `tie-fm` and
-`tie-audio` have their own UI code and share only the `tagselection`
-widget (tie-fm) and the tie client dependency.
+Note: the `gallery` library serves `imgview`, `tie-view` and tie-fm's preview
+grid; `tie-audio` has its own UI code and shares only the `tagselection`
+widget (as does tie-fm) and the tie client dependency.
 
 The Fyne fork submodule must be checked out before building:
 `git clone --recurse-submodules …` or `git submodule update --init`. The
@@ -65,7 +66,7 @@ go build ./cmd/imgview        # local viewer
 go build ./cmd/tie-view        # tie-backed viewer
 go build ./cmd/tie-fm          # twin-panel file manager
 go build ./cmd/tie-audio  # tag-driven audio player
-go build -tags nompv ./cmd/imgview ./cmd/tie-view   # without libmpv (no video)
+go build -tags nompv ./cmd/imgview ./cmd/tie-view ./cmd/tie-fm   # without libmpv (no video)
 go test ./...
 ```
 
@@ -255,8 +256,8 @@ tiles on desktop, 150 on mobile.
 (JPEG only) → `ScaleImage(decoded, tileWidth*2)` (imaging **Linear** filter,
 not Lanczos) → JPEG quality 90 → write cache.
 
-**Remote (`tie-view`):** `filehostThumbnailer.GetThumbnail` →
-1. Check `tr.thumbHash` (pre-populated from query expand) → `GET filehost/<thumbHash>`
+**Remote (`tie-view`):** `tiethumb.Thumbnailer.GetThumbnail` (shared package, used by tie-fm's preview grid too) →
+1. Check the reader's cached `thumbHash` (pre-populated from query expand, or a `tc.Get` fallback) → `GET filehost/<thumbHash>`
 2. On miss: download full blob → decode → scale → encode → `PUT filehost/upload/<thumbHash>` → `Set(imageHash, "thumbnail", thumbHash)` → `Set(imageHash, "dimensions", "WxH")`
 
 Thumbnail width is always `TileWidth * 2` (2× for HiDPI). Height is
@@ -435,9 +436,63 @@ Tag-based navigation uses `readFromTie(viewer, tc, include, exclude, "tag", brow
 The query uses `Expand: true` so thumbnail hashes and image dimensions arrive
 inline with no extra round-trips.
 
+**tie: URL argument** (`cmd/tie-view/tieurl.go`): the first positional
+argument may be a tie: URL — `tie:<hash>` (also `tie://<hash>` or a bare
+64-hex hash) for a single subject, or `tie:/virtual/path`. It replaces the
+default startup view: an image opens full-size, a video plays, a directory
+(content hash or DirUID — indistinguishable by shape, so `tc.Get` +
+tie-type classify) is browsed via `fsTree.showListing`, an archive opens on
+its members; a `tie:/path` file leaf resolves through `tc.StatPath` to its
+hash. A hash with no triples (`ErrNotFound`, e.g. a never-imported blob) is
+still attempted as a plain image. tie-fm's "tie URL" file associations hand
+these URLs to tie-view (`Command = "tie-view %f"`, `TieURL = true`).
+
 ---
 
-## Tag sidebar (`cmd/tie-view/main.go` — `makeTagSidebar`)
+## tie-fm preview mode (`cmd/tie-fm/internal/ui/preview.go`)
+
+Each pane's toolbar has a picture-icon button (appended by
+`FileManager.InitPreview`, wired in main.go) that swaps the table for an
+embedded `gallery.Gallery` grid of the pane's listing: folders (badged,
+swipe-cyclable content previews; tapping navigates), images, and videos
+(frame thumbnails; tapping plays in-pane via libmpv — `fs.Streamer` URL for
+tie, materialized temp copy elsewhere). The toggle is runtime-only; both
+panes start in table mode. When the tapped image/video's file type has a
+configured association (`Config.AppFor`), the tap instead opens the entry
+externally through `FileManager.openEntry` — `tie:<hash>` for associations
+with `AppAssoc.TieURL`, a stream URL for `Stream`, a materialized copy
+otherwise — so e.g. tie-view becomes the image opener end to end.
+
+- The gallery assumes window ownership (`ChangeImage`/`showGallery`/
+  `ChangePage` call `window.SetContent`/`SetTitle`/`SetFullScreen`), so the
+  pane is wrapped in `paneWindow`/`paneCanvas` facades: content swaps are
+  redirected to the pane's center slot (`fm.content.Objects[0]`), canvas Size
+  reports the pane size, popups/overlays/focus pass through, and
+  title/fullscreen requests are dropped.
+- `entryReader` adapts `fs.Entry` to `gallery.CustomReader` (`Path()` = tie
+  content hash when known, so the local disk cache and tie relations are
+  shared with tie-view/imgview). `tieFileReader` adds `tiethumb.ThumbReader`
+  + `DimensionProvider` (server-cached thumbnails/dimensions; `Dimensions`
+  never fetches synchronously — `ReadCustom` type-asserts on the UI
+  goroutine). `dirReader` adds `Openable` (navigate) + `PreviewProvider`
+  (lazy `List` on a loader goroutine). Image/video detection is by extension
+  (`isImageName`): `gallery.IsImageFromPath` sniffs content, which tie/mtp
+  URIs cannot do.
+- The grid is re-fed (`ReadCustom` + `ChangeGallery`) on every `reload` and
+  re-sort; `ShowGrid` first drops any open image/video. Bindings that would
+  fight tie-fm (`Quit`, `ShowGallery`, `FullScreen`, `PathLevelUp`,
+  `SaveImage`, `RunCmdA`) are cleared from the shared `gallery.Config`;
+  window-level keys route to the active pane via `PreviewHandlesKey`
+  (Escape: image/video → grid → preview off). `Gallery.ShowGrid` and
+  `Gallery.VideoActive` were added to the gallery API for this embedding.
+- Both panes share one `tiethumb.Thumbnailer` (main.go); it resolves the tie
+  client and filehost per call, so tie config/collection switches (which
+  replace the registry's `TieFS`) need no rewiring. `TieFS.Client()` exposes
+  the underlying client.
+- tie-fm now imports `gallery` → `mpvplayer`: the default build needs libmpv;
+  `-tags nompv` builds with placeholder video tiles and no in-pane playback.
+
+---
 
 The tie-view sidebar is an `AppTabs` with **Tags** (below), **Files**
 (`tree.go`: the tie virtual filesystem tree — directories as branches, image
@@ -840,7 +895,10 @@ type tieReader struct {
 
 Implements: `CustomReader`, `VideoFile`, `VideoStreamer`, `DimensionProvider`.
 
-`Dimensions()` parses `dimensions` via `parseDimensions(s)` → `strings.SplitN(s, "x", 2)`.
+`Dimensions()` parses `dimensions` via `tiethumb.ParseDimensions(s)`. The
+reader also implements `tiethumb.ThumbReader` (`ThumbHash`/`SetThumbCache`)
+so the shared thumbnailer can read and write back its thumbnail/dimensions
+cache.
 
 ---
 

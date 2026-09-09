@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,57 @@ func TestFileAppsRoundTrip(t *testing.T) {
 	}
 	if !mkvOK || mkv.Command != "mpv %f" || !mkv.Stream {
 		t.Errorf("round-trip mkv = %+v, %v", mkv, mkvOK)
+	}
+}
+
+func TestBookmarkCollectionRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c.Bookmarks = []Bookmark{
+		{Label: "home", Path: "/home/user"},
+		{Label: "rock", Path: "tie:/music/rock", Collection: "photos"},
+	}
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	c2, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(c2.Bookmarks) != 2 {
+		t.Fatalf("reloaded bookmarks = %d, want 2", len(c2.Bookmarks))
+	}
+	if got := c2.Bookmarks[1].Collection; got != "photos" {
+		t.Errorf("tie bookmark Collection = %q, want %q", got, "photos")
+	}
+	if got := c2.Bookmarks[0].Collection; got != "" {
+		t.Errorf("local bookmark Collection = %q, want empty", got)
+	}
+
+	// omitempty keeps local bookmarks free of Collection noise in the file:
+	// exactly one "Collection = ..." line (the tie bookmark's; TieCollection
+	// is a different key) and no empty one.
+	data, err := os.ReadFile(c.Path())
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	collLines := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "Collection = ") {
+			collLines++
+			if line != "Collection = 'photos'" {
+				t.Errorf("unexpected Collection line %q in saved config:\n%s", line, data)
+			}
+		}
+	}
+	if collLines != 1 {
+		t.Errorf("saved config has %d bookmark Collection lines, want 1:\n%s", collLines, data)
 	}
 }
 
