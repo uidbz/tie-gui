@@ -66,6 +66,10 @@ type TileLayout struct {
 	placement  sync.WaitGroup
 	tileCache  *tileCache
 	showLabels bool
+	// placeMu serializes overlapping PlaceTiles calls (rapid page changes,
+	// re-sorts): the last placement must win deterministically — its tile
+	// install is queued last and its results land on its own tiles.
+	placeMu sync.Mutex
 	// Direct access to avoid back-reference through viewer
 	thumbnailer   Thumbnailer
 	refreshThumbs bool
@@ -120,10 +124,14 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan *ImageInfo, batchSize)
 
-	// Cache size based on platform: smaller on mobile to save memory
-	maxCacheSize := 500
+	// Cache size based on platform: smaller on mobile to save memory. Each
+	// holds ~3 pages at the default page sizes so page-back navigation is
+	// served from memory instead of reloading every thumbnail (one page
+	// exactly filled the old 500/150 budget, so any round-trip evicted the
+	// whole previous page).
+	maxCacheSize := 1500
 	if viewer.Platform().IsMobile() {
-		maxCacheSize = 150
+		maxCacheSize = 300
 	}
 
 	// Default: labels off to save vertical space (mobile optimization)
@@ -165,6 +173,12 @@ func (layout *TileLayout) Clear() {
 }
 
 func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
+	// Serialize overlapping placements (rapid page taps, re-sorts): the
+	// last placement's install is queued last, so it wins deterministically
+	// and its results land on its own tiles.
+	layout.placeMu.Lock()
+	defer layout.placeMu.Unlock()
+
 	// Decode the placeholder image once and share it across all placeholder
 	// tiles on this page (previously each tile decoded loading.png again
 	// because the shared reader was consumed after the first decode).
@@ -182,16 +196,18 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	// locally on this background goroutine; layout.tiles is assigned on the
 	// UI thread together with the grid objects.
 	newTiles := make([]*Tile, 0, end-layout.offset)
-
-	// Create all tiles on the background thread first
 	for i := layout.offset; i < end; i++ {
 		tile := layout.newImageTileFromImage(placeholder, imageFiles[i], func(t *Tile) {})
 		newTiles = append(newTiles, tile)
-		layout.currentlyLoading.Add(1)
-		layout.imagesToLoad <- imageFiles[i]
 	}
 
-	// Now add all tiles to the grid atomically on the UI thread
+	// Install the new page's tiles BEFORE enqueueing the load work. A
+	// worker result can only exist after an item has been enqueued, so the
+	// tileUpdater's flush fyne.Do is always queued after this install and
+	// its Info guard matches the new placeholders. The old order (enqueue
+	// first, install after) let fast cache-hit flushes run against the
+	// previous page's tile list and drop the new page's results as
+	// "stale", leaving permanent placeholder tiles.
 	fyne.Do(func() {
 		layout.tiles = newTiles
 		layout.grid.Objects = make([]fyne.CanvasObject, 0, len(newTiles))
@@ -199,6 +215,13 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 			layout.grid.Objects = append(layout.grid.Objects, tile)
 		}
 	})
+
+	// Enqueue the load work; each item gets a fresh retry budget.
+	for i := layout.offset; i < end; i++ {
+		imageFiles[i].loadAttempts = 0
+		layout.currentlyLoading.Add(1)
+		layout.imagesToLoad <- imageFiles[i]
+	}
 
 	// Add "Next Page" button at the end if there are more pages
 	// Calculate if we're on the last page
@@ -444,11 +467,18 @@ func (layout *TileLayout) tileToCache(path string, tile *Tile) {
 	layout.tileCache.put(path, tile)
 }
 
+// maxTileLoadAttempts bounds how many times a failing thumbnail load is
+// re-queued before the worker gives up and leaves the placeholder tile
+// (transient network/decoder failures should not strand a placeholder,
+// but a permanently failing entry must not spin forever).
+const maxTileLoadAttempts = 3
+
 // imageLoader is a worker goroutine that drains imagesToLoad, builds (or
 // fetches from cache) the real thumbnail tile, and forwards it to the
 // tileUpdater for batched UI write-back. currentlyLoading.Add is called by
-// PlaceTiles before enqueueing; each item is Done here exactly once (or by
-// the page-drain loops in ChangePage/ChangeGallery if discarded).
+// PlaceTiles (and by the retry re-enqueue below) before enqueueing; each
+// enqueued attempt is Done here exactly once (or by the page-drain loops in
+// ChangePage/ChangeGallery if discarded).
 func (layout *TileLayout) imageLoader() {
 	for tc := range layout.imagesToLoad {
 		var tile *Tile
@@ -456,14 +486,19 @@ func (layout *TileLayout) imageLoader() {
 			tile = t
 		} else {
 			thumb, err := layout.GetThumbnail(tc)
-			if err != nil {
-				// Skip thumbnails that fail to generate
-				layout.currentlyLoading.Done()
-				continue
+			if err == nil {
+				tile, err = layout.NewImageTile(thumb, tc, layout.tabFn)
 			}
-			tile, err = layout.NewImageTile(thumb, tc, layout.tabFn)
 			if err != nil {
-				// Skip tiles that fail to decode
+				// Thumbnail failed (network hiccup, truncated blob, ...):
+				// re-queue with a bounded budget so a transient failure
+				// does not leave a permanent placeholder. Once the budget
+				// is spent the placeholder stays (previous behavior).
+				if tc.loadAttempts < maxTileLoadAttempts {
+					tc.loadAttempts++
+					layout.currentlyLoading.Add(1)
+					layout.imagesToLoad <- tc
+				}
 				layout.currentlyLoading.Done()
 				continue
 			}
@@ -1045,11 +1080,11 @@ const (
 
 func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
 	decoded, _, err := Decode(reader)
-	if err != nil || decoded == nil {
-		// Decode failed; use loading placeholder
-		na := bytes.NewReader(loading)
-		decoded2, _, _ := Decode(na)
-		decoded = decoded2
+	if err != nil {
+		return nil, err
+	}
+	if decoded == nil {
+		return nil, errors.New("decode returned no image")
 	}
 	return layout.newImageTileFromImage(toRGBA(decoded), info, tabFn), nil
 }

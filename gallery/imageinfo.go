@@ -50,9 +50,13 @@ type ImageInfo struct {
 	Width  int
 	Height int
 
-	archiveName       string
-	archiveFile       fs.FS
-	order             int
+	archiveName string
+	archiveFile fs.FS
+	order       int
+	// loadAttempts counts thumbnail-load retries (bounded by
+	// maxTileLoadAttempts); PlaceTiles resets it when (re-)enqueueing the
+	// item so a revisited page gets a fresh budget.
+	loadAttempts      int
 	InputIsArchive    bool
 	InputIsDir        bool
 	InputIsReader     bool

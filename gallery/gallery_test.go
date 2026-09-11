@@ -1,12 +1,17 @@
 package gallery
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"image"
 	"image/color"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -355,4 +360,117 @@ func TestInfoOverlayExifSection(t *testing.T) {
 		}
 		return false
 	}, "EXIF model row")
+}
+
+// A page round-trip (away and back) must not leave placeholder tiles behind.
+// The placeholder is a single shared image instance; real tiles each hold
+// their own decoded thumbnail, so any duplicated Content.Image means a
+// placeholder survived (regression: the tileUpdater flush could run before
+// the new page's tiles were installed and drop the page's results as stale).
+func TestPageRoundTripLeavesNoPlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImages(t, dir, 80)
+	viewer, _ := setupTestGallery(t, dir, 40, fyne.NewSize(1024, 768))
+
+	viewer.ChangePage(1)
+	settleLayout(viewer)
+	viewer.ChangePage(0)
+	settleLayout(viewer)
+
+	seen := map[image.Image]bool{}
+	for i, tile := range viewer.layout.tiles {
+		img := tile.Content.Image
+		if seen[img] {
+			t.Fatalf("tile %d still shows the shared placeholder", i)
+		}
+		seen[img] = true
+	}
+}
+
+// flakyThumbnailer fails the first failures calls per path (or forever when
+// failures < 0), then serves jpeg.
+type flakyThumbnailer struct {
+	mu       sync.Mutex
+	calls    map[string]int
+	failures int
+	jpeg     []byte
+}
+
+func (f *flakyThumbnailer) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[info.Path]++
+	if f.failures < 0 || f.calls[info.Path] <= f.failures {
+		return nil, errors.New("transient thumbnail failure")
+	}
+	return bytes.NewReader(f.jpeg), nil
+}
+
+// setupRetryGallery builds a one-image gallery whose thumbnails come from ft.
+func setupRetryGallery(t *testing.T, ft *flakyThumbnailer) *Gallery {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestImages(t, dir, 1)
+	test.NewApp()
+	win := test.NewWindow(nil)
+
+	config := Config{}
+	config.General.TileWidth = 300
+	config.General.TileGap = 5
+	config.General.Workers = 2
+	config.General.ImagesPerPage = 10
+	config.General.ThumbnailDir = filepath.Join(t.TempDir(), "cache")
+
+	viewer := NewGallery(fyne.CurrentApp(), win, config, nil)
+	viewer.Thumbnailer = ft // must be set before Init copies it into the layout
+	viewer.Init()
+	viewer.ReadImageDir(dir, nil)
+	win.SetContent(viewer.Content)
+	win.Resize(fyne.NewSize(800, 600))
+	viewer.LoadGallery()
+	viewer.CreateView()
+	win.SetContent(viewer.Content)
+	settleLayout(viewer)
+	return viewer
+}
+
+// A thumbnail load that fails transiently is retried until it succeeds; the
+// tile must end up showing the real thumbnail, not the placeholder.
+func TestThumbnailRetrySucceeds(t *testing.T) {
+	ft := &flakyThumbnailer{
+		calls:    map[string]int{},
+		failures: 2,
+		jpeg:     testJPEGBytes(t, 120, 90, color.RGBA{10, 20, 30, 255}),
+	}
+	viewer := setupRetryGallery(t, ft)
+
+	info := viewer.imageFiles[0]
+	if got := ft.calls[info.Path]; got != 3 {
+		t.Fatalf("GetThumbnail called %d times, want 3 (1 initial + 2 retries)", got)
+	}
+	tile := viewer.layout.tiles[0]
+	if b := tile.Content.Image.Bounds(); b != image.Rect(0, 0, 120, 90) {
+		t.Fatalf("tile bounds %v, want the real 120x90 thumbnail", b)
+	}
+}
+
+// A permanently failing thumbnail load stops after maxTileLoadAttempts
+// retries and leaves the placeholder tile in place.
+func TestThumbnailRetryGivesUp(t *testing.T) {
+	ft := &flakyThumbnailer{calls: map[string]int{}, failures: -1}
+	viewer := setupRetryGallery(t, ft)
+
+	info := viewer.imageFiles[0]
+	want := 1 + maxTileLoadAttempts
+	if got := ft.calls[info.Path]; got != want {
+		t.Fatalf("GetThumbnail called %d times, want %d", got, want)
+	}
+	ph, _, err := Decode(bytes.NewReader(loading))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tile := viewer.layout.tiles[0]
+	if b := tile.Content.Image.Bounds(); b != ph.Bounds() {
+		t.Fatalf("tile bounds %v, want the placeholder %v", b, ph.Bounds())
+	}
 }

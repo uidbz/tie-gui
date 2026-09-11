@@ -118,8 +118,11 @@ The gallery implements several optimizations for fluid performance on mobile and
 lower-end devices:
 
 ### LRU Tile Cache (`gallery/tilecache.go`)
-In-memory thumbnail cache with size limits (500 desktop, 150 mobile). Uses
-insertion-order LRU eviction. Cache operations are mutex-protected.
+In-memory thumbnail cache with size limits (1500 desktop, 300 mobile — ~3
+pages each, so page-back navigation is served from memory; one page exactly
+filled the old 500/150 budget, so any round-trip evicted the whole previous
+page). Uses insertion-order LRU eviction. Cache operations are
+mutex-protected.
 
 ### Off-screen culling (Fyne clip)
 `TileLayout.Layout` positions **every** tile on the page each pass; it does not
@@ -229,16 +232,30 @@ giving the correct aspect ratio from the first layout pass.
 ### Placeholder tiles and lazy loading
 
 `PlaceTiles` decodes `loading.png` **once** and shares it across placeholder
-tiles for every slot on the current page, then sends each `ImageInfo` to the
-`imagesToLoad` channel. `Workers` (default 8 desktop, 4 mobile) goroutines
-drain the channel, call `GetThumbnail` → `NewImageTile`, and forward the real
-tile to a single `tileUpdater` goroutine via the `results` channel. The
-updater batches write-backs: one `fyne.Do` per flush (every ~120 ms trailing
-or 32 tiles) swaps tiles into `layout.tiles`/`grid.Objects` and calls
-`relayoutGrid()` — replacing the old every-20-images `grid.Refresh()` storm
-that re-uploaded all textures. Stale cross-page results are dropped via an
-`Info`-pointer guard. Decoded thumbnails are converted to `*image.RGBA` on
-the worker so texture upload skips the painter's CPU pixel conversion.
+tiles for every slot on the current page, **installs** the placeholder tiles
+into `layout.tiles`/`grid.Objects` via `fyne.Do`, and only **then** sends
+each `ImageInfo` to the `imagesToLoad` channel. The install-before-enqueue
+order is load-bearing: a worker result can only exist after an enqueue, so
+the tileUpdater's flush `fyne.Do` is always queued after the install and its
+staleness guard matches the new placeholders. The old order (enqueue first)
+let fast cache-hit flushes run against the previous page's tile list and
+drop the new page's results as "stale", leaving permanent placeholder tiles.
+Overlapping placements are serialized by `placeMu` so the last placement
+wins deterministically.
+
+`Workers` (default 8 desktop, 4 mobile) goroutines drain the channel, call
+`GetThumbnail` → `NewImageTile`, and forward the real tile to a single
+`tileUpdater` goroutine via the `results` channel. A failed load (network
+error, truncated blob, decode failure) is re-queued with a per-item budget
+(`maxTileLoadAttempts` = 3, tracked in `ImageInfo.loadAttempts`, reset by
+`PlaceTiles`) so transient failures don't strand placeholders; after the
+budget the placeholder stays. The updater batches write-backs: one `fyne.Do`
+per flush (every ~120 ms trailing or 32 tiles) swaps tiles into
+`layout.tiles`/`grid.Objects` and calls `relayoutGrid()` — replacing the old
+every-20-images `grid.Refresh()` storm that re-uploaded all textures. Stale
+cross-page results are dropped via an `Info`-pointer guard. Decoded
+thumbnails are converted to `*image.RGBA` on the worker so texture upload
+skips the painter's CPU pixel conversion.
 
 When the current page is not the last page, `PlaceTiles` adds a large
 "Load Next Page ▼" button as the final object in `grid.Objects`. This button
@@ -246,8 +263,8 @@ is 60px tall on desktop (80px on mobile) and styled with high importance for
 easy tapping.
 
 `tileCache *tileCache` holds an LRU in-memory tile cache keyed by path/hash.
-Cache hits skip thumbnail decoding entirely. Cache size is limited to 500
-tiles on desktop, 150 on mobile.
+Cache hits skip thumbnail decoding entirely. Cache size is limited to 1500
+tiles on desktop, 300 on mobile.
 
 ### Thumbnail pipeline
 
