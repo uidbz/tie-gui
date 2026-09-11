@@ -67,9 +67,10 @@ func captureLaunch(t *testing.T) func() (targets []string) {
 }
 
 // TestOpenEntryTieURL checks the tie: URL association dispatch: a tie entry
-// is handed to the app as tie:<hash> without a download; TieURL wins over
-// Stream; entries without a usable hash (or on another backend) fall back to
-// the materialized path.
+// is handed to the app as its tie:/path (so the receiver can open the
+// containing directory focused on the file) without a download; TieURL wins
+// over Stream; entries without a usable hash (or on another backend) fall
+// back to the materialized path.
 func TestOpenEntryTieURL(t *testing.T) {
 	test.NewApp()
 	win := test.NewWindow(nil)
@@ -84,11 +85,12 @@ func TestOpenEntryTieURL(t *testing.T) {
 
 	fm := NewFileManager(t.TempDir(), registry, ops, &cfg, win)
 
-	// Tie entry: handed over as tie:<hash>, no materialization.
+	// Tie entry: handed over as its tie:/path (readable, and the receiver
+	// can open the containing directory), no materialization.
 	fm.openEntry(fs.Entry{Name: "pic.jpg", Path: "tie:/x/pic.jpg", Hash: "abc123"})
 	got := targets()
-	if len(got) != 1 || got[0] != "tie:abc123" {
-		t.Fatalf("openEntry tie entry launched %v, want [tie:abc123]", got)
+	if len(got) != 1 || got[0] != "tie:/x/pic.jpg" {
+		t.Fatalf("openEntry tie entry launched %v, want [tie:/x/pic.jpg]", got)
 	}
 	if tie.materialized {
 		t.Fatal("tie: URL association must not materialize the entry")

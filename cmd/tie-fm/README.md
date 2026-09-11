@@ -124,10 +124,14 @@ materialized to `/tmp` as before. Streaming applies only to backends that can
 serve a URL (tie); local and MTP entries are always opened from a real path.
 
 There is also an **App understands tie: URLs** flag: when set, a tie entry is
-handed to the app as `tie:<content hash>` — the receiving app (e.g. tie-view)
-resolves metadata and content itself, so tie-fm neither downloads nor streams
-anything. For tie entries this takes precedence over streaming; local and MTP
-entries always fall back to a real path.
+handed to the app as its `tie:/dir/file` URL — the receiving app (e.g.
+tie-view) resolves metadata and content itself, so tie-fm neither downloads
+nor streams anything. Because the URL carries the path, tie-view opens the
+file's containing directory focused on the file whenever it can be resolved,
+so the whole directory stays navigable (arrow keys) instead of showing just
+that one image; it falls back to the single image when the directory cannot
+be resolved. For tie entries this takes precedence over streaming; local and
+MTP entries always fall back to a real path.
 
 In preview mode (the per-pane thumbnail grid), clicking an image or video tile
 opens it with the associated application when one is configured for its file

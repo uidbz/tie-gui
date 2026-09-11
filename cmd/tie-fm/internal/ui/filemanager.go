@@ -573,7 +573,12 @@ func (fm *FileManager) openEntry(e fs.Entry) {
 		assoc, hasAssoc = fm.cfg.AppFor(e.Name)
 	}
 	if hasAssoc && assoc.TieURL && fs.IsTie(e.Path) && e.Hash != "" {
-		if err := launch(fm.cfg, "tie:"+e.Hash, e.Name); err != nil {
+		// Hand over the entry's virtual path (e.Path is "tie:/dir/file"):
+		// human-readable, and the receiving app (e.g. tie-view) can resolve
+		// it to open the containing directory focused on the file. Entries
+		// from tag-query listings carry a synthetic root path, but it
+		// resolves to the same content either way.
+		if err := launch(fm.cfg, e.Path, e.Name); err != nil {
 			dialog.ShowError(err, fm.win)
 		}
 		return

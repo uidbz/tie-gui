@@ -439,13 +439,17 @@ inline with no extra round-trips.
 **tie: URL argument** (`cmd/tie-view/tieurl.go`): the first positional
 argument may be a tie: URL — `tie:<hash>` (also `tie://<hash>` or a bare
 64-hex hash) for a single subject, or `tie:/virtual/path`. It replaces the
-default startup view: an image opens full-size, a video plays, a directory
-(content hash or DirUID — indistinguishable by shape, so `tc.Get` +
-tie-type classify) is browsed via `fsTree.showListing`, an archive opens on
-its members; a `tie:/path` file leaf resolves through `tc.StatPath` to its
-hash. A hash with no triples (`ErrNotFound`, e.g. a never-imported blob) is
-still attempted as a plain image. tie-fm's "tie URL" file associations hand
-these URLs to tie-view (`Command = "tie-view %f"`, `TieURL = true`).
+default startup view: an image opens full-size (one-item gallery), a video
+plays, a directory (content hash or DirUID — indistinguishable by shape, so
+`tc.Get` + tie-type classify) is browsed via `fsTree.showListing`, an
+archive opens on its members. A `tie:/path` **file leaf resolves through
+`tc.StatPath` and opens its parent directory's gallery focused on the file**
+(`StatInfo.ParentUIDs[0]` → `ReadTieDir` → `showListing(dir, hash)`), so
+the directory stays arrow-key navigable; a leaf with no parent listing
+falls back to the single-image view. A hash with no triples (`ErrNotFound`,
+e.g. a never-imported blob) is still attempted as a plain image. tie-fm's
+"tie URL" file associations hand the path form to tie-view
+(`Command = "tie-view %f"`, `TieURL = true`).
 
 ---
 

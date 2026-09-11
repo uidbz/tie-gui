@@ -106,7 +106,28 @@ func loadTiePath(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClie
 		loadTieDirUID(window, viewer, tc, fsTree, rawURL, client.DirUID(st.Key))
 		return
 	}
+	if openFileInDir(viewer, tc, fsTree, st) {
+		return
+	}
 	loadTieHash(window, viewer, tc, fsTree, browseDir, rawURL, st.Key)
+}
+
+// openFileInDir opens a stat'ed file or archive leaf inside its containing
+// directory's gallery (focused on the file) so the user can navigate the
+// directory back and forth — the flow tie-fm expects when it hands over a
+// file's tie:/path. Returns false when the leaf is not listed under any
+// directory (e.g. a bare blob), leaving the caller to fall back to the
+// single-subject view.
+func openFileInDir(viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, st client.StatInfo) bool {
+	if len(st.ParentUIDs) == 0 {
+		return false
+	}
+	dir, err := client.ReadTieDir(tc, client.DirUID(st.ParentUIDs[0]))
+	if err != nil {
+		return false
+	}
+	fyne.Do(func() { fsTree.showListing(dir, st.Key) })
+	return true
 }
 
 // showTieSubject replaces the gallery with a single subject and opens it: an
