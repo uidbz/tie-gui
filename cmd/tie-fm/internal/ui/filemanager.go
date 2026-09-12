@@ -314,10 +314,26 @@ func (fm *FileManager) reload() {
 		dialog.ShowError(err, fm.win)
 		entries = nil
 	}
-	fm.entries = entries
+	showHidden := fm.cfg != nil && fm.cfg.ShowHidden
+	fm.entries = visibleEntries(entries, showHidden)
 	fm.applySort()
 	fm.table.Refresh()
 	fm.refreshPreview()
+}
+
+// visibleEntries drops dot-files (names with a leading ".") unless showHidden
+// is set. Applies uniformly to every provider (local, tie, mtp).
+func visibleEntries(entries []fs.Entry, showHidden bool) []fs.Entry {
+	if showHidden {
+		return entries
+	}
+	visible := make([]fs.Entry, 0, len(entries))
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name, ".") {
+			visible = append(visible, e)
+		}
+	}
+	return visible
 }
 
 func (fm *FileManager) goUp() {

@@ -276,6 +276,21 @@ func main() {
 
 	leftPane := container.NewBorder(nil, devicesBox, nil, nil, sidebar)
 
+	// "Show hidden files" is a checkable menu item: dot-files (a leading ".")
+	// are hidden by default; the toggle persists to the config and reloads
+	// both panels.
+	var hiddenItem *fyne.MenuItem
+	hiddenItem = fyne.NewMenuItem("Show hidden files", func() {
+		appCfg.ShowHidden = !appCfg.ShowHidden
+		hiddenItem.Checked = appCfg.ShowHidden
+		if err := appCfg.Save(); err != nil {
+			dialog.ShowError(err, mainWin)
+		}
+		left.Reload()
+		right.Reload()
+	})
+	hiddenItem.Checked = appCfg.ShowHidden
+
 	// A native main menu is intentionally avoided: on Linux Fyne draws it as an
 	// overlay that the desktop's Alt+RightMouse resize gesture pops open (the Alt
 	// release toggles the menu). The same actions are exposed via an in-app menu
@@ -321,6 +336,7 @@ func main() {
 			manageBookmarks(mainWin, &appCfg, sidebar)
 		}),
 		fyne.NewMenuItemSeparator(),
+		hiddenItem,
 		fyne.NewMenuItem("File associations…", func() {
 			ui.ShowFileAssociations(mainWin, &appCfg)
 		}),

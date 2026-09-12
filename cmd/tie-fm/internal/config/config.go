@@ -64,6 +64,9 @@ type Config struct {
 	// association used to open files of that type, overriding the xdg-open
 	// default.
 	FileApps map[string]AppAssoc
+	// ShowHidden makes dot-files (names with a leading ".") visible in the
+	// listing; hidden (false) by default, toggled from the app menu.
+	ShowHidden bool
 
 	path string // where this config was loaded from / will be saved back to
 }

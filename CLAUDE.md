@@ -10,7 +10,7 @@ Fyne fork — hence the monorepo.
 |------|------|
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tie-view/` | tie-network image viewer entry point |
-| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted) |
+| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider) |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
@@ -59,6 +59,13 @@ the source pixels unchanged in those modes, so per-frame resizes (pinch zoom
 in `ImageView.TouchMoved`) draw the cached texture instead of re-uploading
 the bitmap. Pair this with `*image.RGBA` bitmaps (`toRGBA`): any other pixel
 type costs a full-bitmap `draw.Draw` on the UI thread at upload.
+
+The `Makefile`'s install targets build with `-tags "wayland egl gles gles2"`
+when `$WAYLAND_DISPLAY` is set and `$DISPLAY` is not (a "pure Wayland"
+session without XWayland — Fyne targets X11 by default, so the Wayland
+driver and GLES/EGL need explicit tags there). Passing a bare
+`XDG_SESSION_TYPE=wayland` is not enough: XWayland may still serve X11, in
+which case the X11 driver stays correct.
 
 ---
 
