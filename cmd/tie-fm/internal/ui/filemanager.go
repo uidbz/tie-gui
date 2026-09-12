@@ -647,6 +647,9 @@ func (fm *FileManager) showMenu(row int, obj fyne.CanvasObject) {
 			fyne.NewMenuItem("Delete", func() { fm.confirmDelete(e) }),
 		)
 	}
+	if _, ok := fm.registry.For(e.Path).(fs.DirTyper); ok && e.IsDir && e.Hash != "" {
+		items = append(items, fyne.NewMenuItem("Directory type…", func() { fm.showDirTypeDialog(e) }))
+	}
 	if _, ok := fm.registry.For(e.Path).(fs.Stater); ok && e.Hash != "" {
 		items = append(items, fyne.NewMenuItem("Properties", func() { fm.showProperties(e) }))
 	}
@@ -680,6 +683,9 @@ func (fm *FileManager) showProperties(e fs.Entry) {
 		typ = info.Kind + " (" + info.TieType + ")"
 	}
 	add("Type", typ)
+	if len(info.DirTypes) > 0 {
+		add("Dir type", strings.Join(info.DirTypes, ", "))
+	}
 	add("Filename", info.Filename)
 	add("Media type", info.MediaType)
 	if info.Size > 0 || info.Kind != "directory" {
@@ -710,6 +716,86 @@ func (fm *FileManager) showProperties(e fs.Entry) {
 	}
 
 	dialog.ShowCustom("Properties: "+e.Name, "Close", widget.NewForm(items...), fm.win)
+}
+
+// promptCustomDirType asks for a custom dir-type label and runs the transfer
+// with it (the "Custom…" entry of a copy/move-into-tie-as submenu). Empty or
+// cancelled input aborts the transfer.
+func (fm *FileManager) promptCustomDirType(run func(dirType string)) {
+	entry := widget.NewEntry()
+	entry.PlaceHolder = "e.g. live-album"
+	dialog.ShowForm("Custom directory type", "OK", "Cancel",
+		[]*widget.FormItem{widget.NewFormItem("Type label", entry)},
+		func(ok bool) {
+			if !ok {
+				return
+			}
+			label := strings.TrimSpace(entry.Text)
+			if label == "" {
+				return
+			}
+			run(label)
+		}, fm.win)
+}
+
+// showDirTypeDialog opens a dialog to view and edit a tie directory's type
+// labels (audio-dir, image-dir, …). The current labels are fetched in the
+// background; Apply replaces them via the fs.DirTyper backend, so a directory
+// can be re-classified (e.g. made an audio-dir album) or cleared entirely.
+func (fm *FileManager) showDirTypeDialog(e fs.Entry) {
+	dt, ok := fm.registry.For(e.Path).(fs.DirTyper)
+	if !ok {
+		return
+	}
+	go func() {
+		current, err := dt.DirTypes(e)
+		if err != nil {
+			fyne.Do(func() { dialog.ShowError(err, fm.win) })
+			return
+		}
+		fyne.Do(func() {
+			// Options are the built-in vocabulary plus any custom labels
+			// already on the directory; new labels go through the Custom field.
+			seen := map[string]bool{}
+			var options []string
+			for _, o := range append(append([]string{}, fs.BuiltinDirTypes...), current...) {
+				if !seen[o] {
+					seen[o] = true
+					options = append(options, o)
+				}
+			}
+			sort.Strings(options)
+			checks := widget.NewCheckGroup(options, nil)
+			checks.SetSelected(current)
+			custom := widget.NewEntry()
+			custom.PlaceHolder = "new custom type, comma-separated…"
+			dialog.ShowForm("Directory type: "+e.Name, "Apply", "Cancel",
+				[]*widget.FormItem{
+					widget.NewFormItem("Types", checks),
+					widget.NewFormItem("Custom", custom),
+				}, func(ok bool) {
+					if !ok {
+						return
+					}
+					labels := append([]string{}, checks.Selected...)
+					for _, l := range strings.Split(custom.Text, ",") {
+						if l = strings.TrimSpace(l); l != "" {
+							labels = append(labels, l)
+						}
+					}
+					go func() {
+						err := dt.SetDirTypes(e, labels)
+						fyne.Do(func() {
+							if err != nil {
+								dialog.ShowError(err, fm.win)
+								return
+							}
+							fm.reload()
+						})
+					}()
+				}, fm.win)
+		})
+	}()
 }
 
 // humanizeBytes formats a byte count with a binary (KiB/MiB/…) unit, e.g.
@@ -759,6 +845,32 @@ func (fm *FileManager) transferItems(set []fs.Entry, target *FileManager, srcIsT
 			fm.ops.Move(e, dest, onDone(true))
 		}
 	}
+	// copyAs/moveAs transfer with a dir-type label stamped on the imported
+	// directory: the freshly created directory root when copying directories,
+	// the destination directory itself when copying loose files.
+	copyAs := func(dirType string) {
+		for _, e := range set {
+			fm.ops.CopyAs(e, dest, dirType, onDone(false))
+		}
+	}
+	moveAs := func(dirType string) {
+		for _, e := range set {
+			fm.ops.MoveAs(e, dest, dirType, onDone(true))
+		}
+	}
+	// dirTypeSubMenu lists the built-in dir-type vocabulary plus a custom-label
+	// prompt; picking one runs the transfer with that label.
+	dirTypeSubMenu := func(run func(dirType string)) *fyne.Menu {
+		items := make([]*fyne.MenuItem, 0, len(fs.BuiltinDirTypes)+1)
+		for _, dt := range fs.BuiltinDirTypes {
+			dt := dt
+			items = append(items, fyne.NewMenuItem(dt, func() { run(dt) }))
+		}
+		items = append(items, fyne.NewMenuItem("Custom…", func() {
+			fm.promptCustomDirType(run)
+		}))
+		return fyne.NewMenu("", items...)
+	}
 	// Name the destination folder so the target (the other panel's directory) is
 	// unambiguous — "here" wrongly reads as the panel that was clicked.
 	destName := dest.Name
@@ -767,9 +879,15 @@ func (fm *FileManager) transferItems(set []fs.Entry, target *FileManager, srcIsT
 	}
 	switch {
 	case destIsTie && !srcIsTie:
+		copyAsItem := fyne.NewMenuItem("Copy into tie as", nil)
+		copyAsItem.ChildMenu = dirTypeSubMenu(copyAs)
+		moveAsItem := fyne.NewMenuItem("Move into tie as", nil)
+		moveAsItem.ChildMenu = dirTypeSubMenu(moveAs)
 		return []*fyne.MenuItem{
 			fyne.NewMenuItem("Copy into tie", copyAll),
 			fyne.NewMenuItem("Move into tie", moveAll),
+			copyAsItem,
+			moveAsItem,
 		}
 	case !destIsTie && srcIsTie:
 		return []*fyne.MenuItem{

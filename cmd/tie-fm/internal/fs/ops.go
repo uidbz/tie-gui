@@ -94,9 +94,28 @@ func (o *Operations) Copy(source, dest Entry, done func(*Op)) *Op {
 	return op
 }
 
+// CopyAs enqueues a copy like Copy, additionally stamping the imported
+// directory with the given dir-type label (e.g. "audio-dir") once the transfer
+// into a typing backend (tie) succeeds. See Op.DirType for what gets labeled.
+func (o *Operations) CopyAs(source, dest Entry, dirType string, done func(*Op)) *Op {
+	op := o.newOp(source, dest, OpCopy, done)
+	op.DirType = dirType
+	o.queued <- op
+	return op
+}
+
 // Move enqueues a move of source into dest. See Copy for the done callback.
 func (o *Operations) Move(source, dest Entry, done func(*Op)) *Op {
 	op := o.newOp(source, dest, OpMove, done)
+	o.queued <- op
+	return op
+}
+
+// MoveAs enqueues a move like Move, additionally stamping the imported
+// directory with the given dir-type label, like CopyAs.
+func (o *Operations) MoveAs(source, dest Entry, dirType string, done func(*Op)) *Op {
+	op := o.newOp(source, dest, OpMove, done)
+	op.DirType = dirType
 	o.queued <- op
 	return op
 }
@@ -148,6 +167,11 @@ type Op struct {
 	StartTime      time.Time
 	Status         Status
 	Err            error
+	// DirType, when non-empty, is a dir-type label (e.g. "audio-dir") stamped
+	// on the imported directory after a successful import into a typing
+	// backend (tie): the freshly created directory root for a directory
+	// transfer, the destination directory itself for a file transfer.
+	DirType string
 
 	OnComplete func(*Op) // optional; called after the op finishes (ok or error)
 
@@ -280,8 +304,27 @@ func (op *Op) doImport() error {
 	if err := op.importFile(op.B.Path, op.A.Path, op.A.Name); err != nil {
 		return err
 	}
+	// A file transfer labels the destination directory itself.
+	if err := op.applyDirType(op.B.Path); err != nil {
+		return err
+	}
 	op.Status = StatusCompleted
 	return nil
+}
+
+// applyDirType stamps the op's DirType label onto the directory at dirURI.
+// It is a no-op when no label was requested; it errors when one was requested
+// but the destination backend cannot label directories — the user asked for
+// the label, so silently dropping it would be wrong.
+func (op *Op) applyDirType(dirURI string) error {
+	if op.DirType == "" {
+		return nil
+	}
+	setter, ok := op.importer.(DirTypeSetter)
+	if !ok {
+		return errors.New("destination does not support directory types")
+	}
+	return setter.AddDirType(dirURI, op.DirType)
 }
 
 // importFile imports a single file through the destination backend, streaming
@@ -339,6 +382,12 @@ func (op *Op) importDir() error {
 		return op.importFile(destDir, srcPath, filepath.Base(srcPath))
 	}
 	if err := filepath.WalkDir(op.A.Path, walk); err != nil {
+		return err
+	}
+	// A directory transfer labels the freshly created root directory. The
+	// backend creates it on demand, so an empty source tree still gets its
+	// (otherwise uncreated) directory labeled.
+	if err := op.applyDirType(base); err != nil {
 		return err
 	}
 	op.Status = StatusCompleted

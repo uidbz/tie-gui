@@ -526,6 +526,34 @@ otherwise — so e.g. tie-view becomes the image opener end to end.
 
 ---
 
+## tie-fm dir-types (`cmd/tie-fm/internal/fs/`, `ui/filemanager.go`)
+
+tie dir-types (`audio-dir`, `image-dir`, `video-dir`, `document-dir`, or custom
+free-form labels — extra `(uid,"tie-type",<label>)` triples on a directory,
+managed client-side by `GetDirType`/`SetDirType(s)`) classify a virtual
+directory as a media collection (tie-view galleries, tie-audio albums). tie-fm
+stamps and edits them:
+
+- **Copy/Move into tie as ▸** (submenus next to the plain "Copy/Move into
+  tie") transfers with a chosen label — the four built-ins
+  (`fs.BuiltinDirTypes`) plus a "Custom…" prompt. `Operations.CopyAs`/`MoveAs`
+  set `Op.DirType`; after a successful import the engine type-asserts the
+  destination backend to `fs.DirTypeSetter` and stamps the freshly created
+  directory root (directory transfers) or the destination directory itself
+  (file transfers). `TieFS.AddDirType` creates the path when absent, so an
+  empty source tree still gets its label; stamping is additive (existing
+  labels preserved), and a backend without `DirTypeSetter` fails the op rather
+  than silently dropping the label.
+- **Directory type…** (tie directory context menu) shows the current labels
+  and edits them as a checkbox set (built-ins + current customs) plus a
+  comma-separated custom field, applied via `fs.DirTyper.SetDirTypes`
+  (diff-replacing; the structural `directory` marker is preserved
+  client-side). The Properties dialog shows a "Dir type" row
+  (`StatInfo.DirTypes`, filled from `client.GetDirType` — `Stat`'s own
+  TieType collapses multi-valued tie-types and never surfaces labels).
+
+---
+
 The tie-view sidebar is an `AppTabs` with **Tags** (below), **Files**
 (`tree.go`: the tie virtual filesystem tree — directories as branches, image
 files as leaves; selecting a directory shows its images, hidden dirs toggled

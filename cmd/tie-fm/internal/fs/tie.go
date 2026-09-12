@@ -180,6 +180,44 @@ func (t *TieFS) Mkdir(parent, name string) error {
 	return err
 }
 
+// DirTypes returns the directory's classification labels — its tie-type values
+// minus the structural "directory" marker (e.g. ["audio-dir"]). The entry's
+// Hash is the directory's DirUID. Implements DirTyper.
+func (t *TieFS) DirTypes(e Entry) ([]string, error) {
+	if e.Hash == "" {
+		return nil, errors.New("tie: cannot read dir types of an entry without a key")
+	}
+	return client.GetDirType(t.tc, client.DirUID(e.Hash))
+}
+
+// SetDirTypes replaces the directory's classification labels; an empty slice
+// clears them. The structural "directory" marker is preserved by the client.
+// Implements DirTyper.
+func (t *TieFS) SetDirTypes(e Entry, labels []string) error {
+	if e.Hash == "" {
+		return errors.New("tie: cannot set dir types of an entry without a key")
+	}
+	return client.SetDirTypes(t.tc, client.DirUID(e.Hash), labels)
+}
+
+// AddDirType adds one classification label to the directory at dirURI,
+// preserving existing labels. The directory (and any missing ancestors) is
+// created when absent — an empty source tree imported by the copy engine has
+// created no directory yet. Implements DirTypeSetter.
+func (t *TieFS) AddDirType(dirURI, label string) error {
+	dirPath := tiePath(dirURI)
+	uid, err := t.tc.DirUIDFromPath(dirPath)
+	if err != nil {
+		return err
+	}
+	if uid == "" {
+		if uid, err = t.tc.MkTieDirAll(client.FileURIScheme + dirPath); err != nil {
+			return err
+		}
+	}
+	return t.tc.SetDirType(uid, label)
+}
+
 // --- TagStore ---
 
 func (t *TieFS) GetTags(e Entry) ([]string, error) {
@@ -256,9 +294,16 @@ func (t *TieFS) Stat(e Entry) (StatInfo, error) {
 	if err != nil {
 		return StatInfo{}, err
 	}
+	var dirTypes []string
+	if info.Kind == client.StatDirectory {
+		// Stat classifies a directory as plain "directory"; its classification
+		// labels (audio-dir, image-dir, …) are separate tie-type values.
+		dirTypes, _ = client.GetDirType(t.tc, client.DirUID(e.Hash))
+	}
 	return StatInfo{
 		Kind:         string(info.Kind),
 		TieType:      info.TieType.String(),
+		DirTypes:     dirTypes,
 		Filename:     info.Filename,
 		Name:         info.Name,
 		MediaType:    info.MediaType,

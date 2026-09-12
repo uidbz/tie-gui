@@ -53,8 +53,9 @@ type TagStore interface {
 // UI's Properties dialog. It mirrors the fields the tie backend can supply
 // without coupling the fs abstraction to the tie client's own types.
 type StatInfo struct {
-	Kind         string // "file" | "directory" | "archive"
-	TieType      string // full classification, e.g. "audio-file"
+	Kind         string   // "file" | "directory" | "archive"
+	TieType      string   // full classification, e.g. "audio-file"
+	DirTypes     []string // directory type labels, e.g. ["audio-dir"]; dirs only
 	Filename     string
 	Name         string
 	MediaType    string
@@ -82,6 +83,30 @@ type Stater interface {
 // backend; srcPath is a real on-disk path; name is the filename to store.
 type Importer interface {
 	Import(destDir, srcPath, name string) error
+}
+
+// BuiltinDirTypes are the tie dir-type labels offered by the "into tie as"
+// transfer menus — the same vocabulary the tie CLI's import subcommands use.
+// Custom labels can be applied via the Directory type dialog.
+var BuiltinDirTypes = []string{"audio-dir", "image-dir", "video-dir", "document-dir"}
+
+// DirTypeSetter is implemented by backends whose directories carry free-form
+// type labels (tie dir-types). The copy engine stamps an import's chosen
+// dir-type through it after a successful transfer. Adding is additive:
+// existing labels on the directory are preserved.
+type DirTypeSetter interface {
+	AddDirType(dirURI, label string) error
+}
+
+// DirTyper is implemented by backends that can read and replace a directory's
+// type labels (tie). The UI type-asserts a FileSystem to DirTyper to offer
+// viewing and editing a directory's labels. The entry's Hash is the backend's
+// directory key (for tie, the DirUID).
+type DirTyper interface {
+	// DirTypes returns the directory's current type labels (empty when untyped).
+	DirTypes(e Entry) ([]string, error)
+	// SetDirTypes replaces the directory's labels; an empty slice clears them.
+	SetDirTypes(e Entry, labels []string) error
 }
 
 // ProgressImporter is an Importer that reports upload progress: progress
