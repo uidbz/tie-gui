@@ -49,7 +49,11 @@ The Fyne fork submodule must be checked out before building:
 `git clone --recurse-submodules …` or `git submodule update --init`. The
 fork adds: `canvas.GLVideo` (libmpv video embedding), Android system-bar
 toggle via `SetFullScreen`, platform-dependent texture-cache lifetimes
-(see below), and a `canvas.Image.Resize` that only repaints (no texture
+(see below), a Wayland resize repaint fix (the first buffer swapped after
+a compositor-imposed resize — e.g. a sway tile — is still allocated at the
+old size by Mesa, so the draw loop schedules one extra repaint via
+`repaintAfterResize`; without it a startup single image stays at the
+requested geometry until the next external repaint, e.g. pointer focus), and a `canvas.Image.Resize` that only repaints (no texture
 invalidation) for `ImageScaleFastest`/`ImageScalePixels` — the texture holds
 the source pixels unchanged in those modes, so per-frame resizes (pinch zoom
 in `ImageView.TouchMoved`) draw the cached texture instead of re-uploading
