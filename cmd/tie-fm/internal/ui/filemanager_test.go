@@ -3,7 +3,10 @@ package ui
 import (
 	"testing"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/data/binding"
+
+	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 )
@@ -79,5 +82,97 @@ func TestTransferItemsWithinLocalHasNoDirTypes(t *testing.T) {
 		if item.ChildMenu != nil {
 			t.Errorf("%q unexpectedly has a submenu", item.Label)
 		}
+	}
+}
+
+// TestContextMenuAlbumImportItem checks "Import as albums…" is offered on
+// local directories (where a bulk album scan can run) and nowhere else: not on
+// files, and not on tie entries.
+func TestContextMenuAlbumImportItem(t *testing.T) {
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := &FileManager{ops: fs.NewOperations(reg), registry: reg}
+
+	hasItem := func(items []*fyne.MenuItem, label string) bool {
+		for _, item := range items {
+			if item.Label == label {
+				return true
+			}
+		}
+		return false
+	}
+
+	cases := []struct {
+		name  string
+		entry fs.Entry
+		want  bool
+	}{
+		{"local dir", fs.Entry{Name: "music", Path: "/tmp/music", IsDir: true}, true},
+		{"local file", fs.Entry{Name: "song.flac", Path: "/tmp/song.flac"}, false},
+		{"tie dir", fs.Entry{Name: "music", Path: "tie:/music", IsDir: true, Hash: "uid"}, false},
+	}
+	for _, c := range cases {
+		items := fm.contextMenuItems(c.entry, 0)
+		if got := hasItem(items, "Import as albums…"); got != c.want {
+			t.Errorf("%s: Import as albums… present = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSelectedGroupsAlbumImport checks the plan-dialog selection seam:
+// checked groups import, unchecked ones don't, dest-less groups are skipped.
+func TestSelectedGroupsAlbumImport(t *testing.T) {
+	plan := []client.AlbumGroup{
+		{SourceDir: "/a", Dest: "/music/a"},
+		{SourceDir: "/b", Dest: "/music/b"},
+		{SourceDir: "/c", Dest: ""}, // cannot import; row is disabled
+	}
+	selected := []bool{true, false, false}
+
+	got := selectedGroups(plan, selected)
+	if len(got) != 1 || got[0].SourceDir != "/a" {
+		t.Errorf("selectedGroups = %v, want [/a]", got)
+	}
+
+	selected = []bool{true, true, false}
+	got = selectedGroups(plan, selected)
+	if len(got) != 2 {
+		t.Errorf("selectedGroups = %v, want 2 groups", got)
+	}
+}
+
+// TestDropMenuOffersAlbumImport checks the drag-drop menu carries the bulk
+// album import when a single local directory is dragged (like the context
+// menu's item), in addition to the plain transfer items.
+func TestDropMenuOffersAlbumImport(t *testing.T) {
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	src := &FileManager{ops: fs.NewOperations(reg), registry: reg}
+	dst := &FileManager{currentPath: binding.NewString()}
+	dst.currentPath.Set("tie:/music")
+
+	hasItem := func(items []*fyne.MenuItem, label string) bool {
+		for _, item := range items {
+			if item.Label == label {
+				return true
+			}
+		}
+		return false
+	}
+
+	set := []fs.Entry{{Name: "album", Path: "/tmp/album", IsDir: true}}
+	items := src.dropMenuItems(set, dst)
+	if !hasItem(items, "Import as albums…") {
+		t.Errorf("drop menu = %v, want Import as albums…", items)
+	}
+	// A multi-entry drag or a non-directory keeps the menu transfer-only.
+	set = []fs.Entry{{Name: "song.flac", Path: "/tmp/song.flac"}}
+	if hasItem(src.dropMenuItems(set, dst), "Import as albums…") {
+		t.Errorf("file drag unexpectedly offers Import as albums…")
+	}
+	set = []fs.Entry{
+		{Name: "a", Path: "/tmp/a", IsDir: true},
+		{Name: "b", Path: "/tmp/b", IsDir: true},
+	}
+	if hasItem(src.dropMenuItems(set, dst), "Import as albums…") {
+		t.Errorf("multi-dir drag unexpectedly offers Import as albums…")
 	}
 }

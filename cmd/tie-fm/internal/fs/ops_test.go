@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/uidbz/tie/client"
 )
 
 func waitDone(t *testing.T, op *Op) {
@@ -275,5 +277,219 @@ func TestImportDirTypeUnsupportedBackendFails(t *testing.T) {
 	}
 	if op.Err == nil || !strings.Contains(op.Err.Error(), "directory types") {
 		t.Fatalf("Err = %v, want a directory-types error", op.Err)
+	}
+}
+
+func TestImportAlbumWholeTreeExactDest(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "1959. Kind of Blue")
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"a.flac": "a", filepath.Join("sub", "b.flac"): "b"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := &fakeImportFS{}
+	ops := NewOperations(NewRegistry(nil, fake))
+	// A whole-tree group (Files == nil) mirrors its SourceDir at Dest
+	// verbatim: the source directory's own name must NOT be appended.
+	g := client.AlbumGroup{SourceDir: srcDir, Dest: "/music/Miles Davis/1959. Kind of Blue"}
+	op := ops.ImportAlbum(g, "audio-dir", nil)
+	waitDone(t, op)
+
+	wantImports := map[string]bool{
+		"tie:/music/Miles Davis/1959. Kind of Blue|a.flac":     true,
+		"tie:/music/Miles Davis/1959. Kind of Blue/sub|b.flac": true,
+	}
+	if len(fake.imports) != len(wantImports) {
+		t.Fatalf("imports = %v", fake.imports)
+	}
+	for _, imp := range fake.imports {
+		if !wantImports[imp] {
+			t.Fatalf("unexpected import %q", imp)
+		}
+	}
+	got := fake.dirTypes["tie:/music/Miles Davis/1959. Kind of Blue"]
+	if len(got) != 1 || got[0] != "audio-dir" {
+		t.Fatalf("dirTypes[dest] = %v, want [audio-dir]", got)
+	}
+}
+
+func TestImportAlbumFileList(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "rip")
+	if err := os.MkdirAll(filepath.Join(srcDir, "CD2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"a.flac":                       "aa",
+		filepath.Join("CD2", "b.flac"): "bbb",
+		"notes.txt":                    "not in the group",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := &fakeImportFS{}
+	ops := NewOperations(NewRegistry(nil, fake))
+	// A file-list group imports only its listed files, into
+	// Dest/<rel-below-SourceDir>; unlisted tree members stay local.
+	g := client.AlbumGroup{
+		SourceDir: srcDir,
+		Files: []string{
+			filepath.Join(srcDir, "a.flac"),
+			filepath.Join(srcDir, "CD2", "b.flac"),
+		},
+		Dest: "/music/Artist/Album",
+		Size: 5, // 2 + 3 bytes, as probed by the planner
+	}
+	op := ops.ImportAlbum(g, "audio-dir", nil)
+	waitDone(t, op)
+
+	wantImports := map[string]bool{
+		"tie:/music/Artist/Album|a.flac":     true,
+		"tie:/music/Artist/Album/CD2|b.flac": true,
+	}
+	if len(fake.imports) != len(wantImports) {
+		t.Fatalf("imports = %v", fake.imports)
+	}
+	for _, imp := range fake.imports {
+		if !wantImports[imp] {
+			t.Fatalf("unexpected import %q", imp)
+		}
+	}
+	got := fake.dirTypes["tie:/music/Artist/Album"]
+	if len(got) != 1 || got[0] != "audio-dir" {
+		t.Fatalf("dirTypes[dest] = %v, want [audio-dir]", got)
+	}
+	if pct := op.PctComplete(); pct != 1 {
+		t.Fatalf("PctComplete = %v, want 1", pct)
+	}
+}
+
+func TestImportAlbumArchiveSingleFile(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "live")
+	if err := os.Mkdir(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(srcDir, "bootleg.zip")
+	if err := os.WriteFile(zipPath, []byte("pk..."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeImportFS{}
+	ops := NewOperations(NewRegistry(nil, fake))
+	// An archive group is a single-file import into the destination directory;
+	// the blob carries the audio-archive classification itself, so no dir-type
+	// is stamped even though one was requested for the album groups.
+	g := client.AlbumGroup{
+		SourceDir: srcDir,
+		Files:     []string{zipPath},
+		IsArchive: true,
+		Dest:      "/music/bootlegs",
+		Size:      5,
+	}
+	op := ops.ImportAlbum(g, "audio-dir", nil)
+	waitDone(t, op)
+
+	if len(fake.imports) != 1 || fake.imports[0] != "tie:/music/bootlegs|bootleg.zip" {
+		t.Fatalf("imports = %v, want [tie:/music/bootlegs|bootleg.zip]", fake.imports)
+	}
+	if len(fake.dirTypes) != 0 {
+		t.Fatalf("archive groups must not stamp dir types, got %v", fake.dirTypes)
+	}
+}
+
+func TestImportAlbumMultipleGroupsSequential(t *testing.T) {
+	dir := t.TempDir()
+	var groups []client.AlbumGroup
+	for _, name := range []string{"album1", "album2", "album3"} {
+		srcDir := filepath.Join(dir, name)
+		if err := os.Mkdir(srcDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(srcDir, name+".flac"), []byte(name), 0644); err != nil {
+			t.Fatal(err)
+		}
+		groups = append(groups, client.AlbumGroup{SourceDir: srcDir, Dest: "/music/" + name})
+	}
+
+	fake := &fakeImportFS{}
+	ops := NewOperations(NewRegistry(nil, fake))
+	var pending []*Op
+	for _, g := range groups {
+		pending = append(pending, ops.ImportAlbum(g, "audio-dir", nil))
+	}
+	for _, op := range pending {
+		waitDone(t, op)
+	}
+	if len(fake.imports) != 3 {
+		t.Fatalf("imports = %v, want 3 albums imported", fake.imports)
+	}
+	if len(fake.dirTypes) != 3 {
+		t.Fatalf("dirTypes = %v, want 3 stamps", fake.dirTypes)
+	}
+}
+
+func TestImportAlbumMixedGroupTypes(t *testing.T) {
+	dir := t.TempDir()
+	treeDir := filepath.Join(dir, "tree")
+	listDir := filepath.Join(dir, "list")
+	zipDir := filepath.Join(dir, "zips")
+	for _, d := range []string{treeDir, listDir, zipDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(treeDir, "a.flac"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(listDir, "b.flac"), []byte("bb"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(zipDir, "live.zip")
+	if err := os.WriteFile(zipPath, []byte("pk"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeImportFS{}
+	ops := NewOperations(NewRegistry(nil, fake))
+	groups := []client.AlbumGroup{
+		{SourceDir: treeDir, Dest: "/music/tree"},                                            // whole-tree
+		{SourceDir: listDir, Files: []string{filepath.Join(listDir, "b.flac")}, Dest: "/music/list", Size: 2}, // file-list
+		{SourceDir: zipDir, Files: []string{zipPath}, IsArchive: true, Dest: "/music", Size: 2},                // archive
+	}
+	var pending []*Op
+	for _, g := range groups {
+		pending = append(pending, ops.ImportAlbum(g, "audio-dir", nil))
+	}
+	for _, op := range pending {
+		waitDone(t, op)
+	}
+
+	wantImports := map[string]bool{
+		"tie:/music/tree|a.flac":   true,
+		"tie:/music/list|b.flac":   true,
+		"tie:/music|live.zip":      true,
+	}
+	if len(fake.imports) != len(wantImports) {
+		t.Fatalf("imports = %v", fake.imports)
+	}
+	for _, imp := range fake.imports {
+		if !wantImports[imp] {
+			t.Fatalf("unexpected import %q", imp)
+		}
+	}
+	if len(fake.dirTypes["tie:/music/tree"]) != 1 || len(fake.dirTypes["tie:/music/list"]) != 1 {
+		t.Fatalf("dirTypes = %v, want tree+list stamped", fake.dirTypes)
+	}
+	if len(fake.dirTypes["tie:/music"]) != 0 {
+		t.Fatalf("archive dest must stay unstamped, got %v", fake.dirTypes["tie:/music"])
 	}
 }

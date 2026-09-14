@@ -632,6 +632,13 @@ func (fm *FileManager) showMenu(row int, obj fyne.CanvasObject) {
 		return
 	}
 	e := fm.pageEntries[row]
+	canvas := fyne.CurrentApp().Driver().CanvasForObject(obj)
+	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(obj)
+	widget.ShowPopUpMenuAtPosition(fyne.NewMenu(e.Name, fm.contextMenuItems(e, row)...), canvas, pos)
+}
+
+// contextMenuItems builds the right-click menu entries for one row.
+func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("Open", func() { fm.activate(row) }),
 	}
@@ -641,6 +648,13 @@ func (fm *FileManager) showMenu(row int, obj fyne.CanvasObject) {
 	// Transfers target the other panel's current directory.
 	if fm.other != nil {
 		items = append(items, fm.transferItems([]fs.Entry{e}, fm.other, fs.IsTie(e.Path))...)
+	}
+	// Bulk album import scans a local directory and imports the discovered
+	// albums into tie at their rendered destinations.
+	if e.IsDir && fs.IsLocal(e.Path) {
+		if _, ok := fm.registry.For("tie:/").(fs.Importer); ok {
+			items = append(items, fyne.NewMenuItem("Import as albums…", func() { fm.importAsAlbums(e) }))
+		}
 	}
 	if !fs.IsTie(e.Path) {
 		items = append(items,
@@ -653,10 +667,7 @@ func (fm *FileManager) showMenu(row int, obj fyne.CanvasObject) {
 	if _, ok := fm.registry.For(e.Path).(fs.Stater); ok && e.Hash != "" {
 		items = append(items, fyne.NewMenuItem("Properties", func() { fm.showProperties(e) }))
 	}
-
-	canvas := fyne.CurrentApp().Driver().CanvasForObject(obj)
-	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(obj)
-	widget.ShowPopUpMenuAtPosition(fyne.NewMenu(e.Name, items...), canvas, pos)
+	return items
 }
 
 // showProperties opens a read-only dialog summarizing an entry's tie metadata,
@@ -975,12 +986,24 @@ func (fm *FileManager) onDrop(row int, absPos fyne.Position) {
 	if !inside {
 		return // dropped outside the sibling panel
 	}
-	items := fm.transferItems(set, target, fs.IsTie(set[0].Path))
+	items := fm.dropMenuItems(set, target)
 	if len(items) == 0 {
 		return
 	}
 	canvas := drv.CanvasForObject(target.content)
 	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("Transfer", items...), canvas, absPos)
+}
+
+// dropMenuItems builds the drag-drop menu: the plain copy/move transfer items,
+// plus "Import as albums…" when the drag carries exactly one local directory
+// (the bulk-scan flow, like the context menu's item).
+func (fm *FileManager) dropMenuItems(set []fs.Entry, target *FileManager) []*fyne.MenuItem {
+	items := fm.transferItems(set, target, fs.IsTie(set[0].Path))
+	if len(set) == 1 && set[0].IsDir && fs.IsLocal(set[0].Path) {
+		e := set[0]
+		items = append(items, fyne.NewMenuItem("Import as albums…", func() { fm.importAsAlbums(e) }))
+	}
+	return items
 }
 
 // newDir prompts for a name and creates a directory in the current location,

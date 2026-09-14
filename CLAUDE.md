@@ -551,6 +551,25 @@ stamps and edits them:
   client-side). The Properties dialog shows a "Dir type" row
   (`StatInfo.DirTypes`, filled from `client.GetDirType` — `Stat`'s own
   TieType collapses multi-valued tie-types and never surfaces labels).
+- **Import as albums…** (local directory context menu,
+  `ui/albumimport.go`) bulk-imports a local library as albums: a form picks
+  the dir-type (built-ins + custom, default `audio-dir` — it selects the
+  config's `ImportDest` template and the label stamped on each album root),
+  then `client.PlanAlbumImport` runs off the UI goroutine with a
+  ScanProgress dialog (network-mounted libraries take minutes to probe), and
+  a plan dialog lists one checkbox row per album (title, rendered
+  destination, tracks, size, warnings; dest-less groups are fixed
+  unchecked). Confirming enqueues one op per selected group via
+  `Operations.ImportAlbum` (from a goroutine — the queue is small and
+  feeding it blocks), each album shown as its own progress row; failures are
+  per-group (one bad album doesn't abort the batch) and summarized when the
+  batch finishes. The ops engine's album path (`fs/ops.go`) imports at
+  `g.Dest` **verbatim** (`Op.ExactDest` — not the usual `B.Path/<name>`):
+  whole-tree groups mirror their `SourceDir` there, file-list groups
+  (`Op.Files`) import only the listed files into `Dest/<rel-below-SourceDir>`
+  via the `Importer` interface with `TotalSize` preset from the plan, and
+  archive groups are plain single-file imports with no dir-type stamp (the
+  blob carries the audio-archive classification itself).
 
 ---
 

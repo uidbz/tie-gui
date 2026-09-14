@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/uidbz/tie/client"
 )
 
 type OpType int
@@ -120,6 +122,33 @@ func (o *Operations) MoveAs(source, dest Entry, dirType string, done func(*Op)) 
 	return op
 }
 
+// ImportAlbum enqueues the import of one planned album group (from
+// client.PlanAlbumImport). Unlike Copy/Move the destination is exact: the
+// group lands at g.Dest verbatim, not at B.Path/<source name>. A whole-tree
+// group mirrors its SourceDir there (sidecars included), a file-list group
+// imports only its listed files into Dest/<rel-below-SourceDir>, and an
+// archive group is a single-file import. dirType is stamped on the imported
+// album root like CopyAs — except for archive groups, where the blob itself
+// carries the audio-archive classification.
+func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, done func(*Op)) *Op {
+	src := Entry{Path: g.SourceDir, Name: filepath.Base(g.SourceDir), IsDir: true}
+	dest := Entry{Path: tieURI(g.Dest), IsDir: true}
+	op := o.newOp(src, dest, OpCopy, done)
+	op.DirType = dirType
+	switch {
+	case g.IsArchive:
+		op.A = Entry{Path: g.Files[0], Name: filepath.Base(g.Files[0]), Size: g.Size}
+		op.DirType = ""
+	case !g.WholeTree():
+		op.Files = g.Files
+		op.TotalSize = g.Size // probed by the planner; drives the progress bar
+	default:
+		op.ExactDest = true
+	}
+	o.queued <- op
+	return op
+}
+
 // newOp builds an operation with its cancellation context and pause condition
 // initialized, so Pause/Resume/Cancel work even while the op is still queued.
 func (o *Operations) newOp(source, dest Entry, t OpType, done func(*Op)) *Op {
@@ -172,6 +201,13 @@ type Op struct {
 	// backend (tie): the freshly created directory root for a directory
 	// transfer, the destination directory itself for a file transfer.
 	DirType string
+	// ExactDest makes a directory import land at B.Path verbatim (an album
+	// import's rendered destination) instead of the usual B.Path/<A.Name>.
+	ExactDest bool
+	// Files, when non-nil, is an explicit list of files under A.Path to
+	// import (an album group's audio files) instead of walking the whole
+	// tree; each lands at B.Path/<rel-below-A.Path>.
+	Files []string
 
 	OnComplete func(*Op) // optional; called after the op finishes (ok or error)
 
@@ -297,6 +333,9 @@ func (op *Op) doCopy() error {
 // destination backend's Importer. Directories are walked and each file imported
 // under the mirrored subpath.
 func (op *Op) doImport() error {
+	if op.Files != nil {
+		return op.importFileList()
+	}
 	if op.A.IsDir {
 		return op.importDir()
 	}
@@ -347,8 +386,12 @@ func (op *Op) importFile(destDir, srcPath, name string) error {
 
 // importDir walks a local directory and imports each file into the tie tree
 // under B.Path/<dirname>/<relative-subdirs>, mirroring copyDir's placement.
+// An ExactDest op (album import) places the tree at B.Path itself.
 func (op *Op) importDir() error {
 	base := op.B.Path + "/" + op.A.Name
+	if op.ExactDest {
+		base = op.B.Path
+	}
 	// Size the whole tree up front so the progress bar has a fixed denominator
 	// and climbs smoothly, rather than jumping as each file's size is discovered.
 	if err := filepath.WalkDir(op.A.Path, func(_ string, d fs.DirEntry, err error) error {
@@ -388,6 +431,33 @@ func (op *Op) importDir() error {
 	// backend creates it on demand, so an empty source tree still gets its
 	// (otherwise uncreated) directory labeled.
 	if err := op.applyDirType(base); err != nil {
+		return err
+	}
+	op.Status = StatusCompleted
+	return nil
+}
+
+// importFileList imports an explicit list of files (an album group's audio
+// files), each landing at B.Path/<rel-below-A.Path>. Unlike importDir only the
+// listed files transfer — sidecars and unlisted members stay local.
+func (op *Op) importFileList() error {
+	for _, f := range op.Files {
+		if err := op.wait(); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(op.A.Path, f)
+		if err != nil {
+			return err
+		}
+		destDir := op.B.Path
+		if sub := filepath.ToSlash(filepath.Dir(rel)); sub != "." {
+			destDir += "/" + sub
+		}
+		if err := op.importFile(destDir, f, filepath.Base(f)); err != nil {
+			return err
+		}
+	}
+	if err := op.applyDirType(op.B.Path); err != nil {
 		return err
 	}
 	op.Status = StatusCompleted
