@@ -29,9 +29,46 @@ func NewPlatform() *Platform {
 	}
 }
 
+// NewPlatformFor creates a Platform for an explicitly chosen device type,
+// bypassing detection. It exists for tests in other packages (which cannot
+// reach the unexported field, and cannot make Fyne report a phone) and for
+// callers that already know what they are targeting.
+func NewPlatformFor(isMobile bool) *Platform {
+	return &Platform{isMobile: isMobile}
+}
+
 // IsMobile returns true on mobile devices (Android, iOS).
 func (p *Platform) IsMobile() bool {
 	return p.isMobile
+}
+
+// CompactWidth is the width, in Fyne device-independent pixels, below which a
+// touch window is treated as compact: too narrow to show a sidebar, a content
+// grid and a companion pane side by side with finger-sized controls, or a
+// table with several columns.
+//
+// The bar is set at a tablet in *landscape* (~1280dp), not at a phone: a 10"
+// tablet in portrait is only ~800dp, which fits a split layout on paper but
+// leaves each region too cramped to touch comfortably — a sidebar at 20% of
+// 800dp is 160dp, narrower than a phone's whole screen. Pointer-driven
+// windows are never compact regardless (see CompactLayout), so this value
+// only ever describes touch devices.
+const CompactWidth float32 = 1000
+
+// CompactLayout reports whether a window of the given width should use the
+// compact (phone) layout: panels become full-screen views or slide-over
+// drawers instead of split panes. It is deliberately width-based rather than
+// IsMobile-based, because Fyne reports tablets as mobile and a tablet (or a
+// phone in landscape) has room for the split layout.
+//
+// A non-positive width means the canvas has not been laid out yet. On mobile
+// that is assumed compact — the common case, and guessing the wide layout for
+// a phone would show the split layout for one frame before flipping.
+func (p *Platform) CompactLayout(width float32) bool {
+	if !p.isMobile {
+		return false
+	}
+	return width <= 0 || width < CompactWidth
 }
 
 // ShouldFocusImageView returns true when the image view should be focused for

@@ -21,7 +21,9 @@ Fyne fork — hence the monorepo.
 | `gallery/infooverlay.go` | Single-image metadata/EXIF overlay (I key, ☰ menu) |
 | `gallery/helper.go` | File-type detection utilities (extracted from imageview.go in Phase 1) |
 | `gallery/apphelper.go` | Shared app bootstrap helpers (Phase 4) |
-| `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) |
+| `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) + `CompactLayout` width threshold |
+| `gallery/drawer.go` | Slide-over sidebar drawer (`SidebarDrawer`), the phone alternative to the sidebar `HSplit` |
+| `gallery/filterchips.go` | Filter summary chip row above the grid (`SetFilterChips`, `TagFilterChips`) |
 | `gallery/extension.go` | Extension interface documentation (Phase 6) |
 | `tagselection/` | Tag-picker widget used by tie-view sidebar, image tagger, and tie-fm tag panel |
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
@@ -722,6 +724,7 @@ bar without touching the window content.
 | `ClearSelected()` | Empty selected-tag list and Refresh |
 | `AddSelected(*TagItemData)` | Move tag to selected set; fires `OnSelectedChanged` |
 | `SetSelected([]string)` | Replace selected list + Refresh, WITHOUT firing `OnSelectedChanged` (for externally loaded state, e.g. tags fetched from tie) |
+| `RemoveSelected(tag) bool` | Drop one selected tag (included or excluded) and fire `OnSelectedChanged`, as if the user had tapped it. For out-of-widget controls over the same selection (the gallery's filter chip row). `SetSelected` is not a substitute: it rebuilds every entry as *included* and fires nothing |
 | `SelectedTags() ([]string, []string)` | Returns (included, excluded) tag slices |
 | `SetListLabel(string)` | Change the bold label above the quick-pick list |
 | `SetFavoriteMaxRows(n)` | Cap visible rows in the quick-pick list (0 = uncapped) |
@@ -1078,6 +1081,16 @@ semantic methods for platform-specific behavior:
 - `ShouldDownscaleImages()` — downscale for GPU memory (mobile)
 - `UsesMobileDragGestures()` — pinch-zoom, momentum scroll (mobile)
 - `ShouldUseTapForAction()` — prefer tap over swipe (desktop)
+
+**Responsive layout:**
+- `CompactLayout(width)` — true when a *mobile* window is narrower than
+  `CompactWidth` (1000): panels become full-screen views or slide-over drawers
+  instead of split panes. Width-based, not `IsMobile()`-based, because Fyne
+  reports tablets as mobile; the threshold sits at a tablet in landscape, so a
+  tablet in portrait is compact. A non-positive width (canvas not laid out
+  yet) counts as compact on mobile. Used by tie-audio's shell (re-evaluated on
+  resize, overridable via `AppConfig.Layout`) and tie-view's sidebar (decided
+  once at startup). `NewPlatformFor(isMobile)` builds one explicitly.
 
 Platform detection happens once at `Gallery` creation via `NewPlatform()`. All
 platform-specific logic routes through `viewer.Platform()` accessor. This is a

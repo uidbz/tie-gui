@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/mpvplayer"
@@ -51,6 +52,11 @@ type Gallery struct {
 	// de-import. Receives the full Tile so the caller can inspect Info.
 	OnTileSecondaryTapped func(*Tile)
 
+	// OnSidebarToggled is called after the sidebar drawer opens or closes,
+	// including when the user dismisses it by tapping the scrim. Apps use it to
+	// track whether a Back press should close the drawer rather than navigate.
+	OnSidebarToggled func(open bool)
+
 	// OnTileDragStart / OnTileDragged / OnTileDragEnd, when OnTileDragged is set,
 	// enable dragging a tile onto another widget (e.g. dropping an album cover
 	// into a play queue). They fire only on desktop: setting OnTileDragged makes
@@ -84,6 +90,13 @@ type Gallery struct {
 	// Sidebar, when non-nil, is shown left of the gallery (e.g. a tag
 	// selector) instead of a plain full-width gallery.
 	Sidebar fyne.CanvasObject
+	// SidebarDrawer selects how Sidebar is presented. When false (the default)
+	// it is an HSplit pane beside the grid. When true it is a slide-over drawer
+	// above the grid, opened with the bottom-bar button and dismissed by
+	// tapping the scrim — the usable layout on a phone, where a split leaves
+	// neither side wide enough. Set it before CreateView; changing it later
+	// takes effect on the next CreateView.
+	SidebarDrawer bool
 	// MenuItems, when non-nil, returns extra items appended to the gallery's
 	// ☰ popup menu. Embedding apps set it to expose their own toggles (e.g.
 	// tie-view's "Show hidden directories").
@@ -114,14 +127,27 @@ type Gallery struct {
 	bottomBar         *fyne.Container
 	sidebarStored     fyne.CanvasObject // saved sidebar when hidden by the toggle
 	sidebarToggle     *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
-	menuButton        *widget.Button    // ☰ menu button in the bottom bar (right side)
-	refreshThumbs     bool
-	tileOnclick       func(*Tile)
-	currentPage       int
-	maxPages          int
-	isFullscreen      bool
-	currentVideo      *mpvplayer.Video // non-nil while a video plays in the main window
-	videoOnClose      func()           // cleanup (e.g. temp-file removal) run after the video closes
+	// drawer holds the sidebar when SidebarDrawer is set; nil in split mode.
+	// It owns the sidebar object while it exists, so CreateView must drop it
+	// when switching back to the split layout (Fyne objects cannot have two
+	// parents).
+	drawer *sidebarDrawer
+	// filterChips is the summary row above the grid (see SetFilterChips);
+	// filterChipRow is its container and filterChipParent the Border that
+	// gives it its space — showing or hiding the row has to re-layout that
+	// parent, not just the row.
+	filterChips      []FilterChip
+	filterChipsOnTap func()
+	filterChipRow    *fyne.Container
+	filterChipParent *fyne.Container
+	menuButton       *widget.Button // ☰ menu button in the bottom bar (right side)
+	refreshThumbs    bool
+	tileOnclick      func(*Tile)
+	currentPage      int
+	maxPages         int
+	isFullscreen     bool
+	currentVideo     *mpvplayer.Video // non-nil while a video plays in the main window
+	videoOnClose     func()           // cleanup (e.g. temp-file removal) run after the video closes
 	// openedInfo records the gallery entry whose single-image view is (or was
 	// last) open; showGallery switches to its page and scrolls it into view.
 	openedInfo *ImageInfo
@@ -288,9 +314,19 @@ func (viewer *Gallery) Init() {
 }
 
 // ToggleSidebar hides the sidebar when it is visible, and restores it when
-// it is hidden. It rebuilds the gallery layout immediately so the change
-// takes effect without a restart.
+// it is hidden. In split mode it rebuilds the gallery layout immediately so
+// the change takes effect without a restart; in drawer mode it just opens or
+// closes the overlay, which leaves the grid (and its scroll position)
+// untouched.
 func (viewer *Gallery) ToggleSidebar() {
+	if viewer.drawer != nil {
+		if viewer.drawer.IsOpen() {
+			viewer.CloseSidebar()
+		} else {
+			viewer.OpenSidebar()
+		}
+		return
+	}
 	if viewer.Sidebar != nil {
 		viewer.sidebarStored = viewer.Sidebar
 		viewer.Sidebar = nil
@@ -299,6 +335,64 @@ func (viewer *Gallery) ToggleSidebar() {
 	}
 	viewer.CreateView()
 	viewer.window.SetContent(viewer.Content)
+}
+
+// OpenSidebar shows the sidebar drawer. It is a no-op in split mode (where the
+// sidebar is already on screen) and when there is no sidebar.
+func (viewer *Gallery) OpenSidebar() {
+	if viewer.drawer == nil {
+		return
+	}
+	viewer.drawer.Open()
+	viewer.updateSidebarToggle()
+	viewer.notifySidebarToggled(true)
+}
+
+// CloseSidebar hides the sidebar drawer. Apps call it after the user makes a
+// selection in the sidebar, so picking a tag returns them to the grid. It is
+// also the drawer's own scrim-dismiss path.
+func (viewer *Gallery) CloseSidebar() {
+	if viewer.drawer == nil {
+		return
+	}
+	viewer.drawer.Close()
+	viewer.updateSidebarToggle()
+	viewer.notifySidebarToggled(false)
+}
+
+// notifySidebarToggled reports a drawer visibility change to the app.
+func (viewer *Gallery) notifySidebarToggled(open bool) {
+	if viewer.OnSidebarToggled != nil {
+		viewer.OnSidebarToggled(open)
+	}
+}
+
+// SidebarOpen reports whether the sidebar is currently on screen: always true
+// in split mode with a sidebar set, and the drawer's state in drawer mode.
+func (viewer *Gallery) SidebarOpen() bool {
+	if viewer.drawer != nil {
+		return viewer.drawer.IsOpen()
+	}
+	return viewer.Sidebar != nil
+}
+
+// updateSidebarToggle re-labels the bottom-bar sidebar button for the current
+// state: an arrow pointing the way the split pane will move, or a filter icon
+// in drawer mode (where the panel slides over the grid rather than beside it).
+func (viewer *Gallery) updateSidebarToggle() {
+	if viewer.sidebarToggle == nil {
+		return
+	}
+	if viewer.drawer != nil {
+		viewer.sidebarToggle.SetIcon(theme.SearchIcon())
+		viewer.sidebarToggle.SetText("")
+		return
+	}
+	if viewer.Sidebar != nil {
+		viewer.sidebarToggle.SetText("◀")
+	} else {
+		viewer.sidebarToggle.SetText("▶")
+	}
 }
 
 func (viewer *Gallery) CreateView() {
@@ -324,13 +418,36 @@ func (viewer *Gallery) CreateView() {
 	if viewer.platform != nil && viewer.platform.UsesMobileDragGestures() {
 		grid = container.NewStack(viewer.sizeWatcher, viewer.scroll, newGridSwipeOverlay(viewer))
 	}
-	if viewer.Sidebar != nil {
-		split := container.NewHSplit(viewer.Sidebar, grid)
+	// The filter summary row sits above the grid (hidden until chips are set),
+	// so a drawer layout still shows what is narrowing the view.
+	if viewer.filterChipRow == nil {
+		viewer.filterChipRow = container.NewStack()
+		viewer.filterChipRow.Hide()
+	}
+	viewer.filterChipParent = container.NewBorder(viewer.filterChipRow, nil, nil, nil, grid)
+	grid = viewer.filterChipParent
+
+	sidebar := viewer.Sidebar
+	switch {
+	case sidebar != nil && viewer.SidebarDrawer:
+		// Reuse an existing drawer: it already parents the sidebar object, and
+		// re-wrapping the same object in a second drawer would give it two
+		// parents.
+		if viewer.drawer == nil {
+			viewer.drawer = newSidebarDrawer(sidebar, viewer.CloseSidebar)
+		}
+		mainPage = container.NewStack(grid, viewer.drawer.object)
+	case sidebar != nil:
+		// Leaving drawer mode: drop the drawer so the sidebar has one parent.
+		viewer.drawer = nil
+		split := container.NewHSplit(sidebar, grid)
 		split.SetOffset(0.2)
 		mainPage = split
-	} else {
+	default:
+		viewer.drawer = nil
 		mainPage = grid
 	}
+	viewer.rebuildFilterChips()
 
 	// Lazily create the sidebar toggle button the first time a sidebar is
 	// encountered. Update its label to reflect the current visibility state.
@@ -338,13 +455,7 @@ func (viewer *Gallery) CreateView() {
 	if hasSidebar && viewer.sidebarToggle == nil {
 		viewer.sidebarToggle = widget.NewButton("◀", viewer.ToggleSidebar)
 	}
-	if viewer.sidebarToggle != nil {
-		if viewer.Sidebar != nil {
-			viewer.sidebarToggle.SetText("◀")
-		} else {
-			viewer.sidebarToggle.SetText("▶")
-		}
-	}
+	viewer.updateSidebarToggle()
 
 	// Create menu button if it doesn't exist yet
 	if viewer.menuButton == nil {
@@ -356,7 +467,11 @@ func (viewer *Gallery) CreateView() {
 	// Compose the bottom bar: sidebar toggle on the left, menu on the right,
 	// pagination in the center. The buttons are placed outside bottomBar.Objects
 	// so the existing Objects[:2] (Prev/Next) trimming in LoadGallery is unaffected.
-	var bottom fyne.CanvasObject = viewer.bottomBar
+	//
+	// bottom must stay a genuine nil interface when there is no bottom bar yet
+	// (CreateView before LoadGallery): assigning the nil *fyne.Container to the
+	// interface would hand Border a typed nil, which panics in its MinSize.
+	var bottom fyne.CanvasObject
 	if viewer.bottomBar != nil {
 		var left, right fyne.CanvasObject
 		if viewer.sidebarToggle != nil {

@@ -733,6 +733,30 @@ func (ts *TagSelection) SetSelected(tags []string) {
 	ts.selectedList.Refresh()
 }
 
+// RemoveSelected drops tag from the selected list — included or excluded —
+// and fires OnSelectedChanged, exactly as if the user had tapped it in the
+// selected list. Use it for out-of-widget controls over the same selection
+// (e.g. the gallery's filter chip row, which is the only view of the
+// selection when the sidebar is a drawer). Reports whether tag was selected.
+//
+// SetSelected is not a substitute: it rebuilds every entry as *included*, so
+// using it to drop one tag would silently turn the user's exclusions into
+// inclusions, and it fires no callback.
+func (ts *TagSelection) RemoveSelected(tag string) bool {
+	for i, x := range ts.selected {
+		if x.text != tag {
+			continue
+		}
+		ts.selected = append(ts.selected[:i], ts.selected[i+1:]...)
+		ts.selectedList.Refresh()
+		if ts.OnSelectedChanged != nil {
+			ts.OnSelectedChanged()
+		}
+		return true
+	}
+	return false
+}
+
 /*****************************
 ** RENDERER
 *****************************/
