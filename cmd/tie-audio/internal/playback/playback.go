@@ -30,6 +30,8 @@ type PlaybackBackend interface {
 	Insert(at int, urls ...string) error
 	// Clear removes every track from the queue.
 	Clear() error
+	// Remove drops the queue item at index.
+	Remove(index int) error
 	// PlayAlbum replaces the whole queue with urls and starts playback.
 	PlayAlbum(urls []string) error
 

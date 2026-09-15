@@ -66,6 +66,11 @@ type Track struct {
 	TrackNo  int
 	Filename string
 	Duration float64 // playing time in seconds, 0 when unknown
+	// AlbumUID identifies the album this track belongs to: the owning audio-dir
+	// UID, or the track's own hash for a standalone track. It is what album
+	// artwork and playlist grouping key off, so a queue assembled from several
+	// albums can show each album's cover. Empty when tie knows no parent.
+	AlbumUID string
 }
 
 // Display returns the track's label, falling back to its filename.
@@ -115,6 +120,11 @@ func (s *Session) fetchBlob(hash string) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
+// ErrNoCover reports that an album carries no cover image at all, as opposed to
+// a cover that exists but could not be fetched. Callers cache this outcome so a
+// coverless album is not re-probed on every tile or queue row.
+var ErrNoCover = errors.New("no cover")
+
 // CoverReader returns the album's cover-image bytes, or an error when the
 // album has no cover (the tile then shows a placeholder). tie's audio-dir
 // import stores no thumbnail triple, so for a dir the cover falls back to a
@@ -125,13 +135,39 @@ func (s *Session) CoverReader(a Album) (io.ReadSeeker, error) {
 		hash = s.dirCoverHash(a.UID)
 	}
 	if hash == "" {
-		return nil, errors.New("no cover")
+		return nil, ErrNoCover
 	}
 	b, err := s.fetchBlob(hash)
 	if err != nil {
 		return nil, err
 	}
 	return bytes.NewReader(b), nil
+}
+
+// CoverBytesForUID returns the cover-image bytes for an album identified only
+// by its UID (a Track's AlbumUID, which the queue has but no Album struct for).
+// It resolves the album's own thumbnail relation first, then falls back to a
+// cover image file among a directory's children. ErrNoCover means the album has
+// none; any other error is a fetch failure worth retrying later.
+//
+// The UID may be a directory UID or a content hash (a standalone track); a
+// directory read on a non-directory simply yields no candidate, so the two
+// shapes need not be distinguished by the caller.
+func (s *Session) CoverBytesForUID(uid string) ([]byte, error) {
+	if uid == "" {
+		return nil, ErrNoCover
+	}
+	hash := ""
+	if row, err := s.Tie.Get(uid); err == nil {
+		hash = client.RowFirst(row, "thumbnail")
+	}
+	if hash == "" {
+		hash = s.dirCoverHash(uid)
+	}
+	if hash == "" {
+		return nil, ErrNoCover
+	}
+	return s.fetchBlob(hash)
 }
 
 // dirCoverHash finds a cover image among an album dir's children, preferring a
@@ -315,7 +351,12 @@ func classifyAlbum(row client.Row) (Album, bool) {
 func (s *Session) AlbumTracks(a Album) ([]Track, error) {
 	switch a.Kind {
 	case AlbumTrack:
-		return []Track{s.trackFromHash(a.UID)}, nil
+		t := s.trackFromHash(a.UID)
+		// A standalone track is its own album for artwork purposes.
+		if t.AlbumUID == "" {
+			t.AlbumUID = a.UID
+		}
+		return []Track{t}, nil
 	case AlbumDir:
 		// A saved playlist is an audio-dir with an explicit ordered track list;
 		// honor that order instead of the filename/track-number sort below.
@@ -333,7 +374,12 @@ func (s *Session) AlbumTracks(a Album) ([]Track, error) {
 			if !isAudioFile(f) {
 				continue
 			}
-			tracks = append(tracks, s.trackFromHash(f.Uid))
+			t := s.trackFromHash(f.Uid)
+			// The listing is authoritative about ownership: a track reachable
+			// from several dirs (an album plus a playlist) belongs to this one
+			// here, so artwork and grouping follow the album being played.
+			t.AlbumUID = a.UID
+			tracks = append(tracks, t)
 		}
 		sort.Slice(tracks, func(i, j int) bool {
 			if tracks[i].TrackNo != tracks[j].TrackNo {
@@ -362,6 +408,13 @@ func (s *Session) trackFromHash(hash string) Track {
 // re-label a queue whose URLs the in-memory registry no longer knows (app
 // restart, while pwplay still holds the queue).
 func (s *Session) TrackForHash(hash string) (Track, bool) {
+	return s.trackForHash(hash, "")
+}
+
+// trackForHash is TrackForHash with a parent UID to disregard when picking the
+// track's owning album: a playlist dir is a parent of every track it lists, but
+// it is not the album the track's artwork belongs to.
+func (s *Session) trackForHash(hash, excludeParent string) (Track, bool) {
 	t := Track{Hash: hash}
 	row, err := s.Tie.Get(hash)
 	if err != nil {
@@ -372,6 +425,7 @@ func (s *Session) TrackForHash(hash string) (Track, bool) {
 	t.Album = client.RowFirst(row, client.TieAlbum.String())
 	t.Year = client.RowFirst(row, client.TieYear.String())
 	t.Filename = client.RowFirst(row, client.TieFilename.String())
+	t.AlbumUID = trackAlbumUID(client.RowValues(row, client.TieParent.String()), excludeParent)
 	if n, err := strconv.Atoi(client.RowFirst(row, client.TieTrack.String())); err == nil {
 		t.TrackNo = n
 	}
@@ -379,6 +433,20 @@ func (s *Session) TrackForHash(hash string) (Track, bool) {
 		t.Duration = d
 	}
 	return t, true
+}
+
+// trackAlbumUID picks the album a track belongs to from its parent edges,
+// skipping `exclude` (the playlist that merely lists it). Returns "" when the
+// track has no usable parent, which leaves it ungrouped and coverless rather
+// than mis-attributed.
+func trackAlbumUID(parents []string, exclude string) string {
+	for _, p := range parents {
+		if p == "" || p == exclude {
+			continue
+		}
+		return p
+	}
+	return ""
 }
 
 // playlistTracks returns the ordered tracks of a saved playlist dir. ok is
@@ -397,7 +465,10 @@ func (s *Session) playlistTracks(uid string) ([]Track, bool, error) {
 	tracks := make([]Track, 0, len(vals))
 	for _, v := range vals {
 		if i := strings.IndexByte(v, ':'); i >= 0 {
-			tracks = append(tracks, s.trackFromHash(v[i+1:]))
+			// The playlist dir is a parent of every track it lists; disregard it
+			// so each track keeps its own album (and cover) in the queue.
+			t, _ := s.trackForHash(v[i+1:], uid)
+			tracks = append(tracks, t)
 		}
 	}
 	return tracks, true, nil

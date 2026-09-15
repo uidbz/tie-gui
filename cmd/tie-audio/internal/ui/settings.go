@@ -31,17 +31,50 @@ func (a *App) buildSettingsTab() *container.TabItem {
 	fileHost.SetText(a.session.Cfg.FileHost)
 	fileHost.SetPlaceHolder("(blank = tie default filehost)")
 
+	// Layout override. Width alone cannot classify a tablet (the same device is
+	// ~800dp portrait and ~1280dp landscape, and whether a 10" screen *should*
+	// show the split layout is taste), so the automatic choice is only the
+	// default. a.layoutInfo reports what is in effect and the width it was
+	// derived from — refreshed whenever the settings view is opened or the
+	// layout changes, since neither is discoverable otherwise.
+	layoutOptions := []string{
+		"Automatic (by window width)",
+		"Compact (drawer sidebar, grouped playlist, mini player)",
+		"Regular (sidebar and playlist panes, wide player)",
+	}
+	layoutPrefs := []string{config.LayoutAuto, config.LayoutCompact, config.LayoutRegular}
+	layout := widget.NewSelect(layoutOptions, func(label string) {
+		for i, text := range layoutOptions {
+			if text == label {
+				a.SetLayoutPreference(layoutPrefs[i])
+				return
+			}
+		}
+	})
+	// Set the field directly so OnChanged does not fire during construction
+	// (which would re-apply the layout while the shell is still being built).
+	layout.Selected = layoutOptions[0]
+	for i, pref := range layoutPrefs {
+		if pref == a.session.Cfg.Layout {
+			layout.Selected = layoutOptions[i]
+		}
+	}
+	a.layoutInfo = widget.NewLabel("")
+
 	current := func() config.AppConfig {
 		return config.AppConfig{
 			PwplayServer: server.Text,
 			TieConfig:    tieCfg.Text,
 			FileHost:     fileHost.Text,
-			// Preserve the collection selection and column customization: the
-			// collection is picked via the connection editor below and columns
-			// from the album/queue views; rebuilding from scratch would drop both.
+			// Preserve the collection selection, column customization and
+			// layout override: the collection is picked via the connection
+			// editor below, columns from the album/queue views, and the layout
+			// from its own select (which applies immediately); rebuilding from
+			// scratch would drop all three.
 			TieCollection: a.session.Cfg.TieCollection,
 			AlbumColumns:  a.session.Cfg.AlbumColumns,
 			QueueColumns:  a.session.Cfg.QueueColumns,
+			Layout:        a.session.Cfg.Layout,
 		}
 	}
 
@@ -49,6 +82,8 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		widget.NewFormItem("pwplay server", server),
 		widget.NewFormItem("tie config", tieCfg),
 		widget.NewFormItem("filehost", fileHost),
+		widget.NewFormItem("layout", layout),
+		widget.NewFormItem("", a.layoutInfo),
 	)
 
 	save := widget.NewButton("Save", func() {
@@ -59,6 +94,11 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		}
 		a.session = data.NewSession(cfg)
 		a.browse.session = a.session
+		// The cover store fetches through the session's filehost, so it has to
+		// follow the swap — and its cached art was resolved against the old
+		// one.
+		a.covers.session = a.session
+		a.covers.Clear()
 		a.browse.loadTags()
 		dialog.ShowInformation("Saved", "Settings saved.", a.win)
 	})
@@ -105,6 +145,10 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		if err := config.Save(a.session.Cfg); err != nil {
 			dialog.ShowError(err, a.win)
 		}
+		// The same album UID can resolve to different artwork in another
+		// collection, so the cover cache (wall tiles, queue rows, transport)
+		// must not carry over.
+		a.covers.Clear()
 		a.browse.loadTags()
 		a.browse.clearAlbums()
 	}
@@ -133,5 +177,6 @@ func (a *App) buildSettingsTab() *container.TabItem {
 			nil, nil, nil,
 			container.NewBorder(connLabel, nil, nil, nil, connEditor),
 		))
+	a.refreshLayoutInfo()
 	return container.NewTabItemWithIcon("Settings", theme.SettingsIcon(), content)
 }

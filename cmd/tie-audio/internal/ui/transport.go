@@ -2,41 +2,58 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
 
-// pollInterval is how often the transport bar polls the backend. pwplay has no
-// push events, so the bar reflects server state via periodic Status() calls.
+// pollInterval is how often the player polls the backend. pwplay has no
+// push events, so the UI reflects server state via periodic Status() calls.
 const pollInterval = 500 * time.Millisecond
 
-// transportBar is the persistent playback controller shown at the bottom of
-// every view. It drives the backend on button presses and reflects the
-// server's state through a Status() poll ticker. It is embedded into each
-// window content by the shell wrapper (see app.go) so it survives the gallery's
-// own SetContent navigation.
-type transportBar struct {
+// transportState is a status snapshot rendered for display: everything a
+// transport view needs, with the decisions about what to apply already made by
+// the player (which owns the slider-echo guards).
+type transportState struct {
+	playing  bool
+	title    string // now-playing track title, or a placeholder
+	subtitle string // artist · album, empty when unknown
+	position float64
+	duration float64
+	volume   float64
+	// applyPosition is false while the user drags a seek slider, and
+	// applyVolume while they drag a volume slider: the server's value must not
+	// fight the thumb under the finger.
+	applyPosition bool
+	applyVolume   bool
+}
+
+// transportView is one rendering of the player: the desktop bar, the compact
+// mini bar, or the full-screen Now Playing page. A view owns its widgets
+// (Fyne objects cannot be shared between parents, so every view builds its own
+// sliders and buttons) and the player pushes state into all of them.
+type transportView interface {
+	// apply renders a status snapshot.
+	apply(transportState)
+	// setCover shows the current track's album art; nil means none is known,
+	// and the view falls back to a placeholder.
+	setCover(image.Image)
+}
+
+// player is the playback controller: it drives the backend on user actions and
+// reflects the server's state through a Status() poll ticker, pushing each
+// snapshot into every registered view. It holds no widgets of its own — the
+// compact layout renders a mini bar plus a Now Playing page while the regular
+// layout renders one wide bar, and both are fed from here so navigating
+// between them never loses (or double-applies) playback state.
+type player struct {
 	backend playback.PlaybackBackend
-
-	object *fyne.Container
-
-	prevBtn  *widget.Button
-	playBtn  *widget.Button
-	nextBtn  *widget.Button
-	stopBtn  *widget.Button
-	seek     *widget.Slider
-	volume   *widget.Slider
-	posLabel *widget.Label
-	durLabel *widget.Label
-	nowLabel *widget.Label
 
 	mu    sync.Mutex
 	metas map[string]data.Track // queue URL → track metadata; survives reorder/shuffle
@@ -47,15 +64,16 @@ type transportBar struct {
 	resolver  func(url string) (data.Track, bool)
 	resolving map[string]bool
 	// listener, when set, receives every status snapshot on the UI goroutine.
-	// The queue view subscribes to stay live off the same poll as the bar.
+	// The queue view subscribes to stay live off the same poll as the player.
 	listener func(playback.Status)
-	playing  bool     // last observed play state, for the play/pause toggle
-	seeking  bool     // true while the user drags the seek slider
-	adjVol   bool     // true while the user drags the volume slider
-	// applying is true while apply() is pushing server state into the sliders.
-	// Fyne's Slider.SetValue fires OnChangeEnded, so without this guard every
-	// poll's SetValue would echo back a Seek/SetVolume to the server — and each
-	// Seek clears pwplay's ring buffer, chopping the audio twice a second.
+	playing  bool // last observed play state, for the play/pause toggle
+	seeking  bool // true while the user drags a seek slider
+	adjVol   bool // true while the user drags a volume slider
+	// applying is true while apply() is pushing server state into the views'
+	// sliders. Fyne's Slider.SetValue fires OnChangeEnded, so without this
+	// guard every poll's SetValue would echo back a Seek/SetVolume to the
+	// server — and each Seek clears pwplay's ring buffer, chopping the audio
+	// twice a second.
 	applying bool
 	pendVol  *float64 // volume just set locally, awaiting server confirmation
 	// pendSeek holds a just-released seek target awaiting server confirmation.
@@ -67,297 +85,353 @@ type transportBar struct {
 	pendSeekTTL int
 	repeatAll   bool // when true, restart the queue from the top after it ends
 	repeatFired bool // guards a single restart per end-of-queue event
+
+	// views receive every snapshot. Mutated only during setup and read on the
+	// UI goroutine, both under mu since Start's goroutine reads it.
+	views []transportView
+
+	// covers resolves album art for the current track. The following three
+	// fields are touched only on the UI goroutine (from apply), so they need
+	// no lock: coverURL is the queue URL whose art is on screen and coverGen
+	// drops results from a track the user has already skipped past.
+	covers   *coverStore
+	coverURL string
+	coverGen int
+
 	stopOnce sync.Once
 	stopCh   chan struct{}
 }
 
-// newTransportBar builds the transport controls bound to the given backend.
-// Call Start to begin polling.
-func newTransportBar(backend playback.PlaybackBackend) *transportBar {
-	t := &transportBar{backend: backend, metas: map[string]data.Track{}, resolving: map[string]bool{}, stopCh: make(chan struct{})}
-
-	t.prevBtn = widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() { t.do(backend.Previous) })
-	t.playBtn = widget.NewButtonWithIcon("", theme.MediaPlayIcon(), t.togglePlay)
-	t.nextBtn = widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() { t.do(backend.Next) })
-	t.stopBtn = widget.NewButtonWithIcon("", theme.MediaStopIcon(), func() { t.do(backend.Stop) })
-
-	t.seek = widget.NewSlider(0, 1)
-	t.seek.Step = 0.1
-	t.seek.OnChanged = func(float64) {
-		t.mu.Lock()
-		if !t.applying {
-			t.seeking = true
-		}
-		t.mu.Unlock()
+// newPlayer builds the playback controller bound to the given backend. Add
+// views with AddView, then call Start to begin polling.
+func newPlayer(backend playback.PlaybackBackend, covers *coverStore) *player {
+	return &player{
+		backend:   backend,
+		covers:    covers,
+		metas:     map[string]data.Track{},
+		resolving: map[string]bool{},
+		stopCh:    make(chan struct{}),
 	}
-	t.seek.OnChangeEnded = func(v float64) {
-		t.mu.Lock()
-		applying := t.applying
+}
+
+// AddView registers a rendering of the player. Views are never removed: a view
+// that is off screen costs one widget update per poll, which is cheaper than
+// re-subscribing (and re-syncing) every time the user navigates.
+func (p *player) AddView(v transportView) {
+	p.mu.Lock()
+	p.views = append(p.views, v)
+	p.mu.Unlock()
+}
+
+// newSeekSlider builds a seek slider wired to this player. Each view needs its
+// own instance, and they must all share the echo guards, so construction lives
+// here rather than in the views.
+func (p *player) newSeekSlider() *widget.Slider {
+	s := widget.NewSlider(0, 1)
+	s.Step = 0.1
+	s.OnChanged = func(float64) {
+		p.mu.Lock()
+		if !p.applying {
+			p.seeking = true
+		}
+		p.mu.Unlock()
+	}
+	s.OnChangeEnded = func(v float64) {
+		p.mu.Lock()
+		applying := p.applying
 		if !applying {
-			t.seeking = false
+			p.seeking = false
 			// Hold the target until a poll confirms the server has seeked;
 			// otherwise a poll landing before Seek propagates would snap the
 			// thumb back to the stale position and then jump forward again.
 			vv := v
-			t.pendSeek = &vv
-			t.pendSeekTTL = 4 // ~2s at the 500ms poll interval
+			p.pendSeek = &vv
+			p.pendSeekTTL = 4 // ~2s at the 500ms poll interval
 		}
-		t.mu.Unlock()
+		p.mu.Unlock()
 		if applying {
 			return
 		}
-		go func() { _ = t.backend.Seek(v) }()
+		go func() { _ = p.backend.Seek(v) }()
 	}
-
-	t.volume = widget.NewSlider(0, 2)
-	t.volume.Step = 0.01
-	t.volume.SetValue(1)
-	t.volume.OnChanged = func(float64) {
-		t.mu.Lock()
-		if !t.applying {
-			t.adjVol = true
-		}
-		t.mu.Unlock()
-	}
-	t.volume.OnChangeEnded = func(v float64) {
-		t.mu.Lock()
-		applying := t.applying
-		if !applying {
-			t.adjVol = false
-			// Hold the just-set value until a poll confirms the server agrees;
-			// otherwise a poll landing before SetVolume propagates would snap the
-			// thumb back to the stale server volume.
-			vv := v
-			t.pendVol = &vv
-		}
-		t.mu.Unlock()
-		if applying {
-			return
-		}
-		go func() { _ = t.backend.SetVolume(v) }()
-	}
-
-	t.posLabel = widget.NewLabel("0:00")
-	t.durLabel = widget.NewLabel("0:00")
-	t.nowLabel = widget.NewLabel("Nothing playing")
-
-	buttons := container.NewHBox(t.prevBtn, t.playBtn, t.nextBtn, t.stopBtn)
-	volBox := container.NewCenter(container.NewHBox(
-		widget.NewIcon(theme.VolumeUpIcon()),
-		container.NewGridWrap(fyne.NewSize(140, 28), t.volume),
-	))
-	progress := container.NewBorder(nil, nil, t.posLabel, t.durLabel, t.seek)
-	center := container.NewVBox(t.nowLabel, progress)
-
-	t.object = container.NewBorder(widget.NewSeparator(), nil, buttons, volBox, center)
-	return t
+	return s
 }
 
-// Object returns the bar's root object for embedding in the window content.
-func (t *transportBar) Object() fyne.CanvasObject { return t.object }
+// newVolumeSlider builds a volume slider wired to this player (see
+// newSeekSlider for why construction lives here).
+func (p *player) newVolumeSlider() *widget.Slider {
+	s := widget.NewSlider(0, 2)
+	s.Step = 0.01
+	s.SetValue(1)
+	s.OnChanged = func(float64) {
+		p.mu.Lock()
+		if !p.applying {
+			p.adjVol = true
+		}
+		p.mu.Unlock()
+	}
+	s.OnChangeEnded = func(v float64) {
+		p.mu.Lock()
+		applying := p.applying
+		if !applying {
+			p.adjVol = false
+			// Hold the just-set value until a poll confirms the server agrees;
+			// otherwise a poll landing before SetVolume propagates would snap
+			// the thumb back to the stale server volume.
+			vv := v
+			p.pendVol = &vv
+		}
+		p.mu.Unlock()
+		if applying {
+			return
+		}
+		go func() { _ = p.backend.SetVolume(v) }()
+	}
+	return s
+}
 
 // SetQueue replaces the track registry; call it when the queue is replaced
 // (PlayAlbum). Keying by stream URL (not by index) means the mapping survives
 // reorder and shuffle, which permute the server playlist.
-func (t *transportBar) SetQueue(urls []string, meta []data.Track) {
-	t.mu.Lock()
-	t.metas = map[string]data.Track{}
-	t.resolving = map[string]bool{}
+func (p *player) SetQueue(urls []string, meta []data.Track) {
+	p.mu.Lock()
+	p.metas = map[string]data.Track{}
+	p.resolving = map[string]bool{}
 	for i, u := range urls {
 		if i < len(meta) {
-			t.metas[u] = meta[i]
+			p.metas[u] = meta[i]
 		}
 	}
-	t.mu.Unlock()
+	p.mu.Unlock()
 }
 
 // SetResolver installs a callback that re-derives metadata for a queue URL the
 // registry doesn't know (see resolver). Called once at startup.
-func (t *transportBar) SetResolver(fn func(url string) (data.Track, bool)) {
-	t.mu.Lock()
-	t.resolver = fn
-	t.mu.Unlock()
+func (p *player) SetResolver(fn func(url string) (data.Track, bool)) {
+	p.mu.Lock()
+	p.resolver = fn
+	p.mu.Unlock()
 }
 
 // AppendQueue extends the track registry; call it when tracks are enqueued.
-func (t *transportBar) AppendQueue(urls []string, meta []data.Track) {
-	t.mu.Lock()
+func (p *player) AppendQueue(urls []string, meta []data.Track) {
+	p.mu.Lock()
 	for i, u := range urls {
 		if i < len(meta) {
-			t.metas[u] = meta[i]
+			p.metas[u] = meta[i]
 		}
 	}
-	t.mu.Unlock()
+	p.mu.Unlock()
 }
 
 // Label resolves a queue URL to its display title, or "" if unknown.
-func (t *transportBar) Label(url string) string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if m, ok := t.metas[url]; ok {
+func (p *player) Label(url string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m, ok := p.metas[url]; ok {
 		return m.Display()
 	}
 	return ""
 }
 
 // TrackMeta returns the registered track metadata for a queue URL, if known.
-func (t *transportBar) TrackMeta(url string) (data.Track, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	m, ok := t.metas[url]
+func (p *player) TrackMeta(url string) (data.Track, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	m, ok := p.metas[url]
 	return m, ok
 }
 
 // SetStatusListener registers (or clears, with nil) a callback invoked with each
-// status snapshot on the UI goroutine, so a view can stay live off the bar's
+// status snapshot on the UI goroutine, so a view can stay live off the player's
 // existing poll instead of running its own ticker.
-func (t *transportBar) SetStatusListener(fn func(playback.Status)) {
-	t.mu.Lock()
-	t.listener = fn
-	t.mu.Unlock()
+func (p *player) SetStatusListener(fn func(playback.Status)) {
+	p.mu.Lock()
+	p.listener = fn
+	p.mu.Unlock()
 }
 
 // SetRepeat enables or disables repeat-all (restart the queue after it ends).
-func (t *transportBar) SetRepeat(on bool) {
-	t.mu.Lock()
-	t.repeatAll = on
-	t.mu.Unlock()
+func (p *player) SetRepeat(on bool) {
+	p.mu.Lock()
+	p.repeatAll = on
+	p.mu.Unlock()
 }
 
 // RepeatAll reports whether repeat-all is enabled.
-func (t *transportBar) RepeatAll() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.repeatAll
+func (p *player) RepeatAll() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.repeatAll
+}
+
+// Playing reports the last observed play state.
+func (p *player) Playing() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.playing
 }
 
 // togglePlay pauses when playing, otherwise resumes.
-func (t *transportBar) togglePlay() {
-	t.mu.Lock()
-	playing := t.playing
-	t.mu.Unlock()
-	if playing {
-		t.do(t.backend.Pause)
+func (p *player) togglePlay() {
+	if p.Playing() {
+		p.do(p.backend.Pause)
 	} else {
-		t.do(t.backend.Play)
+		p.do(p.backend.Play)
 	}
 }
 
 // do runs a backend action off the UI goroutine so the click returns instantly.
-func (t *transportBar) do(fn func() error) {
+func (p *player) do(fn func() error) {
 	go func() { _ = fn() }()
 }
 
 // Start launches the poll loop. Stop ends it.
-func (t *transportBar) Start() {
+func (p *player) Start() {
 	go func() {
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-t.stopCh:
+			case <-p.stopCh:
 				return
 			case <-ticker.C:
-				s, err := t.backend.Status()
+				s, err := p.backend.Status()
 				if err != nil {
 					continue
 				}
-				fyne.Do(func() { t.apply(s) })
+				fyne.Do(func() { p.apply(s) })
 			}
 		}
 	}()
 }
 
 // Stop ends the poll loop; safe to call more than once.
-func (t *transportBar) Stop() {
-	t.stopOnce.Do(func() { close(t.stopCh) })
+func (p *player) Stop() {
+	p.stopOnce.Do(func() { close(p.stopCh) })
 }
 
-// apply updates the widgets from a status snapshot. It runs on the UI goroutine.
-func (t *transportBar) apply(s playback.Status) {
-	t.mu.Lock()
-	t.playing = s.Playing
-	seeking, adjVol := t.seeking, t.adjVol
-	pendVol := t.pendVol
+// apply renders a status snapshot into every view. It runs on the UI goroutine.
+func (p *player) apply(s playback.Status) {
+	p.mu.Lock()
+	p.playing = s.Playing
+	seeking, adjVol := p.seeking, p.adjVol
+	pendVol := p.pendVol
 	if pendVol != nil && absDiff(s.Volume, *pendVol) < 0.02 {
 		// Server now reflects our local change; stop holding.
-		t.pendVol = nil
+		p.pendVol = nil
 		pendVol = nil
 	}
-	pendSeek := t.pendSeek
+	pendSeek := p.pendSeek
 	if pendSeek != nil {
-		if t.pendSeekTTL > 0 {
-			t.pendSeekTTL--
+		if p.pendSeekTTL > 0 {
+			p.pendSeekTTL--
 		}
 		// Clear once the server position is near the target (allowing for
 		// playback advancing since the seek) or the wait times out.
-		if absDiff(s.Position, *pendSeek) < 1.0 || t.pendSeekTTL == 0 {
-			t.pendSeek = nil
+		if absDiff(s.Position, *pendSeek) < 1.0 || p.pendSeekTTL == 0 {
+			p.pendSeek = nil
 			pendSeek = nil
 		}
 	}
-	now := t.nowPlaying(s)
-	listener := t.listener
+	now := p.nowPlaying(s)
+	listener := p.listener
+	views := p.views
 	var missing []string
-	if t.resolver != nil {
+	if p.resolver != nil {
 		for _, u := range s.Playlist {
-			if _, ok := t.metas[u]; !ok && !t.resolving[u] {
-				t.resolving[u] = true
+			if _, ok := p.metas[u]; !ok && !p.resolving[u] {
+				p.resolving[u] = true
 				missing = append(missing, u)
 			}
 		}
 	}
-	t.mu.Unlock()
+	p.mu.Unlock()
 
 	if len(missing) > 0 {
-		go t.resolveMissing(missing)
+		go p.resolveMissing(missing)
 	}
 
 	if listener != nil {
 		listener(s)
 	}
 
-	if s.Playing {
-		t.playBtn.SetIcon(theme.MediaPauseIcon())
-	} else {
-		t.playBtn.SetIcon(theme.MediaPlayIcon())
+	// While a seek is pending confirmation, pin the thumb/label to the target
+	// so a stale poll doesn't bounce it to the old position.
+	pos := s.Position
+	if pendSeek != nil {
+		pos = *pendSeek
 	}
-
-	t.nowLabel.SetText(now)
+	st := transportState{
+		playing:       s.Playing,
+		title:         now.title,
+		subtitle:      now.subtitle,
+		position:      pos,
+		duration:      s.TrackDuration,
+		volume:        s.Volume,
+		applyPosition: !seeking,
+		applyVolume:   !adjVol && pendVol == nil,
+	}
 
 	// Mark programmatic slider updates so the sliders' OnChangeEnded handlers
-	// don't echo a Seek/SetVolume back to the server. Set outside t.mu because
-	// SetValue invokes those handlers synchronously and they take t.mu.
-	t.mu.Lock()
-	t.applying = true
-	t.mu.Unlock()
+	// don't echo a Seek/SetVolume back to the server. Set outside p.mu because
+	// SetValue invokes those handlers synchronously and they take p.mu.
+	p.mu.Lock()
+	p.applying = true
+	p.mu.Unlock()
 
-	if !seeking {
-		// While a seek is pending confirmation, pin the thumb/label to the
-		// target so a stale poll doesn't bounce it to the old position.
-		pos := s.Position
-		if pendSeek != nil {
-			pos = *pendSeek
-		}
-		if s.TrackDuration > 0 {
-			t.seek.Max = s.TrackDuration
-			t.seek.SetValue(pos)
-		} else {
-			t.seek.Max = 1
-			t.seek.SetValue(0)
-		}
-		t.posLabel.SetText(formatDuration(pos))
-		t.durLabel.SetText(formatDuration(s.TrackDuration))
-	}
-	if !adjVol && pendVol == nil {
-		t.volume.SetValue(s.Volume)
+	for _, v := range views {
+		v.apply(st)
 	}
 
-	t.mu.Lock()
-	t.applying = false
-	t.mu.Unlock()
+	p.mu.Lock()
+	p.applying = false
+	p.mu.Unlock()
 
-	t.maybeRepeat(s)
+	p.syncCover(now)
+	p.maybeRepeat(s)
+}
+
+// syncCover keeps the views' album art in step with the current track. It only
+// acts when the current queue URL changes, so the cover is fetched once per
+// track rather than twice a second, and a result arriving after the user has
+// skipped on is dropped via the generation counter. Runs on the UI goroutine.
+func (p *player) syncCover(now trackInfo) {
+	if now.url == p.coverURL {
+		return
+	}
+	if !now.known {
+		// Metadata is still being resolved (or the entry is not a tie blob):
+		// clear the art but don't record the URL, so the next poll retries
+		// once the registry has it.
+		p.coverURL = ""
+		p.coverGen++
+		p.pushCover(nil)
+		return
+	}
+	p.coverURL = now.url
+	p.coverGen++
+	gen := p.coverGen
+	if p.covers == nil {
+		p.pushCover(nil)
+		return
+	}
+	p.covers.Request(now.albumUID, func(img image.Image) {
+		if gen != p.coverGen {
+			return // the user moved on while this was loading
+		}
+		p.pushCover(img)
+	})
+}
+
+// pushCover hands album art to every view. Runs on the UI goroutine.
+func (p *player) pushCover(img image.Image) {
+	p.mu.Lock()
+	views := p.views
+	p.mu.Unlock()
+	for _, v := range views {
+		v.setCover(img)
+	}
 }
 
 // maybeRepeat restarts the queue from the top when repeat-all is on and the last
@@ -365,24 +439,24 @@ func (t *transportBar) apply(s playback.Status) {
 // track, with the position at (near) the track's end. This is distinguishable
 // from a user Stop, which now rewinds the position to 0. repeatFired guards a
 // single restart until playback is observed again.
-func (t *transportBar) maybeRepeat(s playback.Status) {
-	t.mu.Lock()
-	repeat := t.repeatAll
-	fired := t.repeatFired
+func (p *player) maybeRepeat(s playback.Status) {
+	p.mu.Lock()
+	repeat := p.repeatAll
+	fired := p.repeatFired
 	atEnd := s.Stopped && s.TotalTracks > 0 &&
 		s.CurrentTrack == s.TotalTracks-1 &&
 		s.TrackDuration > 0 && s.Position >= s.TrackDuration-0.75
 	switch {
 	case repeat && atEnd && !fired:
-		t.repeatFired = true
+		p.repeatFired = true
 	case s.Playing:
-		t.repeatFired = false
+		p.repeatFired = false
 	}
 	restart := repeat && atEnd && !fired
-	t.mu.Unlock()
+	p.mu.Unlock()
 
 	if restart {
-		go func() { _ = t.backend.Play() }()
+		go func() { _ = p.backend.Play() }()
 	}
 }
 
@@ -394,17 +468,15 @@ func absDiff(a, b float64) float64 {
 	return a - b
 }
 
-// nowPlaying resolves the current track's label, preferring the queued title
-// and falling back to the backend's file identifier. Caller holds t.mu.
 // resolveMissing resolves queue URLs the registry doesn't know (off the UI
 // goroutine, since the resolver hits tie over the network) and stores what it
 // finds. URLs that don't resolve stay marked in `resolving` so they aren't
 // retried every poll. The next status poll re-labels the now-playing text and
 // the queue rows from the freshly populated registry.
-func (t *transportBar) resolveMissing(urls []string) {
-	t.mu.Lock()
-	resolver := t.resolver
-	t.mu.Unlock()
+func (p *player) resolveMissing(urls []string) {
+	p.mu.Lock()
+	resolver := p.resolver
+	p.mu.Unlock()
 	if resolver == nil {
 		return
 	}
@@ -417,28 +489,59 @@ func (t *transportBar) resolveMissing(urls []string) {
 	if len(found) == 0 {
 		return
 	}
-	t.mu.Lock()
+	p.mu.Lock()
 	for u, trk := range found {
-		t.metas[u] = trk
+		p.metas[u] = trk
 	}
-	t.mu.Unlock()
+	p.mu.Unlock()
 }
 
-func (t *transportBar) nowPlaying(s playback.Status) string {
+// trackInfo is the resolved identity of the current track: what to display,
+// which album's art to show, and whether tie metadata was available at all.
+type trackInfo struct {
+	url      string
+	title    string
+	subtitle string
+	albumUID string
+	known    bool
+}
+
+// nowPlaying resolves the current track's labels and album, preferring the
+// queued metadata and falling back to the backend's file identifier. Caller
+// holds p.mu.
+func (p *player) nowPlaying(s playback.Status) trackInfo {
+	info := trackInfo{title: "Nothing playing"}
 	if s.CurrentTrack >= 0 && s.CurrentTrack < len(s.Playlist) {
-		if m, ok := t.metas[s.Playlist[s.CurrentTrack]]; ok {
+		info.url = s.Playlist[s.CurrentTrack]
+		if m, ok := p.metas[info.url]; ok {
+			info.known = true
+			info.albumUID = m.AlbumUID
+			info.subtitle = trackSubtitle(m)
 			if label := m.Display(); label != "" {
-				return label
+				info.title = label
+				return info
 			}
 		}
 	}
 	if s.TotalTracks == 0 {
-		return "Nothing playing"
+		return trackInfo{title: "Nothing playing"}
 	}
 	if s.CurrentFile != "" {
-		return s.CurrentFile
+		info.title = s.CurrentFile
 	}
-	return "Nothing playing"
+	return info
+}
+
+// trackSubtitle renders a track's secondary line: artist, album, or both.
+func trackSubtitle(t data.Track) string {
+	switch {
+	case t.Artist != "" && t.Album != "":
+		return t.Artist + " · " + t.Album
+	case t.Artist != "":
+		return t.Artist
+	default:
+		return t.Album
+	}
 }
 
 // formatDuration renders seconds as m:ss (or h:mm:ss past an hour).

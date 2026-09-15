@@ -47,7 +47,20 @@ type AppConfig struct {
 	// QueueColumns is the ordered set of visible column keys for the play queue
 	// table, configured independently of AlbumColumns. Empty means the default.
 	QueueColumns []string
+	// Layout pins the UI layout instead of deriving it from the window width:
+	// LayoutCompact for the phone layout (drawer sidebar, grouped playlist,
+	// mini bar + Now Playing page), LayoutRegular for the split layout.
+	// Empty or LayoutAuto picks by width, which cannot always guess right for
+	// a tablet — hence the override.
+	Layout string
 }
+
+// Layout values for AppConfig.Layout.
+const (
+	LayoutAuto    = "auto"
+	LayoutCompact = "compact"
+	LayoutRegular = "regular"
+)
 
 // Default returns the built-in defaults used before any config file exists.
 func Default() AppConfig {

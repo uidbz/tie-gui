@@ -163,6 +163,7 @@ func (t *tieFSTree) selected(uid widget.TreeNodeID) {
 	t.mu.Unlock()
 	if isFile {
 		t.openTrack(f)
+		t.page.closeSidebar()
 		return
 	}
 	// The Fyne tree re-focuses itself after OnSelected returns (treeNode.Tapped
@@ -172,6 +173,9 @@ func (t *tieFSTree) selected(uid widget.TreeNodeID) {
 	fyne.Do(func() {
 		t.showDir(uid)
 		t.page.viewer.ReleaseFocus()
+		// In the compact layout the drawer is covering the wall it just
+		// changed; close it so the user sees the albums they picked.
+		t.page.closeSidebar()
 	})
 }
 

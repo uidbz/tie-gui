@@ -30,7 +30,10 @@ type browsePage struct {
 
 	// transport is the shared playback controller, used to feed now-playing
 	// labels when albums are played or enqueued. Wired by the App shell.
-	transport *transportBar
+	transport *player
+
+	// covers is the shared album-art cache, used by the wall's thumbnailer.
+	covers *coverStore
 
 	// fsTree is the file-browser tab: the tie virtual filesystem as a tree,
 	// mirroring tie-view. Built before the sidebar (it is one of its tabs).
@@ -47,6 +50,10 @@ type browsePage struct {
 	// mobile is true on touch platforms, where the queue is a swipe-reached
 	// full-screen view rather than a persistent pane.
 	mobile bool
+	// compact is true in the phone layout, where the sidebar is a slide-over
+	// drawer and the selected tags are summarised as filter chips above the
+	// grid (the sidebar being off-screen, they would otherwise be invisible).
+	compact bool
 
 	// queuePanel is the desktop right-hand playlist pane; a cover dragged onto its
 	// bounds is inserted at the drop point. nil on mobile (no persistent pane).
@@ -70,10 +77,17 @@ type browsePage struct {
 // newBrowsePage builds the cover wall and its sidebar for the given session.
 // The gallery owns the window content; sub-views (album, settings) swap it via
 // window.SetContent and restore the wall with viewer.ChangeGallery.
-func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session) *browsePage {
-	b := &browsePage{app: app, win: win, session: session}
+func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers *coverStore, compact bool) *browsePage {
+	b := &browsePage{app: app, win: win, session: session, covers: covers, compact: compact}
 
 	config := gallery.LoadConfig(win, "")
+	// Adjust before NewGallery: the config is passed by value, so a later
+	// AdjustForMobile would only reach this page's copy and leave the gallery
+	// itself with desktop tile sizes, page size and worker count.
+	b.mobile = gallery.NewPlatform().IsMobile()
+	if b.mobile {
+		config.AdjustForMobile()
+	}
 
 	b.viewer = gallery.NewGallery(app, win, config, func(t *gallery.Tile) {
 		t.Viewer.ChangeImage(t.Info) // Openable → routes to AudioAlbumItem.Open
@@ -83,16 +97,13 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session) *browse
 			b.showAlbumMenu(t, item.album)
 		}
 	}
-	b.mobile = b.viewer.Platform().IsMobile()
-	if b.mobile {
-		config.AdjustForMobile()
-	}
 	b.viewer.Thumbnailer = &coverThumbnailer{
 		page:      b,
 		tileWidth: int(config.General.TileWidth),
 	}
 	b.fsTree = newTieFSTree(b)
 	b.viewer.Sidebar = b.buildSidebar()
+	b.viewer.SidebarDrawer = compact
 	b.viewer.Init()
 	// The file-browser tab shows hidden directories only on demand, toggled
 	// from the gallery ☰ menu (matching tie-view).
@@ -115,6 +126,62 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session) *browse
 // Content is the gallery's root object, used as the window's initial content.
 func (b *browsePage) Content() fyne.CanvasObject { return b.viewer.Content }
 
+// setCompact switches the sidebar between the split pane and the slide-over
+// drawer, and (in the compact layout) turns on the filter chip row. The caller
+// re-pushes the content afterwards.
+func (b *browsePage) setCompact(compact bool) {
+	if b.compact == compact {
+		return
+	}
+	b.compact = compact
+	b.viewer.SidebarDrawer = compact
+	b.viewer.CreateView()
+	b.updateFilterChips()
+}
+
+// openSidebar shows the tag/files sidebar: opening the drawer in the compact
+// layout, and a no-op in the regular one where it is already a visible pane.
+func (b *browsePage) openSidebar() {
+	if !b.compact {
+		return
+	}
+	// The cover wall must be the current view for the drawer to be visible.
+	b.showBrowse()
+	b.viewer.OpenSidebar()
+}
+
+// closeSidebar hides the drawer (compact layout only).
+func (b *browsePage) closeSidebar() {
+	if !b.compact {
+		return
+	}
+	b.viewer.CloseSidebar()
+}
+
+// sidebarOpen reports whether the drawer is currently covering the grid. It is
+// false in the regular layout, where the sidebar is a pane and nothing needs
+// dismissing.
+func (b *browsePage) sidebarOpen() bool {
+	return b.compact && b.viewer.SidebarOpen()
+}
+
+// updateFilterChips refreshes the summary of the current tag selection shown
+// above the grid. Only the compact layout needs it: with the sidebar in a
+// drawer the selection is otherwise invisible, so the user cannot tell why the
+// wall holds what it holds. Each chip drops its own tag; the row as a whole
+// reopens the drawer.
+func (b *browsePage) updateFilterChips() {
+	if !b.compact {
+		b.viewer.SetFilterChips(nil, nil)
+		return
+	}
+	include, exclude := b.ts.SelectedTags()
+	chips := gallery.TagFilterChips(include, exclude, func(tag string) {
+		b.ts.RemoveSelected(tag)
+	})
+	b.viewer.SetFilterChips(chips, b.openSidebar)
+}
+
 // buildSidebar creates the navigation sidebar: a Tags tab (tag selection
 // with co-tag faceted refinement and ☆/★ favorites, matching tie-view), a
 // Files tab (the tie virtual filesystem tree), and — appended later via
@@ -128,6 +195,11 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 	ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
 		b.win.Canvas().Unfocus()
+		b.updateFilterChips()
+		// In the compact layout the drawer covers the grid it just changed, so
+		// a pick returns the user to the results; the chip row (and the Tags
+		// button) get them back here.
+		b.closeSidebar()
 		b.refreshAlbums(in, ex)
 		go b.refineTags(in, ex)
 	}

@@ -46,9 +46,9 @@ func (a *AudioAlbumItem) Dimensions() (int, int) { return 1000, 1000 }
 func (a *AudioAlbumItem) Open() { a.open(a.album) }
 
 // coverThumbnailer implements gallery.Thumbnailer, supplying album-cover
-// thumbnails from the filehost. Covers are decoded and rescaled to the tile
-// size; albums without a stored cover get a neutral placeholder square. It
-// reads the live session through the page so a settings change takes effect.
+// thumbnails from the shared cover store. Covers are rescaled to the tile size;
+// albums without a stored cover get a neutral placeholder square. It reads the
+// live session through the page so a settings change takes effect.
 type coverThumbnailer struct {
 	page      *browsePage
 	tileWidth int
@@ -60,12 +60,11 @@ func (t *coverThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker,
 		return nil, errors.New("not an audio album item")
 	}
 	info.ThumbnailIsScaled = true
-	rs, err := t.page.session.CoverReader(item.album)
-	if err != nil {
-		return placeholderCover(t.tileWidth * 2), nil
-	}
-	decoded, _, err := gallery.Decode(rs)
-	if err != nil {
+	// This runs on a gallery loader goroutine, so the blocking store lookup is
+	// fine here; going through the store means the queue's cover column and the
+	// transport reuse this fetch instead of repeating it.
+	decoded := t.page.covers.Get(item.album.UID)
+	if decoded == nil {
 		return placeholderCover(t.tileWidth * 2), nil
 	}
 	scaled := gallery.ScaleImage(decoded, t.tileWidth*2)

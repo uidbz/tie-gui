@@ -77,12 +77,21 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 	} else if len(tracks) == 0 {
 		body = widget.NewLabel("No tracks found.")
 	} else {
-		table = newTrackTable(b.win, tracks, b.session.Cfg.AlbumColumns,
+		// The compact layout ignores the persisted column set: it is a desktop
+		// choice that does not fit a phone, and there is no columns dialog here
+		// to change it with.
+		colKeys := b.session.Cfg.AlbumColumns
+		opts := trackTableOpts{sortable: true, builtinColumnsButton: true}
+		if b.compact {
+			colKeys = nil
+			opts = trackTableOpts{sortable: true, defaultCols: compactAlbumColumns}
+		}
+		table = newTrackTable(b.win, tracks, colKeys,
 			// Play from the displayed (possibly re-sorted) order, so a tap starts
 			// playback from that visible row onward.
 			func(i int) { b.playTracks(table.tracks, i) },
 			b.saveAlbumColumns,
-			trackTableOpts{sortable: true, builtinColumnsButton: true},
+			opts,
 		)
 		body = table.object
 	}

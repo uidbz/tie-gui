@@ -16,12 +16,19 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
 
-// queuePage renders the live playback queue (pwplay's playlist) using the same
-// column-customizable table as the album view, with a leading column marking
-// the currently-playing track. Rows drag to reorder (→ MoveItems), and the
-// toolbar offers shuffle, a repeat-all toggle, and save-as-playlist. It stays
-// live by subscribing to the transport bar's status poll instead of running its
-// own ticker, so all state mutation happens on the UI goroutine.
+// queuePage renders the live playback queue (pwplay's playlist). It has two
+// renderings of the same state:
+//
+//   - the regular layout uses the column-customizable table shared with the
+//     album view (leading play indicator, cover column, drag-reorder,
+//     multi-select);
+//   - the compact layout uses queueList, a phone-shaped list grouped by album
+//     with cover headers, because a multi-column table does not fit a phone.
+//
+// Both are fed by rebuildTracks, so switching between them (a window resize
+// across the compact threshold) needs no re-sync. The page stays live by
+// subscribing to the player's status poll instead of running its own ticker, so
+// all state mutation happens on the UI goroutine.
 //
 // Header-click sorting is intentionally disabled: the queue carries an
 // intrinsic play order that drag-reorder and MoveItems operate on, and the
@@ -31,17 +38,24 @@ type queuePage struct {
 	win       fyne.Window
 	session   *data.Session
 	backend   playback.PlaybackBackend
-	transport *transportBar
-	back      func() // restore the album cover wall (mobile back button)
-	mobile    bool
+	transport *player
+	covers    *coverStore
+	back      func() // restore the album cover wall (compact back button)
+	// compact selects the grouped-list rendering over the table.
+	compact bool
 
 	table     *trackTable
+	list      *queueList
 	repeatBtn *widget.Button
-	object    fyne.CanvasObject
+	// toolbarHolder / bodyHolder are swapped in place when the layout mode
+	// changes, so the page object handed to the shell stays the same.
+	toolbarHolder *fyne.Container
+	bodyHolder    *fyne.Container
+	object        *fyne.Container
 
 	// snapshot of the last status, read by the table cell callbacks. Mutated
 	// only on the UI goroutine. qtracks is the table's row model, rebuilt from
-	// playlist URLs via the transport's URL→Track registry.
+	// playlist URLs via the player's URL→Track registry.
 	playlist []string
 	qtracks  []data.Track
 	current  int
@@ -59,8 +73,17 @@ type queuePage struct {
 }
 
 // newQueuePage builds the queue view once; show() (re)binds it to the live poll.
-func newQueuePage(win fyne.Window, session *data.Session, transport *transportBar, mobile bool, back func(), onColumnsChanged func([]string)) *queuePage {
-	q := &queuePage{win: win, session: session, backend: session.Backend, transport: transport, mobile: mobile, back: back, current: -1}
+func newQueuePage(win fyne.Window, session *data.Session, transport *player, covers *coverStore, compact bool, back func(), onColumnsChanged func([]string)) *queuePage {
+	q := &queuePage{
+		win:       win,
+		session:   session,
+		backend:   session.Backend,
+		transport: transport,
+		covers:    covers,
+		compact:   compact,
+		back:      back,
+		current:   -1,
+	}
 
 	q.table = newTrackTable(win, nil, session.Cfg.QueueColumns,
 		nil, // single-tap selects (multiSelect); double-tap plays via onDoubleTap
@@ -72,21 +95,61 @@ func newQueuePage(win fyne.Window, session *data.Session, transport *transportBa
 			onDragMove:  q.onDragMove,
 			onDoubleTap: q.playRow,
 			multiSelect: true,
+			covers:      covers,
+			// The queue mixes albums, so artwork earns its column here (unlike
+			// the album view, where every row would repeat one cover).
+			defaultCols: allAlbumColumns,
 		},
 	)
+	q.list = newQueueList(q)
 
-	content := container.NewBorder(q.buildToolbar(), nil, nil, nil, q.table.object)
-	if mobile {
-		// A left-edge rightward swipe returns to the cover wall (mirrors the
-		// gallery's left→right swipe); the strip sits above the content but only
-		// occupies the left edge, leaving the table free to scroll.
-		strip := newEdgeSwipe(q.leave)
-		q.object = container.NewStack(content, container.NewBorder(nil, nil, strip, nil, nil))
-	} else {
-		q.object = content
-	}
+	q.toolbarHolder = container.NewStack()
+	q.bodyHolder = container.NewStack()
+	q.object = container.NewStack(container.NewBorder(q.toolbarHolder, nil, nil, nil, q.bodyHolder))
+	q.applyLayout()
 	return q
 }
+
+// applyLayout installs the toolbar and body for the current layout mode, plus
+// the compact layout's back-swipe strip.
+func (q *queuePage) applyLayout() {
+	q.toolbarHolder.Objects = []fyne.CanvasObject{q.buildToolbar()}
+	q.toolbarHolder.Refresh()
+
+	if q.compact {
+		q.bodyHolder.Objects = []fyne.CanvasObject{q.list.Object()}
+	} else {
+		q.bodyHolder.Objects = []fyne.CanvasObject{q.table.object}
+	}
+	q.bodyHolder.Refresh()
+
+	// A left-edge rightward swipe returns to the cover wall (mirrors the
+	// gallery's left→right swipe); the strip sits above the content but only
+	// occupies the left edge, leaving the list free to scroll. It exists only
+	// in the compact layout, where the queue is a full-screen view.
+	base := q.object.Objects[0]
+	if q.compact {
+		strip := newEdgeSwipe(q.leave)
+		q.object.Objects = []fyne.CanvasObject{base, container.NewBorder(nil, nil, strip, nil, nil)}
+	} else {
+		q.object.Objects = []fyne.CanvasObject{base}
+	}
+	q.object.Refresh()
+}
+
+// setCompact switches the rendering when the window crosses the compact width
+// threshold. The row model is shared, so the new view is populated immediately.
+func (q *queuePage) setCompact(compact bool) {
+	if q.compact == compact {
+		return
+	}
+	q.compact = compact
+	q.applyLayout()
+	q.rebuildTracks()
+}
+
+// Object returns the page's root object for the shell to place.
+func (q *queuePage) Object() fyne.CanvasObject { return q.object }
 
 // rowIndicator returns the play glyph for the current row, else "". A text glyph
 // (not a widget.Icon) because Icon.SetResource(nil) does not reliably repaint
@@ -99,22 +162,33 @@ func (q *queuePage) rowIndicator(row int) string {
 	return ""
 }
 
-// buildToolbar builds the top row: shuffle, repeat, save, columns (and a back
-// button on mobile, where the queue is a full-screen view).
+// buildToolbar builds the top row: shuffle, repeat, save, clear, columns. The
+// compact layout drops the labels (and the Columns button, which configures a
+// table it does not show) and gains a back button, since the queue is a
+// full-screen view there.
 func (q *queuePage) buildToolbar() fyne.CanvasObject {
+	title := widget.NewLabelWithStyle("Playlist", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
+	if q.compact {
+		back := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), q.leave)
+		back.Importance = widget.LowImportance
+		shuffle := widget.NewButtonWithIcon("", theme.MediaReplayIcon(), q.shuffle)
+		save := widget.NewButtonWithIcon("", theme.DocumentSaveIcon(), q.saveQueue)
+		clear := widget.NewButtonWithIcon("", theme.DeleteIcon(), q.clearPlaylist)
+		q.repeatBtn = widget.NewButton("", q.toggleRepeat)
+		q.refreshRepeatLabel()
+		row := container.NewBorder(nil, nil, back, container.NewHBox(shuffle, q.repeatBtn, save, clear), title)
+		return container.NewVBox(row, widget.NewSeparator())
+	}
+
 	shuffle := widget.NewButtonWithIcon("Shuffle", theme.MediaReplayIcon(), q.shuffle)
 	save := widget.NewButtonWithIcon("Save as playlist", theme.DocumentSaveIcon(), q.saveQueue)
 	clear := widget.NewButtonWithIcon("Clear", theme.DeleteIcon(), q.clearPlaylist)
 	columns := widget.NewButtonWithIcon("Columns", theme.MenuIcon(), q.table.showColumnsDialog)
 	q.repeatBtn = widget.NewButton("", q.toggleRepeat)
 	q.refreshRepeatLabel()
-	title := widget.NewLabelWithStyle("Playlist", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 
 	buttons := container.NewHBox(shuffle, q.repeatBtn, save, clear, columns)
-	if q.mobile {
-		back := widget.NewButtonWithIcon("Albums", theme.NavigateBackIcon(), q.leave)
-		buttons = container.NewHBox(back, shuffle, q.repeatBtn, save, clear, columns)
-	}
 	return container.NewVBox(buttons, title, widget.NewSeparator())
 }
 
@@ -171,7 +245,9 @@ func (q *queuePage) applyStatus(s playback.Status) {
 
 // rebuildTracks resolves each playlist URL to its registered track metadata,
 // falling back to a stub whose Display() is the URL's last segment, then pushes
-// the slice into the shared table (which refreshes).
+// the slice into both renderings (the table refreshes itself; the list rebuilds
+// its album grouping). Feeding both, regardless of which is on screen, is what
+// lets a layout-mode switch show a populated view immediately.
 func (q *queuePage) rebuildTracks() {
 	q.qtracks = q.qtracks[:0]
 	for _, url := range q.playlist {
@@ -182,6 +258,123 @@ func (q *queuePage) rebuildTracks() {
 		}
 	}
 	q.table.setTracks(q.qtracks)
+	q.list.setTracks(q.qtracks, q.current)
+}
+
+// queueLen is the number of entries in the queue, for drag clamping.
+func (q *queuePage) queueLen() int { return len(q.playlist) }
+
+// setDragging marks a gesture in progress so status polls don't rebuild the
+// rows mid-drag (which would pull the row out from under the finger).
+func (q *queuePage) setDragging(on bool) { q.dragging = on }
+
+// moveTrack relocates one queue entry, updating the rows immediately and
+// committing to the backend; the next poll reconciles any drift.
+func (q *queuePage) moveTrack(from, to int) {
+	n := len(q.playlist)
+	if from < 0 || to < 0 || from >= n || to >= n || from == to {
+		q.rebuildTracks()
+		return
+	}
+	moveOne(q.playlist, from, to)
+	q.current = shiftIndexOnMove(q.current, from, to)
+	q.rebuildTracks()
+	q.commit([][2]int{{from, to}})
+}
+
+// moveBlock relocates the run [start, start+count) so its top lands at the
+// insertion gap `gap`, used by the compact list's album-level move actions.
+func (q *queuePage) moveBlock(start, count, gap int) {
+	n := len(q.playlist)
+	if count <= 0 || start < 0 || start+count > n {
+		return
+	}
+	sel := make([]int, 0, count)
+	for i := start; i < start+count; i++ {
+		sel = append(sel, i)
+	}
+	want := reorderSelection(n, sel, gap)
+	if want == nil {
+		return
+	}
+	moves := reorderMoves(want)
+	np := make([]string, n)
+	oldCur := q.current
+	for i, idx := range want {
+		np[i] = q.playlist[idx]
+		if idx == oldCur {
+			q.current = i
+		}
+	}
+	q.playlist = np
+	q.rebuildTracks()
+	q.commit(moves)
+}
+
+// removeRange drops count entries starting at index from the queue. Removals go
+// back to front because each backend removal reindexes the entries after it.
+func (q *queuePage) removeRange(start, count int) {
+	n := len(q.playlist)
+	if count <= 0 || start < 0 || start+count > n {
+		return
+	}
+	// Optimistic local update, so the row disappears on touch-release rather
+	// than at the next poll.
+	q.playlist = append(q.playlist[:start], q.playlist[start+count:]...)
+	switch {
+	case q.current >= start+count:
+		q.current -= count
+	case q.current >= start:
+		q.current = -1 // the playing entry itself went away
+	}
+	q.rebuildTracks()
+
+	go func() {
+		for i := start + count - 1; i >= start; i-- {
+			if err := q.backend.Remove(i); err != nil {
+				fyne.Do(func() { dialog.ShowError(err, q.win) })
+				return
+			}
+		}
+		if s, err := q.backend.Status(); err == nil {
+			fyne.Do(func() { q.applyStatus(s) })
+		}
+	}()
+}
+
+// showTrackRowMenu offers the per-track actions of the compact playlist, where
+// there is no room for a multi-select table and its drag semantics.
+func (q *queuePage) showTrackRowMenu(row queueRow, pos fyne.Position) {
+	idx := row.trackIndex
+	items := []*fyne.MenuItem{
+		fyne.NewMenuItem("Play", func() { q.playRow(idx) }),
+		fyne.NewMenuItem("Remove track", func() { q.removeRange(idx, 1) }),
+	}
+	if idx > 0 {
+		items = append(items, fyne.NewMenuItem("Move up", func() { q.moveTrack(idx, idx-1) }))
+	}
+	if idx < len(q.playlist)-1 {
+		items = append(items, fyne.NewMenuItem("Move down", func() { q.moveTrack(idx, idx+1) }))
+	}
+	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("", items...), q.win.Canvas(), pos)
+}
+
+// showAlbumRowMenu offers the album-level actions of the compact playlist: the
+// whole run of consecutive entries the header covers is played, removed or
+// moved as one block.
+func (q *queuePage) showAlbumRowMenu(row queueRow, pos fyne.Position) {
+	start, count := row.groupStart, row.groupCount
+	items := []*fyne.MenuItem{
+		fyne.NewMenuItem("Play album", func() { q.playRow(start) }),
+		fyne.NewMenuItem("Remove album", func() { q.removeRange(start, count) }),
+	}
+	if start > 0 {
+		items = append(items, fyne.NewMenuItem("Move album up", func() { q.moveBlock(start, count, start-1) }))
+	}
+	if start+count < len(q.playlist) {
+		items = append(items, fyne.NewMenuItem("Move album down", func() { q.moveBlock(start, count, start+count+1) }))
+	}
+	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("", items...), q.win.Canvas(), pos)
 }
 
 // onDragStart records the grabbed row and the rows the drag carries (the whole
@@ -273,10 +466,7 @@ func (q *queuePage) onReorder(from, to int) {
 	}
 
 	if len(sel) <= 1 {
-		moveOne(q.playlist, from, to)
-		q.current = shiftIndexOnMove(q.current, from, to)
-		q.rebuildTracks()
-		q.commit([][2]int{{from, to}})
+		q.moveTrack(from, to)
 		return
 	}
 

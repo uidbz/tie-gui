@@ -88,6 +88,15 @@ func (r *pwplayRemote) Clear() error {
 	return nil
 }
 
+// Remove drops the queue item at index. pwplay applies the removal in its
+// decoder loop, so the caller's next status poll reflects it.
+func (r *pwplayRemote) Remove(index int) error {
+	if index < 0 {
+		return nil
+	}
+	return r.c.RemoveTrack(index)
+}
+
 // PlayAlbum replaces the queue then plays. pwplay has no clear-playlist call
 // and processes add/remove asynchronously, so the order matters: we APPEND the
 // new tracks first, then trim exactly the old tracks off the front (index 0),

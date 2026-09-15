@@ -24,13 +24,37 @@ type albumColumn struct {
 
 // allAlbumColumns is the full column set in the default display order. The
 // Track-no column always shows the real tag track number (even for a custom
-// playlist ordering, where it therefore reads out of sequence).
+// playlist ordering, where it therefore reads out of sequence). The Art column
+// renders the track's album cover rather than text.
 var allAlbumColumns = []albumColumn{
+	{"cover", "Art"},
 	{"trackno", "Track no"},
 	{"title", "Title"},
 	{"artist", "Artist"},
 	{"album", "Album"},
 	{"year", "Year"},
+	{"duration", "Duration"},
+}
+
+// defaultAlbumColumns is the album view's default set: every column except the
+// artwork, which would repeat the same cover on every row of a single album
+// (the album header already shows it).
+var defaultAlbumColumns = []albumColumn{
+	{"trackno", "Track no"},
+	{"title", "Title"},
+	{"artist", "Artist"},
+	{"album", "Album"},
+	{"year", "Year"},
+	{"duration", "Duration"},
+}
+
+// compactAlbumColumns is the album view's column set in the compact layout: a
+// phone has room for one text column, so only the track number, the title and
+// the running time are shown (and the Columns dialog is not offered, since
+// there is nothing useful to add).
+var compactAlbumColumns = []albumColumn{
+	{"trackno", "Track no"},
+	{"title", "Title"},
 	{"duration", "Duration"},
 }
 
@@ -51,9 +75,9 @@ func albumColumnTitle(key string) string {
 }
 
 // resolveAlbumColumns maps persisted column keys to columns, dropping unknown or
-// duplicate keys and falling back to the full default set when the result is
+// duplicate keys and falling back to the given default set when the result is
 // empty (no config yet, or a config listing only stale keys).
-func resolveAlbumColumns(keys []string) []albumColumn {
+func resolveAlbumColumns(keys []string, fallback []albumColumn) []albumColumn {
 	var cols []albumColumn
 	seen := map[string]bool{}
 	for _, k := range keys {
@@ -66,7 +90,7 @@ func resolveAlbumColumns(keys []string) []albumColumn {
 		}
 	}
 	if len(cols) == 0 {
-		cols = append(cols, allAlbumColumns...)
+		cols = append(cols, fallback...)
 	}
 	return cols
 }
@@ -94,6 +118,12 @@ type trackTableOpts struct {
 	// builtinColumnsButton adds a "Columns" button in a built-in toolbar above
 	// the table (album view). The queue supplies its own toolbar button instead.
 	builtinColumnsButton bool
+	// covers supplies album artwork for the "cover" column. When nil that
+	// column renders empty placeholders.
+	covers *coverStore
+	// defaultCols is the column set used when the persisted keys are empty or
+	// stale; nil selects defaultAlbumColumns.
+	defaultCols []albumColumn
 }
 
 // trackTable renders a slice of tracks as a column-customizable table shared by
@@ -122,10 +152,13 @@ type trackTable struct {
 }
 
 func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPlay func(int), onColumnsChanged func([]string), opts trackTableOpts) *trackTable {
+	if opts.defaultCols == nil {
+		opts.defaultCols = defaultAlbumColumns
+	}
 	at := &trackTable{
 		win:              win,
 		tracks:           tracks,
-		cols:             resolveAlbumColumns(colKeys),
+		cols:             resolveAlbumColumns(colKeys, opts.defaultCols),
 		opts:             opts,
 		onPlay:           onPlay,
 		onColumnsChanged: onColumnsChanged,
@@ -151,7 +184,13 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 	at.table.RowCount = func() int { return len(at.tracks) }
 
 	ft := at.table.GetFlexTable()
+	// Cells are built per position, so the artwork column can be an image while
+	// every other column stays a label. The table's row height comes from the
+	// header, not from these cells, so the cover simply fits the row.
 	ft.SetCreateCell(func(col, row int) fyne.CanvasObject {
+		if at.columnKeyAt(col) == "cover" {
+			return newCoverCell(at.opts.covers)
+		}
 		lbl := widget.NewLabel("")
 		lbl.Truncation = fyne.TextTruncateEllipsis
 		return lbl
@@ -160,7 +199,14 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 		if row < 0 || row >= len(at.tracks) {
 			return
 		}
-		lbl := obj.(*widget.Label)
+		if cell, ok := obj.(*coverCell); ok {
+			cell.show(at.tracks[row].AlbumUID)
+			return
+		}
+		lbl, ok := obj.(*widget.Label)
+		if !ok {
+			return
+		}
 		if at.opts.indicator != nil && col == 0 {
 			lbl.SetText(at.opts.indicator(row))
 			return
@@ -259,6 +305,16 @@ func (at *trackTable) colOffset() int {
 		return 1
 	}
 	return 0
+}
+
+// columnKeyAt maps a table column index to its column key, or "" for the
+// leading indicator column (which is not part of the customizable set).
+func (at *trackTable) columnKeyAt(col int) string {
+	ci := col - at.colOffset()
+	if ci < 0 || ci >= len(at.cols) {
+		return ""
+	}
+	return at.cols[ci].key
 }
 
 // cellValue renders one track's value for a column key.
@@ -380,7 +436,7 @@ func (at *trackTable) hideInsertionLine() { at.table.GetFlexTable().HideInsertio
 const indicatorWidth float32 = 32
 
 func columnFixedWidth(key string) float32 {
-	fixed := map[string]float32{"trackno": 70, "year": 70, "duration": 90, "artist": 180, "album": 180}
+	fixed := map[string]float32{"cover": 44, "trackno": 70, "year": 70, "duration": 90, "artist": 180, "album": 180}
 	if w := fixed[key]; w > 0 {
 		return w
 	}
@@ -435,7 +491,7 @@ func (at *trackTable) setTracks(tracks []data.Track) {
 
 // setColumns applies a new visible-column set and refreshes.
 func (at *trackTable) setColumns(keys []string) {
-	at.cols = resolveAlbumColumns(keys)
+	at.cols = resolveAlbumColumns(keys, at.opts.defaultCols)
 	at.applyColumnConfig()
 	at.table.Refresh()
 }

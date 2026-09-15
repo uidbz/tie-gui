@@ -704,11 +704,155 @@ cleared) and `clearAlbums` empties the wall in the background, so stale
 albums from the prior collection can neither display nor be opened; the user
 stays on the settings page (no `ChangeGallery`).
 
-**Mobile nav bar:** on mobile the cover wall carries a bottom bar under the
-transport with **Playlist** / **Settings** buttons (plus the swipe gestures);
-the queue and settings views are full-screen without it. `App.showBrowseView`
-is the shared back target; `shellWindow.SetBottom` swaps the pinned bottom
-bar without touching the window content.
+**Compact vs regular layout:** see "tie-audio compact layout" below — on a
+phone-width window the sidebar becomes a slide-over drawer, the queue an
+album-grouped list, and the transport a mini bar plus a full-screen Now
+Playing page. `App.showBrowseView` is the shared back target;
+`shellWindow.SetBottom` swaps the pinned bottom bar without touching the
+window content.
+
+---
+
+## tie-audio compact layout (`cmd/tie-audio/internal/ui/app.go`, `layout.go`)
+
+The shell renders one of two layouts, chosen from the **window width**, not
+from `IsMobile()` — Fyne reports tablets as mobile, and a tablet (or a phone
+in landscape) has room for the split layout:
+
+| | regular (desktop, tablet in landscape) | compact (phone, tablet in portrait) |
+|---|---|---|
+| Tags/Files sidebar | `HSplit` pane inside the gallery | slide-over **drawer** over the grid + filter chip row |
+| Playlist | `trackTable` in a permanent right-hand `HSplit` pane | full-screen **album-grouped list** (`queueList`) |
+| Album track list | persisted column set + Columns dialog | fixed `compactAlbumColumns` (track no / title / duration) |
+| Transport | `regularBar` (one row, both sliders) | `miniBar` → full-screen `nowPlayingPage` |
+| Bottom nav | — | Tags / Playlist / Settings under the mini bar |
+
+- `gallery.Platform.CompactLayout(width)` is the width heuristic
+  (`width <= 0` counts as compact on mobile: the canvas has not been laid out
+  yet, and guessing the split layout for a phone shows it for one frame).
+  `CompactWidth` is **1000** dp — the bar is a tablet in *landscape*, not a
+  phone: a 10" tablet in portrait is ~800dp, which fits a split on paper but
+  leaves a 160dp sidebar, narrower than a whole phone screen.
+- The heuristic is only the default: `AppConfig.Layout`
+  (`auto`/`compact`/`regular`, Settings → "layout") pins the mode, because
+  width cannot classify a tablet (the same device is ~800dp portrait and
+  ~1280dp landscape, dp varies by density bucket, and whether a 10" screen
+  *should* show panes is taste). `ui.compactForWidth(pref, platform, width)`
+  is the single decision point; `App.refreshLayoutInfo` shows the mode in use,
+  what auto would pick, and the measured width — otherwise the user has no way
+  to see why the layout looks the way it does. `gallery.NewPlatformFor(bool)`
+  builds a Platform with a chosen device type (tests, and callers that know).
+- `widthWatcher` (`ui/layout.go`, the same `Resize`-override trick as
+  `gallery.sizeWatcher`) is stacked into **every** `shellWindow.wrap`, so a
+  rotation or window resize reaches `App.onWidth` → `App.setCompact`. The
+  rebuild is deferred through `fyne.Do` because `onWidth` runs inside a layout
+  pass. Views keep their state; only the containers around them are rebuilt
+  (`queuePage.setCompact`, `browsePage.setCompact`, `applyBottomBar`,
+  `showCurrentView`). `shellWindow.dropSplit` remembers the divider offset so a
+  compact excursion doesn't reset it.
+- **Back key:** `App.syncBackHandler` installs the window-level
+  `SetOnTypedKey` handler *only* while something can be unwound (drawer open,
+  or a view other than the cover wall). With no handler set, Fyne's mobile
+  driver routes Back to `GoBack()` (leave the app) — capturing it
+  unconditionally would make tie-audio impossible to exit. Gallery hotkeys are
+  deliberately not dispatched (their defaults include Quit). Drawer state
+  changes arrive via `gallery.Gallery.OnSidebarToggled`, which also fires on a
+  scrim dismiss.
+- Swipes: left on the wall → playlist, right → open the drawer (compact),
+  swipe up on the mini bar → Now Playing, swipe down over its cover → back,
+  left-edge swipe in the queue → back to the wall (`swipe.go`).
+
+### Transport: one controller, three views (`transport.go`, `transportview.go`, `nowplaying.go`)
+
+`player` is the controller (poll loop, URL→Track registry, repeat, pending
+seek/volume guards) and holds **no widgets**. Each view (`regularBar`,
+`miniBar`, `nowPlayingPage`) builds its own widgets — Fyne objects cannot have
+two parents — and receives a `transportState` per poll via `transportView`.
+All views stay registered whether on screen or not, so navigating never loses
+or double-applies playback state.
+
+Sliders are built by `player.newSeekSlider` / `newVolumeSlider`, **not** by the
+views: the `applying` / `pendSeek` / `pendVol` echo guards have to be shared.
+`apply` sets `applying` once around every view's `SetValue`, so a poll pushing
+server state into three views cannot echo back a `Seek` (each `Seek` clears
+pwplay's ring buffer — an echo is audible).
+
+`nowPlayingPage` exists because a phone-width bar cannot hold a usable seek
+slider *and* the metadata: there both sliders span the full window width, with
+the seek times *under* the slider rather than beside it.
+
+### Album artwork (`covers.go`)
+
+`coverStore` caches **decoded** album art keyed by album UID, shared by the
+cover wall's `coverThumbnailer`, the queue's cover column, the grouped list's
+headers, the mini bar and the Now Playing page. Covers are downscaled to
+`coverMaxEdge` (512) and the cache is bounded (`coverLimit` = 120, insertion
+-order eviction) — decoded RGBA is ~1 MB each.
+
+- `Lookup` is the non-blocking cache peek; `Request` resolves off the UI
+  goroutine and calls back **on** it (synchronously on a hit, so table/list
+  cells paint without flicker); `Get` blocks and is for the gallery's
+  thumbnail workers. Concurrent asks for one album coalesce (`inflight`).
+- A **coverless** album is cached as a nil image (`data.ErrNoCover`) so it is
+  never re-probed; a **fetch failure** is *not* cached, so a cover that was
+  merely unreachable is retried.
+- `coverCell` (table cell / list row) records the album UID it is showing and
+  drops a late result if the cell has been recycled — the same hazard that
+  forces the queue's play indicator to be a label rather than an icon.
+- Resolution: `Session.CoverBytesForUID(uid)` → the album's own `thumbnail`
+  relation, else `dirCoverHash` (a `cover.*`/`folder.*`/`front.*` child, else
+  the first image). A collection switch clears the store and re-points its
+  session (`settings.go`).
+
+`data.Track.AlbumUID` is what artwork and grouping key off: `TrackForHash`
+takes it from the track's `tie-parent` edges, `AlbumTracks` overrides it with
+the directory being listed, and the **playlist** path excludes the playlist's
+own UID (`trackForHash(hash, excludeParent)`) — a saved playlist parents every
+track it lists, and grouping by it would collapse a mixed playlist into one
+album with one cover.
+
+### Compact playlist (`queuelist.go`)
+
+`buildQueueRows` groups the queue into album headers followed by their tracks
+by **consecutive** runs of `AlbumUID` (falling back to the `Album` tag, then
+one "Unknown album" run), so the same album at two positions is two groups —
+what the user sees and reorders. Header rows carry `groupStart`/`groupCount`
+so album-level actions address the block directly.
+
+- tap a track → `Goto`; long-press (`TappedSecondary` on mobile) → Play /
+  Remove track / Move up / Move down; header ⋮ or long-press → Play album /
+  Remove album / Move album up / down (block moves reuse
+  `reorderSelection`+`reorderMoves`).
+- Reordering uses a `≡` drag handle only: a drag starting anywhere on the row
+  is the same gesture as the list's own scrolling. `queueDragHandle` converts
+  travelled pixels to queue positions via the fixed track-row height and shows
+  a ghost label; `queuePage.setDragging` suppresses poll rebuilds mid-gesture.
+- Removal needs `playback.PlaybackBackend.Remove(index)` (pwplay
+  `RemoveTrack`); `queuePage.removeRange` deletes back-to-front because each
+  backend removal reindexes the entries after it.
+
+`rebuildTracks` feeds **both** the table and the list regardless of which is on
+screen, so a layout switch shows a populated view immediately.
+
+### Sidebar drawer (`gallery/drawer.go`, `gallery/filterchips.go`)
+
+`Gallery.SidebarDrawer` selects the drawer over the `HSplit` in `CreateView`;
+`OpenSidebar` / `CloseSidebar` / `SidebarOpen` / `OnSidebarToggled` drive it,
+and `ToggleSidebar` (the bottom-bar button, a filter icon in drawer mode)
+flips the overlay instead of rebuilding the content — the grid keeps its
+scroll position. The drawer is `drawerLayout{scrim, panel}`: the panel takes
+85% of the width capped at 360, the scrim dismisses on tap or a leftward drag,
+and both a scrim and a panel-level tap sink stop pointer events reaching the
+tiles underneath. **`CreateView` must drop the drawer when building the split**
+(and vice versa): the sidebar object cannot have two parents.
+
+`SetFilterChips` / `TagFilterChips` render the active tag selection as a
+scrollable chip row above the grid (each chip's ✕ removes its tag via
+`TagSelection.RemoveSelected`; the row reopens the drawer). It only makes
+sense in drawer mode — with the sidebar off-screen the selection would
+otherwise be invisible — so callers set it only then. tie-view enables the
+same drawer for phone-width windows (decided once at startup; it has no shell
+that re-composes on resize).
 
 ---
 
