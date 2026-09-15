@@ -776,6 +776,15 @@ two parents — and receives a `transportState` per poll via `transportView`.
 All views stay registered whether on screen or not, so navigating never loses
 or double-applies playback state.
 
+The transport buttons (play/pause, prev, next, stop) are the shared
+`transportButton` widget (`transportbutton.go`): a round icon button whose
+primary style is a filled primary-color disc with a contrasting
+(`ColorNameForegroundOnPrimary`) icon — play/pause — and whose flat style is
+a bare themed icon that gains a translucent disc on hover (desktop) and while
+pressed. Taps get a short ripple fade (`pressFade` + a `fyne.Animation`),
+mirroring the standard button's tap animation. `applyPlayIcon` flips the
+play/pause icon via `transportButton.SetIcon`.
+
 Sliders are built by `player.newSeekSlider` / `newVolumeSlider`, **not** by the
 views: the `applying` / `pendSeek` / `pendVol` echo guards have to be shared.
 `apply` sets `applying` once around every view's `SetValue`, so a poll pushing

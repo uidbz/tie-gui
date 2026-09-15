@@ -5,12 +5,14 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
-// nowPlayingButton is the edge of the square each transport button occupies on
-// the Now Playing page: finger-sized, unlike the icon-sized buttons in a bar.
+// nowPlayingButton is the edge of the square each secondary transport button
+// occupies on the Now Playing page: finger-sized, unlike the icon-sized
+// buttons in a bar. Play/pause is larger (nowPlayingPlay) so it stands out.
 const nowPlayingButton = 56
 
 // nowPlayingPage is the compact layout's full-screen player: a large cover, the
@@ -26,7 +28,7 @@ type nowPlayingPage struct {
 	object fyne.CanvasObject
 
 	cover    *coverView
-	play     *widget.Button
+	play     *transportButton
 	seek     *widget.Slider
 	volume   *widget.Slider
 	pos      *widget.Label
@@ -55,14 +57,14 @@ func newNowPlayingPage(p *player, back func()) *nowPlayingPage {
 	header := container.NewBorder(nil, nil, backBtn, nil,
 		widget.NewLabelWithStyle("Now playing", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 
-	prev := sizedButton(theme.MediaSkipPreviousIcon(), func() { p.do(p.backend.Previous) }, widget.MediumImportance)
-	n.play = widget.NewButtonWithIcon("", theme.MediaPlayIcon(), p.togglePlay)
-	n.play.Importance = widget.HighImportance
-	next := sizedButton(theme.MediaSkipNextIcon(), func() { p.do(p.backend.Next) }, widget.MediumImportance)
-	stop := sizedButton(theme.MediaStopIcon(), func() { p.do(p.backend.Stop) }, widget.MediumImportance)
-	controls := container.NewCenter(container.NewHBox(
+	prev := newTransportButton(theme.MediaSkipPreviousIcon(), nowPlayingButton, false, func() { p.do(p.backend.Previous) })
+	n.play = newTransportButton(theme.MediaPlayIcon(), nowPlayingPlay, true, p.togglePlay)
+	next := newTransportButton(theme.MediaSkipNextIcon(), nowPlayingButton, false, func() { p.do(p.backend.Next) })
+	stop := newTransportButton(theme.MediaStopIcon(), nowPlayingButton, false, func() { p.do(p.backend.Stop) })
+	controls := container.NewCenter(container.New(
+		layout.NewCustomPaddedHBoxLayout(12),
 		prev,
-		container.NewGridWrap(fyne.NewSize(nowPlayingButton, nowPlayingButton), n.play),
+		n.play,
 		next,
 		stop,
 	))
@@ -103,10 +105,3 @@ func (n *nowPlayingPage) apply(st transportState) {
 }
 
 func (n *nowPlayingPage) setCover(img image.Image) { n.cover.set(img) }
-
-// sizedButton builds a finger-sized icon button for the Now Playing controls.
-func sizedButton(icon fyne.Resource, tapped func(), importance widget.Importance) fyne.CanvasObject {
-	btn := widget.NewButtonWithIcon("", icon, tapped)
-	btn.Importance = importance
-	return container.NewGridWrap(fyne.NewSize(nowPlayingButton, nowPlayingButton), btn)
-}

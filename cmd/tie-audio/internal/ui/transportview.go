@@ -65,7 +65,7 @@ func (c *coverView) set(img image.Image) {
 type regularBar struct {
 	object *fyne.Container
 	cover  *coverView
-	play   *widget.Button
+	play   *transportButton
 	seek   *widget.Slider
 	volume *widget.Slider
 	pos    *widget.Label
@@ -84,10 +84,10 @@ func newRegularBar(p *player) *regularBar {
 	}
 	b.now.Truncation = fyne.TextTruncateEllipsis
 
-	prev := widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() { p.do(p.backend.Previous) })
-	b.play = widget.NewButtonWithIcon("", theme.MediaPlayIcon(), p.togglePlay)
-	next := widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() { p.do(p.backend.Next) })
-	stop := widget.NewButtonWithIcon("", theme.MediaStopIcon(), func() { p.do(p.backend.Stop) })
+	prev := newTransportButton(theme.MediaSkipPreviousIcon(), transportBarButton, false, func() { p.do(p.backend.Previous) })
+	b.play = newTransportButton(theme.MediaPlayIcon(), transportBarPlay, true, p.togglePlay)
+	next := newTransportButton(theme.MediaSkipNextIcon(), transportBarButton, false, func() { p.do(p.backend.Next) })
+	stop := newTransportButton(theme.MediaStopIcon(), transportBarButton, false, func() { p.do(p.backend.Stop) })
 
 	buttons := container.NewHBox(prev, b.play, next, stop)
 	volBox := container.NewCenter(container.NewHBox(
@@ -129,7 +129,7 @@ func (b *regularBar) setCover(img image.Image) { b.cover.set(img) }
 type miniBar struct {
 	object   *fyne.Container
 	cover    *coverView
-	play     *widget.Button
+	play     *transportButton
 	title    *widget.Label
 	subtitle *widget.Label
 	progress *thinProgress
@@ -146,8 +146,8 @@ func newMiniBar(p *player, onOpen func()) *miniBar {
 	b.title.TextStyle = fyne.TextStyle{Bold: true}
 	b.subtitle.Truncation = fyne.TextTruncateEllipsis
 
-	b.play = widget.NewButtonWithIcon("", theme.MediaPlayIcon(), p.togglePlay)
-	next := widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() { p.do(p.backend.Next) })
+	b.play = newTransportButton(theme.MediaPlayIcon(), transportMiniPlay, true, p.togglePlay)
+	next := newTransportButton(theme.MediaSkipNextIcon(), transportMiniButton, false, func() { p.do(p.backend.Next) })
 	controls := container.NewHBox(b.play, next)
 
 	text := container.New(layout.NewVBoxLayout(), b.title, b.subtitle)
@@ -180,7 +180,7 @@ func (b *miniBar) apply(st transportState) {
 func (b *miniBar) setCover(img image.Image) { b.cover.set(img) }
 
 // applyPlayIcon flips a play/pause button to match the playback state.
-func applyPlayIcon(btn *widget.Button, playing bool) {
+func applyPlayIcon(btn *transportButton, playing bool) {
 	if playing {
 		btn.SetIcon(theme.MediaPauseIcon())
 		return
