@@ -535,7 +535,7 @@ func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
 		if viewer.OnDoubleTapped != nil {
 			info.OnDoubleTapped = viewer.OnDoubleTapped
 		}
-		if info.OnDoubleTapped != nil {
+		if info.OnDoubleTapped == nil {
 			info.OnDoubleTapped = viewer.ToggleFullscreen
 		}
 		img := NewImageView(info, viewer.window.Canvas().Size(), true, viewer.window, viewer.window.Canvas().Focus, viewer.platform)

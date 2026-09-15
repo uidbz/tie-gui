@@ -273,7 +273,7 @@ type Thumbnailer interface {
 **Gallery struct exposes callbacks:**
 - `OnImageChange func(*ImageInfo)` — after image display
 - `OnTapped func()` — single-click/tap on image
-- `OnDoubleTapped func()` — double-click/tap
+- `OnDoubleTapped func()` — double-click/tap (detected manually in `ImageView.Tapped`; avoids the drivers' double-tap dispatch delay)
 - `OnSwipeUp func()` — upward swipe (mobile)
 - `OnTileSecondaryTapped func(*Tile)` — right-click on tile
 

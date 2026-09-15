@@ -138,7 +138,10 @@ package gallery
 //
 // OnDoubleTapped func()
 //   Called on double-tap/double-click of the image view. Default behavior:
-//   toggle fullscreen (wired in Gallery.LoadImageToCache).
+//   toggle fullscreen (wired in Gallery.LoadImageToCache). Detected manually
+//   in ImageView.Tapped (a second tap within the driver's DoubleTapDelay
+//   window) rather than via fyne.DoubleTappable, which makes the drivers
+//   defer every single tap by the double-tap window (500ms on mobile).
 //
 // OnTappedSecondary func()
 //   Called on right-click (desktop) or long-press (mobile) of the image view.

@@ -49,6 +49,7 @@ type ImageView struct {
 	changeFn          func()
 	toggleFullscreen  func()
 	platform          *Platform
+	lastTap           time.Time // last Tapped time; used for manual double-tap detection (see Tapped)
 
 	// nextFn/prevFn page to the adjacent image; wired by Viewer.ChangeImage so
 	// a mobile swipe/flick can navigate the same way the keyboard hotkeys do.
@@ -745,6 +746,18 @@ func (iv *ImageView) TypedKey(key *fyne.KeyEvent) {
 	}
 }
 func (iv *ImageView) Tapped(_ *fyne.PointEvent) {
+	// Double-taps are detected manually (a second tap within the driver's
+	// double-click window). ImageView intentionally does not implement
+	// fyne.DoubleTappable: both drivers defer every tap on such an object by
+	// the double-tap window (500ms on mobile) to disambiguate, which made
+	// the mobile tap-to-toggle-fullscreen feel sluggish.
+	now := time.Now()
+	if iv.info.OnDoubleTapped != nil && now.Sub(iv.lastTap) <= fyne.CurrentApp().Driver().DoubleTapDelay() {
+		iv.lastTap = time.Time{} // don't let a third tap chain into a new double
+		iv.info.OnDoubleTapped()
+		return
+	}
+	iv.lastTap = now
 	// On mobile, tapping toggles fullscreen (hides/shows Android system bars)
 	// before invoking any custom tap handler, matching Samsung Gallery behavior.
 	if iv.platform.IsMobile() && iv.toggleFullscreen != nil {
@@ -758,12 +771,6 @@ func (iv *ImageView) Tapped(_ *fyne.PointEvent) {
 func (iv *ImageView) TappedSecondary(_ *fyne.PointEvent) {
 	if iv.info.OnTappedSecondary != nil {
 		iv.info.OnTappedSecondary()
-	}
-}
-
-func (iv *ImageView) DoubleTapped(_ *fyne.PointEvent) {
-	if iv.info.OnDoubleTapped != nil {
-		iv.info.OnDoubleTapped()
 	}
 }
 
