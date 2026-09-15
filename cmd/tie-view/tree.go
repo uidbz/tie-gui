@@ -171,6 +171,9 @@ func (t *tieFSTree) selected(uid widget.TreeNodeID) {
 		if !isFile {
 			t.viewer.ReleaseFocus()
 		}
+		// In the drawer layout the tree is covering the gallery it just
+		// changed, so close it and let the user see the result.
+		t.viewer.CloseSidebar()
 	})
 }
 

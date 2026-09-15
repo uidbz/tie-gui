@@ -233,6 +233,13 @@ func main() {
 		myApp.Preferences().SetString(prefTieCollection, name)
 	}
 	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger, quickEditor, activeCollection, onSwitchCollection, onCollectionChanged)
+	// On a phone-width window the sidebar is a slide-over drawer rather than a
+	// split pane: a split leaves the tag list and the grid both too narrow to
+	// use. The bottom bar's sidebar button opens it, and picking a tag or a
+	// directory closes it again (see makeTagSidebar / tieFSTree). The choice is
+	// made once here — tie-view has no shell that re-composes on resize, so a
+	// rotation keeps the layout it started with.
+	viewer.SidebarDrawer = platform.CompactLayout(myWindow.Canvas().Size().Width)
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
@@ -675,6 +682,16 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			untaggedBtn.SetText("Untagged")
 		}
 		refreshGallery()
+		// With the sidebar in a drawer it covers the grid it just changed, so
+		// a pick returns the user to the results; the chip row summarises the
+		// selection that is now off-screen and reopens the drawer. In the split
+		// layout the sidebar itself shows the selection, so no chips.
+		if viewer.SidebarDrawer {
+			viewer.SetFilterChips(gallery.TagFilterChips(in, ex, func(tag string) {
+				ts.RemoveSelected(tag)
+			}), viewer.OpenSidebar)
+			viewer.CloseSidebar()
+		}
 
 		// Refresh the tag list in the background. Copies of in/ex are
 		// passed so the goroutine is safe from later UI changes.

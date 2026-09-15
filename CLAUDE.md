@@ -578,7 +578,12 @@ stamps and edits them:
 The tie-view sidebar is an `AppTabs` with **Tags** (below), **Files**
 (`tree.go`: the tie virtual filesystem tree — directories as branches, image
 files as leaves; selecting a directory shows its images, hidden dirs toggled
-via the ☰ menu) and **Settings** (see above).
+via the ☰ menu) and **Settings** (see above). On a phone-width window it is a
+slide-over drawer instead of an `HSplit` pane (`viewer.SidebarDrawer`, decided
+once at startup from the canvas width — tie-view has no shell that re-composes
+on resize); picking a tag or a directory closes it, and the selection is
+summarised by the gallery's filter chip row. See "Sidebar drawer" under
+"tie-audio compact layout".
 
 **Initial load:** `tc.Get("tags")` returns two relations:
 - `"all"` — every tag ever applied in the collection
