@@ -844,11 +844,14 @@ pwplay's ring buffer — an echo is audible).
 
 `nowPlayingPage` exists because a phone-width bar cannot hold a usable seek
 slider *and* the metadata: there both sliders span the full window width, with
-the seek times *under* the slider rather than beside it. The `miniBar` carries
-the same four full-size transport buttons as the Now Playing page (prev /
-play / next / stop at the `nowPlayingButton` / `nowPlayingPlay` sizes) under a
-64 px cover with the track labels, so playback is fully steerable from the
-cover wall; only the two sliders remain Now-Playing-only.
+the seek times *under* the slider rather than beside it. The `miniBar` is a
+single row — a 64 px cover plus the same four full-size transport buttons as
+the Now Playing page (prev / play / next / stop at the `nowPlayingButton` /
+`nowPlayingPlay` sizes) — so playback is fully steerable from the cover wall;
+the track labels and the two sliders are Now-Playing-only. (The bar once
+carried the labels, but a `Label` with `TextTruncateEllipsis` reports a
+MinSize of just "…", so the centered pair always rendered as two rows of
+dots.)
 
 ### Album artwork (`covers.go`)
 

@@ -119,32 +119,28 @@ func (b *regularBar) apply(st transportState) {
 
 func (b *regularBar) setCover(img image.Image) { b.cover.set(img) }
 
-// miniBar is the compact layout's pinned transport: a cover thumb with the
-// track title and artist, and the same four big controls as the Now Playing
-// page (prev / play / next / stop at the nowPlaying sizes), so playback is
-// fully steerable without leaving the cover wall. Only seek and volume still
-// live on the Now Playing page, which the bar opens when tapped or swiped up:
-// a phone has no room for a bar wide enough to hold a usable seek slider
-// *and* the metadata, and a cramped slider is worse than no slider.
+// miniBar is the compact layout's pinned transport: a cover thumb and, in the
+// same row, the same four big controls as the Now Playing page (prev / play /
+// next / stop at the nowPlaying sizes), so playback is fully steerable without
+// leaving the cover wall. The track's title and artist live on the Now Playing
+// page, which the bar opens when tapped or swiped up — they used to sit in the
+// bar, but a Label with TextTruncateEllipsis reports a MinSize of just "…", so
+// the centered pair rendered as two rows of dots no matter how much room they
+// had. Seek and volume are Now-Playing-only too: a phone has no room for a bar
+// wide enough to hold a usable seek slider, and a cramped slider is worse than
+// no slider.
 type miniBar struct {
 	object   *fyne.Container
 	cover    *coverView
 	play     *transportButton
-	title    *widget.Label
-	subtitle *widget.Label
 	progress *thinProgress
 }
 
 func newMiniBar(p *player, onOpen func()) *miniBar {
 	b := &miniBar{
 		cover:    newCoverView(miniCoverSize),
-		title:    widget.NewLabel("Nothing playing"),
-		subtitle: widget.NewLabel(""),
 		progress: newThinProgress(),
 	}
-	b.title.Truncation = fyne.TextTruncateEllipsis
-	b.title.TextStyle = fyne.TextStyle{Bold: true}
-	b.subtitle.Truncation = fyne.TextTruncateEllipsis
 
 	// The same controls, at the same sizes, as the Now Playing page.
 	prev := newTransportButton(theme.MediaSkipPreviousIcon(), nowPlayingButton, false, func() { p.do(p.backend.Previous) })
@@ -159,13 +155,11 @@ func newMiniBar(p *player, onOpen func()) *miniBar {
 		stop,
 	))
 
-	text := container.New(layout.NewVBoxLayout(), b.title, b.subtitle)
-	header := container.NewBorder(nil, nil, b.cover.object, nil, container.NewCenter(text))
-	row := container.NewVBox(header, controls)
+	row := container.NewBorder(nil, nil, b.cover.object, nil, controls)
 
 	// The tap/swipe catcher sits *below* the row: the buttons take their own
-	// taps, and everything else (cover, labels, padding) falls through to it,
-	// so the whole strip opens Now Playing without stealing the controls.
+	// taps, and everything else (cover, padding) falls through to it, so the
+	// whole strip opens Now Playing without stealing the controls.
 	opener := newTapArea(onOpen, onOpen)
 	b.object = container.NewBorder(
 		widget.NewSeparator(),
@@ -180,8 +174,6 @@ func (b *miniBar) Object() fyne.CanvasObject { return b.object }
 
 func (b *miniBar) apply(st transportState) {
 	applyPlayIcon(b.play, st.playing)
-	b.title.SetText(st.title)
-	b.subtitle.SetText(st.subtitle)
 	if st.applyPosition {
 		b.progress.setFraction(fraction(st.position, st.duration))
 	}
