@@ -870,6 +870,58 @@ that re-composes on resize).
 
 ---
 
+## tie-audio audio-archive playback (`cmd/tie-audio/internal/data/archive.go`)
+
+An `audio-archive` album is a single archive blob (a zip of a ripped album),
+so its tracks have no content address until `Session.archiveTracks` mints
+one: the blob is downloaded, each audio member is extracted
+(`archivelib.List`/`Open`, the same library tie-view uses), content-hashed
+(HighwayHash, `putlib.AddressOf`), and **uploaded to the filehost when
+missing** (HEAD check, then `PUT /upload/<hash>`). Playback then hands pwplay
+the ordinary `baseURL/memberHash` stream URL, which keeps the server —
+wherever it runs — fetching from the filehost rather than from the client
+device; the filehost's content-sniffed Content-Type lets pwplay pick a
+decoder for the extension-less URL, same as any tie blob. The upload happens
+once ever per member (content-addressed ⇒ idempotent and shared across
+machines); the resolved track list is cached per session keyed by
+`archiveHash@hostURL`, so re-opening the album is free and even an app
+restart only re-downloads the archive to re-run the existence checks. The
+extracted member blobs carry **no triples** — they are invisible to queries,
+exactly like tiethumb's uploaded thumbnails before their relation is written.
+
+Track metadata (title/artist/album/year/track no/duration) is parsed from the
+member bytes with tie's `metadata/tag` fork (`tag.ReadFrom` on a
+`bytes.Reader` — no temp files); untaggable members fall back to the member
+filename. Tracks sort by member directory, then track number, then filename,
+so multi-disc zips (one subdirectory per disc) stay grouped. Each track's
+`AlbumUID` is the archive hash, so queue grouping and artwork key off the
+archive. If the archive has no `thumbnail` relation yet, the best cover
+(a `cover.*`/`folder.*`/`front.*` image member, else any image member, else
+the first track's embedded picture) is scaled to 512 px, uploaded, and
+recorded as `(archiveHash, "thumbnail", thumbHash)` — best effort (failures
+logged), and afterwards the cover wall, `CoverBytesForUID` and even tie-view
+see the artwork. Note the wall's `coverStore` may already have cached the
+album as coverless for the session, so a fresh cover can show as the
+placeholder until the next wall rebuild.
+
+The Files tab surfaces audio-archives alongside audio files: tree leaves that
+open as albums, and archive album tiles in directory listings
+(`dir.Archives` filtered by `TieAudioArchive`). `ArchiveEntry.TieType` is a
+single value here (an archive carries exactly one `*-archive` type), unlike
+the multi-valued tie-type caveat for files.
+
+Testing: `archive_test.go` fakes a filehost with `httptest` (GET serves
+hash-verified blobs, HEAD reports presence, `PUT /upload/<hash>` stores after
+a checksum compare — that is the whole upload protocol;
+`putlib.UploadMultipart` is a raw PUT despite the name) and covers member
+resolution, upload dedup, the session cache and the host-keyed cache.
+`archive_integration_test.go` skips unless the tie test-env runs and verifies
+the flow end to end with real tagged FLAC fixtures
+(`testdata/archive-src/`): parsed tags, byte-identical member streaming, and
+the cover thumbnail relation.
+
+---
+
 ## `tagselection.TagSelection` API (`tagselection/tagselection.go`)
 
 | Method | What |

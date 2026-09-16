@@ -153,6 +153,15 @@ tie-audio
 
 **Expected:** Player window; browse the collection's audio by tag and play.
 
+**Audio archives:** albums imported as a single archive (`audio-archive`,
+e.g. a zip of a ripped album) show up on the cover wall and in the Files tab
+like any album. Opening one extracts its tracks and — the first time only —
+uploads them to the filehost as plain content-addressed blobs (like
+thumbnails, they carry no tags), so playback streams from the filehost
+exactly as it does for regular tracks. Later plays skip the upload; the same
+archive on another machine reuses the blobs the first one uploaded. A cover
+image found inside the archive becomes the album's artwork.
+
 ---
 
 ## Configuration

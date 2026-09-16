@@ -34,7 +34,7 @@ type AlbumKind int
 
 const (
 	AlbumDir     AlbumKind = iota // audio-dir: a directory of track blobs
-	AlbumArchive                  // audio-archive: a zip of tracks (playback deferred)
+	AlbumArchive                  // audio-archive: a single archive blob of tracks
 	AlbumTrack                    // a single audio-file
 )
 
@@ -347,7 +347,9 @@ func classifyAlbum(row client.Row) (Album, bool) {
 }
 
 // AlbumTracks lists the tracks of an album, ordered by track number then
-// filename. Archive albums are not yet supported for track listing.
+// filename (archive albums: by member directory, then track number). An
+// archive album's members are extracted and uploaded to the filehost on
+// first resolution so they stream like any other blob — see archiveTracks.
 func (s *Session) AlbumTracks(a Album) ([]Track, error) {
 	switch a.Kind {
 	case AlbumTrack:
@@ -388,8 +390,10 @@ func (s *Session) AlbumTracks(a Album) ([]Track, error) {
 			return tracks[i].Filename < tracks[j].Filename
 		})
 		return tracks, nil
+	case AlbumArchive:
+		return s.archiveTracks(a)
 	default:
-		return nil, errors.New("archive album playback not supported yet")
+		return nil, errors.New("unknown album kind")
 	}
 }
 

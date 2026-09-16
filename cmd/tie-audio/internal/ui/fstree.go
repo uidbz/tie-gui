@@ -30,10 +30,11 @@ type tieFSNode struct {
 
 // tieFSTree backs a widget.Tree with the tie path-based virtual filesystem
 // (the tie:/... hierarchy, read through client.ReadTieDir — the same data
-// the FUSE mount exposes). Directories are branches, audio files are
-// leaves. Tree node IDs are slash paths relative to the tie root ("/",
-// "/music/album"); a file leaf's ID is its directory's path joined with its
-// content hash, which keeps IDs unique even when filenames collide.
+// the FUSE mount exposes). Directories are branches, audio files and
+// audio-archives are leaves. Tree node IDs are slash paths relative to the
+// tie root ("/", "/music/album"); a file leaf's ID is its directory's path
+// joined with its content hash, which keeps IDs unique even when filenames
+// collide.
 type tieFSTree struct {
 	page *browsePage // session access + album opener
 	tree *widget.Tree
@@ -128,6 +129,16 @@ func (t *tieFSTree) childUIDs(uid widget.TreeNodeID) []widget.TreeNodeID {
 		children = append(children, id)
 		t.files[id] = tieFSNode{File: f, parent: uid}
 	}
+	// Audio-archives surface as leaves that open as albums, like the tag
+	// wall's archive tiles.
+	for _, a := range dir.Archives {
+		if a.TieType != client.TieAudioArchive {
+			continue
+		}
+		id := joinNode(uid, a.Hash)
+		children = append(children, id)
+		t.files[id] = tieFSNode{File: client.File{Uid: a.Hash, Filename: a.Filename, TieType: a.TieType}, parent: uid}
+	}
 	return children
 }
 
@@ -187,8 +198,13 @@ func (t *tieFSTree) SetShowHidden(show bool) {
 	t.tree.Refresh()
 }
 
-// openTrack opens an audio file leaf as a single-track album.
+// openTrack opens an audio file leaf as a single-track album, or an
+// audio-archive leaf as its track listing.
 func (t *tieFSTree) openTrack(f tieFSNode) {
+	if f.TieType == client.TieAudioArchive {
+		t.page.openAlbum(data.Album{UID: f.Uid, Kind: data.AlbumArchive, Title: f.Filename})
+		return
+	}
 	t.page.openAlbum(data.Album{UID: f.Uid, Kind: data.AlbumTrack, Title: f.Filename})
 }
 
@@ -205,7 +221,8 @@ func (t *tieFSTree) showDir(dirPath string) {
 
 // showListing replaces the cover wall with the albums of a directory
 // listing: each subdirectory becomes an album tile, followed by the
-// directory's standalone audio files as single-track albums.
+// directory's standalone audio files as single-track albums and its
+// audio-archives as archive albums.
 func (t *tieFSTree) showListing(dir client.Directory) {
 	albums := make([]data.Album, 0, len(dir.SubDirs)+len(dir.Files))
 	// SubDirs arrives from a map iteration; sort by name for a stable wall,
@@ -240,6 +257,12 @@ func (t *tieFSTree) showListing(dir client.Directory) {
 			continue
 		}
 		albums = append(albums, data.Album{UID: f.Uid, Kind: data.AlbumTrack, Title: f.Filename})
+	}
+	for _, a := range dir.Archives {
+		if a.TieType != client.TieAudioArchive {
+			continue
+		}
+		albums = append(albums, data.Album{UID: a.Hash, Kind: data.AlbumArchive, Title: a.Filename})
 	}
 	t.page.viewer.ReadCustomAsync(func() []gallery.CustomReader { return t.page.readers(albums) })
 	t.page.viewer.ChangeGallery()

@@ -65,8 +65,9 @@ func TestFSTreeIds(t *testing.T) {
 
 // TestFSChildUIDs checks child listing against a cached directory (no
 // triplestore needed): subdirectories come first, sorted by name; non-audio
-// files are skipped; and the root's parent edge to itself must not produce a
-// "/" child (the tree would recurse forever).
+// files are skipped; audio-archives appear as leaves; and the root's parent
+// edge to itself must not produce a "/" child (the tree would recurse
+// forever).
 func TestFSChildUIDs(t *testing.T) {
 	fs := &tieFSTree{
 		dirs: map[string]*client.Directory{
@@ -81,12 +82,15 @@ func TestFSChildUIDs(t *testing.T) {
 				// media type still identifies the audio.
 				{Uid: "baddc0de", Filename: "song2.FLAC", MediaType: "audio/x-flac"},
 				{Uid: "f00dcafe", Filename: "notes.txt", MediaType: "text/plain"},
+			}, Archives: []client.ArchiveEntry{
+				{Hash: "beadf00d", Filename: "album.zip", TieType: client.TieAudioArchive},
+				{Hash: "deadc0de", Filename: "photos.zip", TieType: client.TieImageArchive},
 			}},
 		},
 		branches: make(map[string]bool),
 		files:    make(map[string]tieFSNode),
 	}
-	want := []string{"/music", "/videos", "/deadbeef", "/baddc0de"}
+	want := []string{"/music", "/videos", "/deadbeef", "/baddc0de", "/beadf00d"}
 	got := fs.childUIDs("/")
 	if !slices.Equal(got, want) {
 		t.Fatalf("childUIDs(\"/\") = %v, want %v", got, want)
@@ -96,6 +100,9 @@ func TestFSChildUIDs(t *testing.T) {
 	}
 	if f, ok := fs.files["/deadbeef"]; !ok || f.Filename != "song.flac" || f.parent != "/" {
 		t.Error("file leaf not registered:", fs.files)
+	}
+	if f, ok := fs.files["/beadf00d"]; !ok || f.Filename != "album.zip" || f.TieType != client.TieAudioArchive {
+		t.Error("audio-archive leaf not registered:", fs.files)
 	}
 }
 

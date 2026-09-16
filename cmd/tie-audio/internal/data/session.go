@@ -3,6 +3,8 @@
 package data
 
 import (
+	"sync"
+
 	pwclient "github.com/uidbz/pwplay/client"
 	tieclient "github.com/uidbz/tie/client"
 
@@ -23,6 +25,12 @@ type Session struct {
 	// (the app's own profile selection), tracked so the connection editor can
 	// preselect it.
 	Collection string
+
+	// archives caches resolved audio-archive track lists, keyed by
+	// "archiveHash@hostURL" (see archiveTracks). Guarded by archivesMu:
+	// album loading runs on background goroutines.
+	archivesMu sync.Mutex
+	archives   map[string][]Track
 }
 
 // NewSession constructs the tie and pwplay clients and the playback backend
