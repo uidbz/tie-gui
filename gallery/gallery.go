@@ -47,6 +47,13 @@ type Gallery struct {
 	// adjacent view (e.g. a play queue). Vertical scrolling is preserved.
 	OnSwipeLeft  func()
 	OnSwipeRight func()
+	// OnPullRefresh is called when the user drags the gallery grid downward
+	// past a threshold while it is scrolled to the top (mobile only — the
+	// gesture rides the grid swipe overlay). Apps use it to re-query the
+	// content feeding the grid. Ordinary scrolling is unaffected: the pull
+	// only charges while the grid is already at the top, where a downward
+	// drag cannot scroll.
+	OnPullRefresh func()
 	// OnTileSecondaryTapped is called when a gallery tile receives a secondary
 	// tap (right-click). Set by the caller to implement context actions such as
 	// de-import. Receives the full Tile so the caller can inspect Info.

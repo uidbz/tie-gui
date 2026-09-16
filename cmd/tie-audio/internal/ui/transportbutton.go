@@ -12,11 +12,10 @@ import (
 
 // Transport control button sizes: the edge of each button's square hit area.
 const (
-	transportBarButton  = 36 // prev/next/stop in the desktop transport bar
-	transportBarPlay    = 42 // play/pause in the desktop transport bar
-	transportMiniButton = 40 // next in the compact mini bar
-	transportMiniPlay   = 46 // play/pause in the compact mini bar
-	nowPlayingPlay      = 72 // play/pause on the Now Playing page
+	transportBarButton = 36 // prev/next/stop in the desktop transport bar
+	transportBarPlay   = 42 // play/pause in the desktop transport bar
+	nowPlayingButton   = 56 // prev/next/stop on the Now Playing page and the mini bar
+	nowPlayingPlay     = 72 // play/pause on the Now Playing page and the mini bar
 )
 
 // Icon edge as a fraction of the button edge. The primary disc leaves more

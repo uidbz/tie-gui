@@ -18,7 +18,7 @@ import (
 
 // coverMaxEdge is the pixel width decoded covers are downscaled to. It is sized
 // for the largest consumer (the Now Playing page on a HiDPI phone); every other
-// consumer — the queue's 32 px column, the mini bar's 48 px thumb, the grouped
+// consumer — the queue's 32 px column, the mini bar's 64 px thumb, the grouped
 // list's 56 px header — scales the same decoded image down at paint time, so one
 // fetch and one decode serve them all.
 const coverMaxEdge = 512

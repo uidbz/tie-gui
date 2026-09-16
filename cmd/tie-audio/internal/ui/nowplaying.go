@@ -10,11 +10,6 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// nowPlayingButton is the edge of the square each secondary transport button
-// occupies on the Now Playing page: finger-sized, unlike the icon-sized
-// buttons in a bar. Play/pause is larger (nowPlayingPlay) so it stands out.
-const nowPlayingButton = 56
-
 // nowPlayingPage is the compact layout's full-screen player: a large cover, the
 // track metadata, and — the point of the page — a seek slider and a volume
 // slider that each span the whole screen width. On a phone those two controls

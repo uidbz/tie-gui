@@ -15,7 +15,7 @@ import (
 // Cover sizes, in Fyne device-independent pixels.
 const (
 	regularCoverSize = 44 // thumb in the desktop transport bar
-	miniCoverSize    = 48 // thumb in the compact mini bar
+	miniCoverSize    = 64 // thumb in the compact mini bar
 	queueCoverSize   = 32 // cell in the desktop queue's cover column
 	groupCoverSize   = 56 // album header in the compact grouped playlist
 )
@@ -119,13 +119,13 @@ func (b *regularBar) apply(st transportState) {
 
 func (b *regularBar) setCover(img image.Image) { b.cover.set(img) }
 
-// miniBar is the compact layout's pinned transport: a cover thumb, the track
-// title and artist, and just play/pause and next. Everything else — seek,
-// volume, prev, stop — lives on the Now Playing page, which the bar opens when
-// tapped or swiped up. A phone has no room for a bar wide enough to hold a
-// usable seek slider *and* the metadata, and a cramped slider is worse than no
-// slider: the whole point of the Now Playing page is that both sliders get the
-// full screen width.
+// miniBar is the compact layout's pinned transport: a cover thumb with the
+// track title and artist, and the same four big controls as the Now Playing
+// page (prev / play / next / stop at the nowPlaying sizes), so playback is
+// fully steerable without leaving the cover wall. Only seek and volume still
+// live on the Now Playing page, which the bar opens when tapped or swiped up:
+// a phone has no room for a bar wide enough to hold a usable seek slider
+// *and* the metadata, and a cramped slider is worse than no slider.
 type miniBar struct {
 	object   *fyne.Container
 	cover    *coverView
@@ -146,12 +146,22 @@ func newMiniBar(p *player, onOpen func()) *miniBar {
 	b.title.TextStyle = fyne.TextStyle{Bold: true}
 	b.subtitle.Truncation = fyne.TextTruncateEllipsis
 
-	b.play = newTransportButton(theme.MediaPlayIcon(), transportMiniPlay, true, p.togglePlay)
-	next := newTransportButton(theme.MediaSkipNextIcon(), transportMiniButton, false, func() { p.do(p.backend.Next) })
-	controls := container.NewHBox(b.play, next)
+	// The same controls, at the same sizes, as the Now Playing page.
+	prev := newTransportButton(theme.MediaSkipPreviousIcon(), nowPlayingButton, false, func() { p.do(p.backend.Previous) })
+	b.play = newTransportButton(theme.MediaPlayIcon(), nowPlayingPlay, true, p.togglePlay)
+	next := newTransportButton(theme.MediaSkipNextIcon(), nowPlayingButton, false, func() { p.do(p.backend.Next) })
+	stop := newTransportButton(theme.MediaStopIcon(), nowPlayingButton, false, func() { p.do(p.backend.Stop) })
+	controls := container.NewCenter(container.New(
+		layout.NewCustomPaddedHBoxLayout(12),
+		prev,
+		b.play,
+		next,
+		stop,
+	))
 
 	text := container.New(layout.NewVBoxLayout(), b.title, b.subtitle)
-	row := container.NewBorder(nil, nil, b.cover.object, controls, container.NewCenter(text))
+	header := container.NewBorder(nil, nil, b.cover.object, nil, container.NewCenter(text))
+	row := container.NewVBox(header, controls)
 
 	// The tap/swipe catcher sits *below* the row: the buttons take their own
 	// taps, and everything else (cover, labels, padding) falls through to it,

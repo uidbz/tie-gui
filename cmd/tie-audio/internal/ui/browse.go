@@ -18,6 +18,17 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
+// wallFeed identifies what the cover wall is currently showing, so
+// reloadWall can re-run the same feed on demand.
+type wallFeed int
+
+const (
+	feedNone   wallFeed = iota // empty wall (startup "none", or just after a collection switch)
+	feedTags                   // a tag query (the sidebar selection or a startup tag page)
+	feedLatest                 // the latest-albums startup page
+	feedDir                    // a Files-tab directory listing
+)
+
 // browsePage is the album cover wall: a gallery grid driven by a Tags/Files/
 // Settings sidebar (tag selection with co-tag refinement; a tie filesystem
 // tree; the settings page). Opening a tile swaps the page to the album's
@@ -29,6 +40,14 @@ type browsePage struct {
 
 	viewer *gallery.Gallery
 	ts     *tagselection.TagSelection
+
+	// feed records what currently feeds the cover wall, so reloadWall can
+	// re-run it. album / albumOpen track the open album track list, so a
+	// refresh requested while one covers the wall reloads it in place
+	// instead of yanking the user back to the wall.
+	feed      wallFeed
+	album     data.Album
+	albumOpen bool
 
 	// transport is the shared playback controller, used to feed now-playing
 	// labels when albums are played or enqueued. Wired by the App shell.
@@ -99,6 +118,9 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 			b.showAlbumMenu(t, item.album)
 		}
 	}
+	// Pull-to-refresh on the grid (mobile) re-runs the wall's current feed,
+	// like the ☰ menu's "Reload albums" and the nav bar's Refresh button.
+	b.viewer.OnPullRefresh = b.reloadWall
 	b.viewer.Thumbnailer = &coverThumbnailer{
 		page:      b,
 		tileWidth: int(config.General.TileWidth),
@@ -108,9 +130,10 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 	b.viewer.SidebarDrawer = compact
 	b.viewer.Init()
 	// The file-browser tab shows hidden directories only on demand, toggled
-	// from the gallery ☰ menu (matching tie-view). "Reload directories"
-	// drops the tree's cached listings so content imported since they were
-	// read (e.g. via tie-fm) appears without restarting the app.
+	// from the gallery ☰ menu (matching tie-view). "Reload albums" re-runs
+	// whatever the wall currently shows (and drops the tree's cached
+	// listings), so content imported since they were read (e.g. via tie-fm)
+	// appears without restarting the app.
 	b.viewer.MenuItems = func() []*fyne.MenuItem {
 		label := "Show hidden directories"
 		if b.fsTree.showHidden {
@@ -118,7 +141,7 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 		}
 		return []*fyne.MenuItem{
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
-			fyne.NewMenuItem("Reload directories", func() { b.fsTree.reload() }),
+			fyne.NewMenuItem("Reload albums", b.reloadWall),
 		}
 	}
 	b.viewer.ToggleLabels() // album titles under covers, on by default
@@ -259,10 +282,11 @@ func (b *browsePage) showSettingsTab() {
 // refreshAlbums re-queries the album wall for the current tag selection.
 func (b *browsePage) refreshAlbums(include, exclude []string) {
 	// The wall no longer shows a directory listing, so a later "Reload
-	// directories" must not resurrect one over the tag results.
+	// albums" must not resurrect one over the tag results.
 	b.fsTree.mu.Lock()
 	b.fsTree.currentDir = ""
 	b.fsTree.mu.Unlock()
+	b.feed = feedTags
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		albums, err := b.session.QueryAlbums(include, exclude)
 		if err != nil {
@@ -280,6 +304,7 @@ func (b *browsePage) refreshLatest() {
 	b.fsTree.mu.Lock()
 	b.fsTree.currentDir = ""
 	b.fsTree.mu.Unlock()
+	b.feed = feedLatest
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		albums, err := b.session.LatestAlbums()
 		if err != nil {
@@ -289,6 +314,34 @@ func (b *browsePage) refreshLatest() {
 		return b.readers(albums)
 	})
 	b.viewer.ChangeGallery()
+}
+
+// reloadWall re-runs whatever the browse page is currently showing: an open
+// album's track list (re-fetched and re-rendered in place), or the cover
+// wall's feed — a Files-tab directory listing re-read from the server, the
+// latest-albums page, or the current tag selection's query. The Files-tab
+// tree's cached listings are dropped too, so content imported while the app
+// runs (e.g. via tie-fm) appears; likewise the decoded-cover cache, so
+// re-imported artwork shows up. Bound to the ☰ menu's "Reload albums", the
+// compact nav bar's Refresh button, and pull-to-refresh on the grid.
+func (b *browsePage) reloadWall() {
+	if b.albumOpen {
+		b.openAlbum(b.album)
+		return
+	}
+	b.covers.Clear()
+	switch b.feed {
+	case feedDir:
+		// Drops the tree's cached listings and re-reads the shown directory.
+		b.fsTree.reload()
+	case feedLatest:
+		b.fsTree.reset()
+		b.refreshLatest()
+	case feedTags:
+		b.fsTree.reset()
+		in, ex := b.ts.SelectedTags()
+		b.refreshAlbums(in, ex)
+	}
 }
 
 // applyStartupPage feeds the cover wall per the configured startup page
@@ -333,6 +386,7 @@ func (b *browsePage) readers(albums []data.Album) []gallery.CustomReader {
 // the prior collection can neither be displayed nor opened; the empty wall
 // renders when the user returns via showBrowse.
 func (b *browsePage) clearAlbums() {
+	b.feed = feedNone
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		return []gallery.CustomReader{}
 	})

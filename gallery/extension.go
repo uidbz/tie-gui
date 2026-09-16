@@ -136,6 +136,12 @@ package gallery
 //   OnTapped on mobile to avoid conflicts with pinch-zoom. Used by:
 //   - tie-view: toggle the tag panel overlay (mobile only)
 //
+// OnPullRefresh func()
+//   Called when the user drags the gallery grid downward past a threshold
+//   while it is scrolled to the top (mobile only; the gesture rides the
+//   grid swipe overlay, so ordinary scrolling is unaffected). Used by:
+//   - tie-audio: reload the cover wall's current feed
+//
 // OnDoubleTapped func()
 //   Called on double-tap/double-click of the image view. Default behavior:
 //   toggle fullscreen (wired in Gallery.LoadImageToCache). Detected manually

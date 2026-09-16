@@ -712,12 +712,17 @@ Settings** tabs, mirroring tie-view's sidebar.
   session and failures too (a dead server would otherwise be re-queried per
   tree layout pass) — but an *unmapped* path (no DirUID yet) is deliberately
   not cached, so a directory imported there later appears on the next read.
-  The ☰ menu's "Reload directories" (`fsTree.reload`) drops the cache and
-  re-reads the directory currently on the wall (`fsTree.currentDir`), so
-  albums imported while tie-audio runs (e.g. via tie-fm) appear without an
-  app restart; a collection switch likewise resets the cache
-  (`fsTree.reset`). Hidden directories (leading `.`) are toggled via the
-  gallery ☰ menu (matching tie-view).
+  The ☰ menu's "Reload albums" (`browsePage.reloadWall`) re-runs whatever
+  the wall currently shows — a directory listing is re-read from the server
+  (`fsTree.reload`, dropping the tree's cached listings), the latest-albums
+  page re-queries, a tag wall re-runs the selection's query — and drops the
+  decoded-cover cache, so albums (or artwork) imported while tie-audio runs
+  (e.g. via tie-fm) appear without an app restart. The same reload is bound
+  to the compact nav bar's Refresh button and to pull-to-refresh on the grid
+  (`gallery.OnPullRefresh`); while an album track list is open it re-fetches
+  that album in place instead. A collection switch likewise resets the tree
+  cache (`fsTree.reset`). Hidden directories (leading `.`) are toggled via
+  the gallery ☰ menu (matching tie-view).
 - **Settings** is built by the App shell (`buildSettingsTab`) and appended
   to the same `AppTabs`; the shell reuses the tab item's content to open the
   settings view full-screen on mobile, and the page's Back button re-selects
@@ -773,8 +778,8 @@ in landscape) has room for the split layout:
 | Tags/Files sidebar | `HSplit` pane inside the gallery | slide-over **drawer** over the grid + filter chip row |
 | Playlist | `trackTable` in a permanent right-hand `HSplit` pane | full-screen **album-grouped list** (`queueList`) |
 | Album track list | persisted column set + Columns dialog | fixed `compactAlbumColumns` (track no / title / duration) |
-| Transport | `regularBar` (one row, both sliders) | `miniBar` → full-screen `nowPlayingPage` |
-| Bottom nav | — | Tags / Playlist / Settings under the mini bar |
+| Transport | `regularBar` (one row, both sliders) | `miniBar` (full-size controls) → full-screen `nowPlayingPage` |
+| Bottom nav | — | Tags / Playlist / Settings / Refresh under the mini bar |
 
 - `gallery.Platform.CompactLayout(width)` is the width heuristic
   (`width <= 0` counts as compact on mobile: the canvas has not been laid out
@@ -808,8 +813,10 @@ in landscape) has room for the split layout:
   changes arrive via `gallery.Gallery.OnSidebarToggled`, which also fires on a
   scrim dismiss.
 - Swipes: left on the wall → playlist, right → open the drawer (compact),
-  swipe up on the mini bar → Now Playing, swipe down over its cover → back,
-  left-edge swipe in the queue → back to the wall (`swipe.go`).
+  pull down at the top of the wall → reload its feed
+  (`gallery.OnPullRefresh`), swipe up on the mini bar → Now Playing, swipe
+  down over its cover → back, left-edge swipe in the queue → back to the
+  wall (`swipe.go`).
 
 ### Transport: one controller, three views (`transport.go`, `transportview.go`, `nowplaying.go`)
 
@@ -837,7 +844,11 @@ pwplay's ring buffer — an echo is audible).
 
 `nowPlayingPage` exists because a phone-width bar cannot hold a usable seek
 slider *and* the metadata: there both sliders span the full window width, with
-the seek times *under* the slider rather than beside it.
+the seek times *under* the slider rather than beside it. The `miniBar` carries
+the same four full-size transport buttons as the Now Playing page (prev /
+play / next / stop at the `nowPlayingButton` / `nowPlayingPlay` sizes) under a
+64 px cover with the track labels, so playback is fully steerable from the
+cover wall; only the two sliders remain Now-Playing-only.
 
 ### Album artwork (`covers.go`)
 

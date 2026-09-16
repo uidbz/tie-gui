@@ -224,6 +224,7 @@ func (t *tieFSTree) showDir(dirPath string) {
 	t.mu.Lock()
 	t.currentDir = dirPath
 	t.mu.Unlock()
+	t.page.feed = feedDir
 	t.showListing(dir)
 }
 
@@ -345,7 +346,7 @@ func (t *tieFSTree) subTitle(uid client.DirUID, fallback string) string {
 // are cached: otherwise a dead server makes the tree widget re-query in a
 // tight loop on every refresh (the tree re-asks childUIDs per layout pass),
 // spamming the dead server and starving the UI. Successful listings are
-// cached for the session; reload (gallery ☰ menu) and a collection switch
+// cached for the session; a wall reload (reloadWall) and a collection switch
 // drop the cache.
 func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 	t.mu.Lock()

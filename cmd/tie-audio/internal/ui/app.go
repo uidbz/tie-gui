@@ -368,7 +368,9 @@ func (a *App) setCompact(compact bool) {
 }
 
 // navBar is the compact layout's bottom bar: Tags opens the sidebar drawer,
-// Playlist and Settings open their full-screen views.
+// Playlist and Settings open their full-screen views, and Refresh re-runs
+// whatever the browse page shows (the cover wall's feed, or an open album's
+// track list).
 func (a *App) navBar() fyne.CanvasObject {
 	tags := widget.NewButtonWithIcon("Tags", theme.SearchIcon(), a.browse.openSidebar)
 	tags.Importance = widget.LowImportance
@@ -376,9 +378,11 @@ func (a *App) navBar() fyne.CanvasObject {
 	playlist.Importance = widget.LowImportance
 	settings := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), a.showSettingsView)
 	settings.Importance = widget.LowImportance
+	refresh := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), a.browse.reloadWall)
+	refresh.Importance = widget.LowImportance
 	return container.NewVBox(
 		widget.NewSeparator(),
-		container.NewGridWithColumns(3, tags, playlist, settings),
+		container.NewGridWithColumns(4, tags, playlist, settings, refresh),
 	)
 }
 

@@ -26,11 +26,14 @@ func (b *browsePage) openAlbum(a data.Album) {
 
 // showBrowse restores the cover wall as the window content.
 func (b *browsePage) showBrowse() {
+	b.albumOpen = false
 	b.viewer.ChangeGallery()
 }
 
 // showAlbumView replaces the page content with an album header and track list.
 func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error) {
+	b.album = a
+	b.albumOpen = true
 	back := widget.NewButtonWithIcon("Albums", theme.NavigateBackIcon(), b.showBrowse)
 
 	playBtn := widget.NewButtonWithIcon("Play album", theme.MediaPlayIcon(), func() {
