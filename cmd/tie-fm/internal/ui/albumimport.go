@@ -38,14 +38,19 @@ func (fm *FileManager) importAsAlbums(e fs.Entry) {
 	// The dir-type picks the destination template (the tie config's
 	// ImportDest) and the label stamped on each imported album root — the same
 	// choice the "Copy into tie as" submenu offers, defaulting to audio-dir.
+	// Tags are applied to every imported album and its tracks, so the albums
+	// are queryable in media apps (tie-audio's tag-driven cover wall).
 	typeSel := widget.NewSelect(fs.BuiltinDirTypes, nil)
 	typeSel.SetSelected("audio-dir")
 	custom := widget.NewEntry()
 	custom.PlaceHolder = "custom type (optional)"
+	tagsEntry := widget.NewEntry()
+	tagsEntry.PlaceHolder = "comma-separated tags (optional)"
 	dialog.ShowForm("Import as albums: "+e.Name, "Scan", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("Directory type", typeSel),
 			widget.NewFormItem("Custom", custom),
+			widget.NewFormItem("Tags", tagsEntry),
 		}, func(ok bool) {
 			if !ok {
 				return
@@ -57,14 +62,26 @@ func (fm *FileManager) importAsAlbums(e fs.Entry) {
 			if dirType == "" {
 				return
 			}
-			fm.scanAlbumPlan(e, provider.Client().Config, dirType)
+			fm.scanAlbumPlan(e, provider.Client().Config, dirType, splitTags(tagsEntry.Text))
 		}, fm.win)
+}
+
+// splitTags parses a comma-separated tag list, trimming spaces and dropping
+// empties.
+func splitTags(s string) []string {
+	var tags []string
+	for tag := range strings.SplitSeq(s, ",") {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 // scanAlbumPlan runs the album planner off the UI goroutine — probing a large
 // or network-mounted library can take minutes, so progress is shown. The
 // finished plan (or the scan error) returns to the UI goroutine via fyne.Do.
-func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType string) {
+func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType string, tags []string) {
 	root := strings.TrimPrefix(e.Path, "file:")
 	status := widget.NewLabel("Scanning " + root + " …")
 	bar := widget.NewProgressBarInfinite()
@@ -92,7 +109,7 @@ func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType stri
 					"No audio files or audio archives found in\n"+root, fm.win)
 				return
 			}
-			fm.showAlbumPlan(plan, dirType)
+			fm.showAlbumPlan(plan, dirType, tags)
 		})
 	}()
 }
@@ -101,7 +118,7 @@ func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType stri
 // with its destination, track count, size and warnings. Confirming imports
 // exactly the checked groups. Groups without a destination (no template
 // rendered, no album tag) cannot import and are fixed unchecked.
-func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string) {
+func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, tags []string) {
 	selected := make([]bool, len(plan))
 	for i, g := range plan {
 		selected[i] = g.Dest != ""
@@ -159,7 +176,7 @@ func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string) {
 		if !ok {
 			return
 		}
-		fm.runAlbumImport(selectedGroups(plan, selected), dirType)
+		fm.runAlbumImport(selectedGroups(plan, selected), dirType, tags)
 	}, fm.win)
 }
 
@@ -179,7 +196,7 @@ func selectedGroups(plan []client.AlbumGroup, selected []bool) []client.AlbumGro
 // goroutine. Completions are counted on the UI goroutine; when the batch has
 // finished, a tie-browsing sibling panel reloads once and any per-group
 // failures are summarized (one failed album does not abort the rest).
-func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string) {
+func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string, tags []string) {
 	remaining := len(groups)
 	var failed []string
 	done := func(op *fs.Op) {
@@ -202,7 +219,7 @@ func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string
 	}
 	go func() {
 		for _, g := range groups {
-			fm.ops.ImportAlbum(g, dirType, done)
+			fm.ops.ImportAlbum(g, dirType, tags, done)
 		}
 	}()
 }

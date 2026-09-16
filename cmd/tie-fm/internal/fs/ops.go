@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -129,14 +130,20 @@ func (o *Operations) MoveAs(source, dest Entry, dirType string, done func(*Op)) 
 // imports only its listed files into Dest/<rel-below-SourceDir>, and an
 // archive group is a single-file import. dirType is stamped on the imported
 // album root like CopyAs — except for archive groups, where the blob itself
-// carries the audio-archive classification.
-func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, done func(*Op)) *Op {
+// carries the audio-archive classification. tags, when non-empty, are applied
+// to every imported file and to the album root (the archive blob only for
+// archive groups), so the album is queryable in media apps like tie-audio;
+// the group's aggregated artist/album/year are recorded on the album root.
+func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, tags []string, done func(*Op)) *Op {
 	src := Entry{Path: g.SourceDir, Name: filepath.Base(g.SourceDir), IsDir: true}
 	dest := Entry{Path: tieURI(g.Dest), IsDir: true}
 	op := o.newOp(src, dest, OpCopy, done)
 	op.DirType = dirType
+	op.Tags = tags
 	switch {
 	case g.IsArchive:
+		// The archive blob is the album: tag it (via op.Tags), but leave the
+		// destination directory unlabeled, untagged and without aggregates.
 		op.A = Entry{Path: g.Files[0], Name: filepath.Base(g.Files[0]), Size: g.Size}
 		op.DirType = ""
 	case !g.WholeTree():
@@ -144,6 +151,14 @@ func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, done func(
 		op.TotalSize = g.Size // probed by the planner; drives the progress bar
 	default:
 		op.ExactDest = true
+	}
+	if !g.IsArchive {
+		op.DirTags = tags
+		op.AlbumArtist = g.Artist
+		op.AlbumTitle = g.Album
+		if g.Year != 0 {
+			op.AlbumYear = strconv.Itoa(g.Year)
+		}
 	}
 	o.queued <- op
 	return op
@@ -201,6 +216,18 @@ type Op struct {
 	// backend (tie): the freshly created directory root for a directory
 	// transfer, the destination directory itself for a file transfer.
 	DirType string
+	// Tags, when non-empty, are applied to every imported file (album
+	// imports), making the album's tracks queryable in media apps.
+	Tags []string
+	// DirTags are applied to the labeled directory itself (album imports),
+	// so the album directory matches tag queries like its files do.
+	DirTags []string
+	// AlbumArtist/AlbumTitle/AlbumYear, when non-empty, are the album's
+	// aggregated metadata recorded on the labeled directory (album imports),
+	// so media apps can title the album without reading its tracks.
+	AlbumArtist string
+	AlbumTitle  string
+	AlbumYear   string
 	// ExactDest makes a directory import land at B.Path verbatim (an album
 	// import's rendered destination) instead of the usual B.Path/<A.Name>.
 	ExactDest bool
@@ -344,33 +371,56 @@ func (op *Op) doImport() error {
 		return err
 	}
 	// A file transfer labels the destination directory itself.
-	if err := op.applyDirType(op.B.Path); err != nil {
+	if err := op.applyDirLabel(op.B.Path, ""); err != nil {
 		return err
 	}
 	op.Status = StatusCompleted
 	return nil
 }
 
-// applyDirType stamps the op's DirType label onto the directory at dirURI.
-// It is a no-op when no label was requested; it errors when one was requested
-// but the destination backend cannot label directories — the user asked for
-// the label, so silently dropping it would be wrong.
-func (op *Op) applyDirType(dirURI string) error {
-	if op.DirType == "" {
+// applyDirLabel stamps the op's label (dir-type, tags, album aggregates) onto
+// the directory at dirURI; name is the display name recorded for a freshly
+// created directory root ("" leaves the directory's name untouched). It is a
+// no-op when nothing was requested. A requested dir-type or tags error when
+// the backend cannot label directories — the user asked for the label, so
+// silently dropping it would be wrong; a name/metadata-only stamp is
+// best-effort and skipped on backends without labeling.
+func (op *Op) applyDirLabel(dirURI, name string) error {
+	label := DirLabel{
+		Type:   op.DirType,
+		Tags:   op.DirTags,
+		Name:   name,
+		Artist: op.AlbumArtist,
+		Album:  op.AlbumTitle,
+		Year:   op.AlbumYear,
+	}
+	if label.Type == "" && len(label.Tags) == 0 && label.Name == "" &&
+		label.Artist == "" && label.Album == "" && label.Year == "" {
 		return nil
 	}
-	setter, ok := op.importer.(DirTypeSetter)
+	labeler, ok := op.importer.(DirLabeler)
 	if !ok {
-		return errors.New("destination does not support directory types")
+		if label.Type != "" || len(label.Tags) > 0 {
+			return errors.New("destination does not support directory types")
+		}
+		return nil
 	}
-	return setter.AddDirType(dirURI, op.DirType)
+	return labeler.LabelDir(dirURI, label)
 }
 
 // importFile imports a single file through the destination backend, streaming
 // upload progress into op.TotalBytesRead when the backend supports it. Backends
 // that only implement Importer (no progress) have their bytes counted at the
-// end so the bar still reaches 100%.
+// end so the bar still reaches 100%. An op carrying tags requires a
+// TagImporter backend — silently dropping requested tags would be wrong.
 func (op *Op) importFile(destDir, srcPath, name string) error {
+	if len(op.Tags) > 0 {
+		ti, ok := op.importer.(TagImporter)
+		if !ok {
+			return errors.New("destination does not support tagging")
+		}
+		return ti.ImportTagged(destDir, srcPath, name, op.Tags, &progressWriter{op: op})
+	}
 	if pi, ok := op.importer.(ProgressImporter); ok {
 		return pi.ImportWithProgress(destDir, srcPath, name, &progressWriter{op: op})
 	}
@@ -430,7 +480,7 @@ func (op *Op) importDir() error {
 	// A directory transfer labels the freshly created root directory. The
 	// backend creates it on demand, so an empty source tree still gets its
 	// (otherwise uncreated) directory labeled.
-	if err := op.applyDirType(base); err != nil {
+	if err := op.applyDirLabel(base, path.Base(tiePath(base))); err != nil {
 		return err
 	}
 	op.Status = StatusCompleted
@@ -457,7 +507,7 @@ func (op *Op) importFileList() error {
 			return err
 		}
 	}
-	if err := op.applyDirType(op.B.Path); err != nil {
+	if err := op.applyDirLabel(op.B.Path, path.Base(tiePath(op.B.Path))); err != nil {
 		return err
 	}
 	op.Status = StatusCompleted

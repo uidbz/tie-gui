@@ -6,9 +6,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/uidbz/tie/client"
+	"github.com/uidbz/tie/metadata"
 )
 
 // TieFS serves the tie tagging filesystem over a tie client. It implements both
@@ -134,12 +137,28 @@ func (t *TieFS) Materialize(e Entry) (string, error) {
 // the file's triples written via client.WriteFile, which versions any existing
 // same-named file into a <name>_prev history. Implements Importer.
 func (t *TieFS) Import(destDir, srcPath, name string) error {
-	return t.ImportWithProgress(destDir, srcPath, name, nil)
+	return t.importFile(destDir, srcPath, name, nil, nil)
 }
 
 // ImportWithProgress is Import that, when progress is non-nil, reports uploaded
 // bytes to it for a live progress bar. Implements ProgressImporter.
 func (t *TieFS) ImportWithProgress(destDir, srcPath, name string, progress io.Writer) error {
+	return t.importFile(destDir, srcPath, name, nil, progress)
+}
+
+// ImportTagged is ImportWithProgress that additionally applies tags to the
+// imported file (and registers them), so album imports are queryable in media
+// apps like tie-audio. Implements TagImporter.
+func (t *TieFS) ImportTagged(destDir, srcPath, name string, tags []string, progress io.Writer) error {
+	return t.importFile(destDir, srcPath, name, tags, progress)
+}
+
+// importFile uploads srcPath into the tie tree under destDir, writes its file
+// triples (versions any existing same-named file), tags it when tags are
+// non-empty, and — for audio files — records its media metadata (title,
+// artist, album, year, track, duration) on the content hash, mirroring what
+// client.ImportFile writes so media apps can title, sort and group the track.
+func (t *TieFS) importFile(destDir, srcPath, name string, tags []string, progress io.Writer) error {
 	dirPath := tiePath(destDir)
 	uid, err := t.tc.DirUIDFromPath(dirPath)
 	if err != nil {
@@ -154,8 +173,48 @@ func (t *TieFS) ImportWithProgress(destDir, srcPath, name string, progress io.Wr
 	if err != nil {
 		return err
 	}
-	_, err = t.tc.WriteFileWithProgress(host, "", uid, name, srcPath, nil, progress)
-	return err
+	hash, err := t.tc.WriteFileWithProgress(host, "", uid, name, srcPath, tags, progress)
+	if err != nil {
+		return err
+	}
+	return writeAudioMetadata(t.tc, hash, srcPath)
+}
+
+// writeAudioMetadata records srcPath's audio metadata (title, artist,
+// album-artist, album, year, track, duration) on its content hash — the same
+// triples client.ImportFile's appendTagOps writes. Non-audio files (and
+// untaggable audio) yield no metadata and no write.
+func writeAudioMetadata(tc *client.TieClient, hash, srcPath string) error {
+	m := client.ExtractMediaMetadata(srcPath)
+	if m == (metadata.Media{}) {
+		return nil
+	}
+	batch := tc.NewBatch()
+	if m.Title != "" {
+		batch.Add(hash, client.TieTitle.String(), m.Title)
+	}
+	if m.Artist != "" {
+		batch.Add(hash, client.TieArtist.String(), m.Artist)
+	}
+	if m.AlbumArtist != "" {
+		batch.Add(hash, "album-artist", m.AlbumArtist)
+	}
+	if m.Album != "" {
+		batch.Add(hash, client.TieAlbum.String(), m.Album)
+	}
+	if m.Year != 0 {
+		batch.Add(hash, client.TieYear.String(), strconv.Itoa(m.Year))
+	}
+	if m.Track != 0 {
+		batch.Add(hash, client.TieTrack.String(), strconv.Itoa(m.Track))
+	}
+	if m.Duration > 0 {
+		batch.Add(hash, "duration", strconv.FormatFloat(m.Duration, 'f', 3, 64))
+	}
+	if _, err := tc.Batch(batch); err != nil {
+		return err
+	}
+	return tc.Sync()
 }
 
 // StreamURL returns the filehost HTTP URL that serves e's raw bytes, so a media
@@ -200,11 +259,16 @@ func (t *TieFS) SetDirTypes(e Entry, labels []string) error {
 	return client.SetDirTypes(t.tc, client.DirUID(e.Hash), labels)
 }
 
-// AddDirType adds one classification label to the directory at dirURI,
-// preserving existing labels. The directory (and any missing ancestors) is
-// created when absent — an empty source tree imported by the copy engine has
-// created no directory yet. Implements DirTypeSetter.
-func (t *TieFS) AddDirType(dirURI, label string) error {
+// LabelDir stamps a DirLabel on the directory at dirURI: a dir-type label,
+// tags (registered in the ("tags","all",<tag>) table), a display name, and
+// album metadata aggregates — mirroring what client.ImportDir's
+// appendTagDirOps and albumMeta write, so media apps (tie-audio) can title
+// the directory and match it in tag queries. All writes are additive except
+// the single-valued tag-date and aggregates, which replace. The directory
+// (and any missing ancestors) is created when absent — an empty source tree
+// imported by the copy engine has created no directory yet. Implements
+// DirLabeler.
+func (t *TieFS) LabelDir(dirURI string, label DirLabel) error {
 	dirPath := tiePath(dirURI)
 	uid, err := t.tc.DirUIDFromPath(dirPath)
 	if err != nil {
@@ -215,7 +279,40 @@ func (t *TieFS) AddDirType(dirURI, label string) error {
 			return err
 		}
 	}
-	return t.tc.SetDirType(uid, label)
+	batch := t.tc.NewBatch()
+	if label.Name != "" {
+		batch.Add(string(uid), client.TieFilename.String(), label.Name)
+		batch.Add(string(uid), client.TieName.String(), label.Name)
+	}
+	// tag-date is single-valued (the last import/label time); replace the
+	// whole relation so re-labels don't accumulate dates.
+	batch.Set(string(uid), client.TieTagDate.String(), []string{time.Now().Format("2006-01-02 15:04:05.000000")})
+	for _, tag := range label.Tags {
+		if tag == "" {
+			continue
+		}
+		batch.Add(string(uid), client.TieTag.String(), tag)
+		batch.Add(client.TieTags.String(), client.TieAll.String(), tag)
+	}
+	if label.Artist != "" {
+		batch.Set(string(uid), client.TieArtist.String(), []string{label.Artist})
+	}
+	if label.Album != "" {
+		batch.Set(string(uid), client.TieAlbum.String(), []string{label.Album})
+	}
+	if label.Year != "" {
+		batch.Set(string(uid), client.TieYear.String(), []string{label.Year})
+	}
+	if _, err := t.tc.Batch(batch); err != nil {
+		return err
+	}
+	if err := t.tc.Sync(); err != nil {
+		return err
+	}
+	if label.Type != "" {
+		return t.tc.SetDirType(uid, label.Type)
+	}
+	return nil
 }
 
 // --- TagStore ---

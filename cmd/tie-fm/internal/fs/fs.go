@@ -90,12 +90,25 @@ type Importer interface {
 // Custom labels can be applied via the Directory type dialog.
 var BuiltinDirTypes = []string{"audio-dir", "image-dir", "video-dir", "document-dir"}
 
-// DirTypeSetter is implemented by backends whose directories carry free-form
-// type labels (tie dir-types). The copy engine stamps an import's chosen
-// dir-type through it after a successful transfer. Adding is additive:
-// existing labels on the directory are preserved.
-type DirTypeSetter interface {
-	AddDirType(dirURI, label string) error
+// DirLabel is what the copy engine stamps on an import's destination
+// directory after a successful transfer into a labeling backend (tie). All
+// fields are optional; a zero DirLabel stamps nothing. Adding is additive:
+// existing labels, tags and unrelated properties on the directory are
+// preserved.
+type DirLabel struct {
+	Type   string   // dir-type label, e.g. "audio-dir"; "" = none
+	Tags   []string // tags added to the directory (and registered)
+	Name   string   // display name (filename/name properties); "" = skip
+	Artist string   // album metadata aggregates (album imports); "" = skip
+	Album  string
+	Year   string
+}
+
+// DirLabeler is implemented by backends whose directories carry free-form
+// type labels, tags and queryable metadata (tie dir-types). The copy engine
+// stamps an import's chosen label through it after a successful transfer.
+type DirLabeler interface {
+	LabelDir(dirURI string, label DirLabel) error
 }
 
 // DirTyper is implemented by backends that can read and replace a directory's
@@ -115,6 +128,14 @@ type DirTyper interface {
 // only Importer.
 type ProgressImporter interface {
 	ImportWithProgress(destDir, srcPath, name string, progress io.Writer) error
+}
+
+// TagImporter is implemented by Importers that can also tag the imported file
+// (tie), so an album import's files are queryable in media apps. The copy
+// engine requires it when an op carries tags; backends without it fail such
+// ops rather than silently dropping the tags.
+type TagImporter interface {
+	ImportTagged(destDir, srcPath, name string, tags []string, progress io.Writer) error
 }
 
 // Streamer is implemented by backends whose entries can be opened directly over
