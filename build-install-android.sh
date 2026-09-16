@@ -110,7 +110,8 @@ install_app() {
 
     echo
     echo "Installing $apk ..."
-    "$ADB" "${DEVICE_ARGS[@]}" install -r "$apk"
+    # -d: allow version-code downgrade (see install-android.sh for why).
+    "$ADB" "${DEVICE_ARGS[@]}" install -r -d "$apk"
 
     if [ "${LAUNCH:-0}" = "1" ]; then
         echo "Launching $id ..."

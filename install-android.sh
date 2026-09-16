@@ -60,7 +60,11 @@ install_app() {
     fi
 
     echo "Installing $apk ..."
-    "$ADB" "${DEVICE_ARGS[@]}" install -r "$apk"
+    # -d: allow version-code downgrade. `fyne package` bumps Build in
+    # FyneApp.toml after every package run, so a reverted/older checkout of
+    # that tracked file produces a lower versionCode than the device has;
+    # without -d the dev loop breaks with INSTALL_FAILED_VERSION_DOWNGRADE.
+    "$ADB" "${DEVICE_ARGS[@]}" install -r -d "$apk"
 
     if [ "${LAUNCH:-0}" = "1" ]; then
         echo "Launching $id ..."
