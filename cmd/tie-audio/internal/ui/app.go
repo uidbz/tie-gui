@@ -203,6 +203,10 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.browse.setSettingsTab(settingsTab)
 	a.settingsContent = settingsTab.Content
 
+	// Feed the wall per the configured startup page (latest / favorites /
+	// playlists / a tag); StartupNone leaves it empty until a tag is picked.
+	a.browse.applyStartupPage()
+
 	// Swipes mirror the compact nav bar's buttons, and work in either layout on
 	// a touch screen: left opens the playlist, right pulls in the sidebar
 	// drawer (the gesture a left-anchored drawer implies). In the regular

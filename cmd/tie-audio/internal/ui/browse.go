@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -13,6 +14,7 @@ import (
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/tagselection"
 
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
@@ -106,7 +108,9 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 	b.viewer.SidebarDrawer = compact
 	b.viewer.Init()
 	// The file-browser tab shows hidden directories only on demand, toggled
-	// from the gallery ☰ menu (matching tie-view).
+	// from the gallery ☰ menu (matching tie-view). "Reload directories"
+	// drops the tree's cached listings so content imported since they were
+	// read (e.g. via tie-fm) appears without restarting the app.
 	b.viewer.MenuItems = func() []*fyne.MenuItem {
 		label := "Show hidden directories"
 		if b.fsTree.showHidden {
@@ -114,6 +118,7 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 		}
 		return []*fyne.MenuItem{
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
+			fyne.NewMenuItem("Reload directories", func() { b.fsTree.reload() }),
 		}
 	}
 	b.viewer.ToggleLabels() // album titles under covers, on by default
@@ -253,6 +258,11 @@ func (b *browsePage) showSettingsTab() {
 
 // refreshAlbums re-queries the album wall for the current tag selection.
 func (b *browsePage) refreshAlbums(include, exclude []string) {
+	// The wall no longer shows a directory listing, so a later "Reload
+	// directories" must not resurrect one over the tag results.
+	b.fsTree.mu.Lock()
+	b.fsTree.currentDir = ""
+	b.fsTree.mu.Unlock()
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		albums, err := b.session.QueryAlbums(include, exclude)
 		if err != nil {
@@ -262,6 +272,51 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 		return b.readers(albums)
 	})
 	b.viewer.ChangeGallery()
+}
+
+// refreshLatest feeds the wall with every album in the collection, most
+// recently imported first (the startup "latest" page).
+func (b *browsePage) refreshLatest() {
+	b.fsTree.mu.Lock()
+	b.fsTree.currentDir = ""
+	b.fsTree.mu.Unlock()
+	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
+		albums, err := b.session.LatestAlbums()
+		if err != nil {
+			fmt.Println("Error querying latest albums:", err)
+			return nil
+		}
+		return b.readers(albums)
+	})
+	b.viewer.ChangeGallery()
+}
+
+// applyStartupPage feeds the cover wall per the configured startup page
+// (Settings → startup page). StartupNone leaves the wall empty until the user
+// picks a tag or a folder. The tag-based pages select their tag in the
+// sidebar so the selection — and in the compact layout the filter chips —
+// reflect what the wall shows; the co-tag refinement is deliberately not run,
+// so the sidebar keeps the full tag list until the user changes the
+// selection. Called at launch and after a collection switch.
+func (b *browsePage) applyStartupPage() {
+	tag := ""
+	switch b.session.Cfg.StartupPage {
+	case config.StartupLatest:
+		b.refreshLatest()
+		return
+	case config.StartupFavorites:
+		tag = "favorite"
+	case config.StartupPlaylists:
+		tag = data.PlaylistTag
+	case config.StartupTag:
+		tag = strings.TrimSpace(b.session.Cfg.StartupTag)
+	}
+	if tag == "" {
+		return
+	}
+	b.ts.SetSelected([]string{tag})
+	b.updateFilterChips()
+	b.refreshAlbums([]string{tag}, nil)
 }
 
 // readers wraps albums as gallery tiles bound to this page's album opener.

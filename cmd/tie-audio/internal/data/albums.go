@@ -312,6 +312,42 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 	return albums, nil
 }
 
+// LatestAlbums returns every album in the collection (audio dirs and audio
+// archives), most recently imported first — the startup "latest" page. The
+// two kinds are queried separately (a query's terms are AND-ed) and merged;
+// ordering is by each subject's tag-date (the last import time), so an album
+// re-imported later resurfaces at the top. Untagged albums are included: the
+// match runs on tie-type, not on tags.
+func (s *Session) LatestAlbums() ([]Album, error) {
+	var rows []client.Row
+	for _, tieType := range []string{client.TieAudioDir.String(), client.TieAudioArchive.String()} {
+		r, _, err := s.Tie.Query(client.QuerySpec{
+			Terms:   []string{tieType},
+			Filter:  client.TieTypeProperty.String(),
+			Reverse: true,
+			Expand:  true,
+			Limit:   -1,
+		})
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	// tag-date has a fixed-width layout ("2006-01-02 15:04:05.000000"), so a
+	// string comparison sorts chronologically; albums without one sort last.
+	sort.SliceStable(rows, func(i, j int) bool {
+		return client.RowFirst(rows[i], client.TieTagDate.String()) >
+			client.RowFirst(rows[j], client.TieTagDate.String())
+	})
+	albums := make([]Album, 0, len(rows))
+	for _, row := range rows {
+		if a, ok := classifyAlbum(row); ok {
+			albums = append(albums, a)
+		}
+	}
+	return albums, nil
+}
+
 func classifyAlbum(row client.Row) (Album, bool) {
 	types := client.RowValues(row, client.TieTypeProperty.String())
 	a := Album{

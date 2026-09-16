@@ -44,6 +44,11 @@ type tieFSTree struct {
 	branches map[string]bool              // node ID -> is a directory
 	files    map[string]tieFSNode         // leaf node ID -> file entry
 
+	// currentDir is the directory whose listing the cover wall currently
+	// shows ("" when the wall is fed by a tag query), so reload can re-read
+	// and re-show it.
+	currentDir string
+
 	// showHidden controls whether hidden directories (names with a leading
 	// ".") appear in the tree. Defaults to false; toggled via the gallery
 	// ☰ menu.
@@ -216,7 +221,38 @@ func (t *tieFSTree) showDir(dirPath string) {
 		fmt.Println("Error reading tie dir", dirPath, ":", err)
 		return
 	}
+	t.mu.Lock()
+	t.currentDir = dirPath
+	t.mu.Unlock()
 	t.showListing(dir)
+}
+
+// reset drops every cached listing and title, re-seeds the tree's branch set
+// and refreshes the tree, so the next expansion re-queries the server. Used
+// on a collection switch (the cache would otherwise keep showing the previous
+// collection's tree for the rest of the run) and by reload.
+func (t *tieFSTree) reset() {
+	t.mu.Lock()
+	t.dirs = make(map[string]*client.Directory)
+	t.branches = map[string]bool{"": true, "/": true}
+	t.files = make(map[string]tieFSNode)
+	t.currentDir = ""
+	t.mu.Unlock()
+	t.tree.Refresh()
+}
+
+// reload re-reads the tie tree from the server: cached listings are dropped
+// and the directory currently shown on the cover wall (if any) is re-read and
+// re-shown, so content imported since the listings were cached appears
+// without restarting the app.
+func (t *tieFSTree) reload() {
+	t.mu.Lock()
+	current := t.currentDir
+	t.mu.Unlock()
+	t.reset()
+	if current != "" {
+		t.showDir(current) // re-reads (cache dropped) and re-sets currentDir
+	}
 }
 
 // showListing replaces the cover wall with the albums of a directory
@@ -304,11 +340,13 @@ func (t *tieFSTree) subTitle(uid client.DirUID, fallback string) string {
 }
 
 // readDir returns the (cached) listing of the directory at dirPath. A path
-// not tied to any DirUID yields an empty listing. Failures are cached too:
-// otherwise a dead server makes the tree widget re-query in a tight loop on
-// every refresh (the tree re-asks childUIDs per layout pass), spamming the
-// dead server and starving the UI. The cache is per-session, so a profile
-// switch (or a restart) retries against the new server automatically.
+// not tied to any DirUID yields an empty listing — uncached, so a directory
+// imported at that path later this session appears on the next read. Failures
+// are cached: otherwise a dead server makes the tree widget re-query in a
+// tight loop on every refresh (the tree re-asks childUIDs per layout pass),
+// spamming the dead server and starving the UI. Successful listings are
+// cached for the session; reload (gallery ☰ menu) and a collection switch
+// drop the cache.
 func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 	t.mu.Lock()
 	d, ok := t.dirs[dirPath]
@@ -328,15 +366,18 @@ func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 		t.mu.Unlock()
 		return client.Directory{}, err
 	}
-	var dir client.Directory
-	if uid != "" {
-		dir, err = client.ReadTieDir(tc, uid)
-		if err != nil {
-			t.mu.Lock()
-			t.dirs[dirPath] = nil
-			t.mu.Unlock()
-			return client.Directory{}, err
-		}
+	if uid == "" {
+		// Not tied to any DirUID (yet): an empty listing, deliberately not
+		// cached — caching it would hide a directory imported here after the
+		// first read for the rest of the session.
+		return client.Directory{}, nil
+	}
+	dir, err := client.ReadTieDir(tc, uid)
+	if err != nil {
+		t.mu.Lock()
+		t.dirs[dirPath] = nil
+		t.mu.Unlock()
+		return client.Directory{}, err
 	}
 	t.mu.Lock()
 	t.dirs[dirPath] = &dir

@@ -61,6 +61,42 @@ func (a *App) buildSettingsTab() *container.TabItem {
 	}
 	a.layoutInfo = widget.NewLabel("")
 
+	// Startup page: what the cover wall shows at launch (and after a
+	// collection switch). Saved with the rest of the form; applies at the
+	// next launch.
+	startupOptions := []string{
+		"Blank (pick tags or a folder)",
+		"Latest albums",
+		"Favorites (tag: favorite)",
+		"Playlists",
+		"A tag…",
+	}
+	startupPages := []string{
+		config.StartupNone,
+		config.StartupLatest,
+		config.StartupFavorites,
+		config.StartupPlaylists,
+		config.StartupTag,
+	}
+	startupPageFor := func(label string) string {
+		for i, text := range startupOptions {
+			if text == label {
+				return startupPages[i]
+			}
+		}
+		return config.StartupNone
+	}
+	startup := widget.NewSelect(startupOptions, nil)
+	startup.Selected = startupOptions[0]
+	for i, page := range startupPages {
+		if page == a.session.Cfg.StartupPage {
+			startup.Selected = startupOptions[i]
+		}
+	}
+	startupTag := widget.NewEntry()
+	startupTag.SetText(a.session.Cfg.StartupTag)
+	startupTag.SetPlaceHolder("(tag shown when startup page is “A tag…”)")
+
 	current := func() config.AppConfig {
 		return config.AppConfig{
 			PwplayServer: server.Text,
@@ -75,6 +111,8 @@ func (a *App) buildSettingsTab() *container.TabItem {
 			AlbumColumns:  a.session.Cfg.AlbumColumns,
 			QueueColumns:  a.session.Cfg.QueueColumns,
 			Layout:        a.session.Cfg.Layout,
+			StartupPage:   startupPageFor(startup.Selected),
+			StartupTag:    startupTag.Text,
 		}
 	}
 
@@ -84,6 +122,8 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		widget.NewFormItem("filehost", fileHost),
 		widget.NewFormItem("layout", layout),
 		widget.NewFormItem("", a.layoutInfo),
+		widget.NewFormItem("startup page", startup),
+		widget.NewFormItem("startup tag", startupTag),
 	)
 
 	save := widget.NewButton("Save", func() {
@@ -147,10 +187,13 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		}
 		// The same album UID can resolve to different artwork in another
 		// collection, so the cover cache (wall tiles, queue rows, transport)
-		// must not carry over.
+		// must not carry over — nor may the Files tab's directory listings.
 		a.covers.Clear()
+		a.browse.fsTree.reset()
 		a.browse.loadTags()
 		a.browse.clearAlbums()
+		// A switch lands on the same default view as a launch.
+		a.browse.applyStartupPage()
 	}
 	connEditor := tieconfig.Editor(a.session.Tie.Config, tieconfig.ResolvePath(a.session.Cfg.TieConfig),
 		a.session.Collection,

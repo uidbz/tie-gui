@@ -53,6 +53,12 @@ type AppConfig struct {
 	// Empty or LayoutAuto picks by width, which cannot always guess right for
 	// a tablet — hence the override.
 	Layout string
+	// StartupPage selects what the cover wall shows at launch (and after a
+	// collection switch): StartupNone leaves it empty until a tag or folder
+	// is picked; the others feed it immediately. Empty means StartupNone.
+	StartupPage string
+	// StartupTag is the tag shown at launch when StartupPage is StartupTag.
+	StartupTag string
 }
 
 // Layout values for AppConfig.Layout.
@@ -60,6 +66,15 @@ const (
 	LayoutAuto    = "auto"
 	LayoutCompact = "compact"
 	LayoutRegular = "regular"
+)
+
+// StartupPage values for AppConfig.StartupPage.
+const (
+	StartupNone      = ""          // empty wall until a tag or folder is picked
+	StartupLatest    = "latest"    // every album, most recently imported first
+	StartupFavorites = "favorites" // albums tagged "favorite"
+	StartupPlaylists = "playlists" // saved playlists
+	StartupTag       = "tag"       // albums tagged StartupTag
 )
 
 // Default returns the built-in defaults used before any config file exists.
