@@ -144,6 +144,8 @@ tie-audio    # browse and play the collection's audio by tag
 
 - **[docs/QUICKSTART.md](docs/QUICKSTART.md)** — install, first run,
   keyboard reference, troubleshooting
+- **[docs/TIE-FM-ALBUM-IMPORT.md](docs/TIE-FM-ALBUM-IMPORT.md)** — bulk
+  music-library album imports: destination templates, cd1/cd2 disc placement
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — gallery library design,
   extension API, threading model
 - **[docs/ANDROID.md](docs/ANDROID.md)** — Android build internals

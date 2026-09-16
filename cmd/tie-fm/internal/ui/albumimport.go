@@ -34,6 +34,7 @@ func (fm *FileManager) importAsAlbums(e fs.Entry) {
 		dialog.ShowError(errors.New("album import requires the tie backend"), fm.win)
 		return
 	}
+	tc := provider.Client()
 
 	// The dir-type picks the destination template (the tie config's
 	// ImportDest) and the label stamped on each imported album root — the same
@@ -46,24 +47,97 @@ func (fm *FileManager) importAsAlbums(e fs.Entry) {
 	custom.PlaceHolder = "custom type (optional)"
 	tagsEntry := widget.NewEntry()
 	tagsEntry.PlaceHolder = "comma-separated tags (optional)"
+
+	// The destination template renders each album's virtual path from its
+	// aggregated tags; the plan review dialog shows the rendered result per
+	// album before anything imports. It pre-fills from the tie config's
+	// ImportDest entry for the picked type, falling back to the common music
+	// layout; an empty field keeps the legacy source-path placement.
+	tmplEntry := widget.NewEntry()
+	tmplEntry.PlaceHolder = "/{albumartist}/{year} - {album}  (empty: keep source paths)"
+	remember := widget.NewCheck("Remember as default for this type", nil)
+
+	resolvedType := func() string {
+		if t := strings.TrimSpace(custom.Text); t != "" {
+			return t
+		}
+		return typeSel.Selected
+	}
+	var edited, refilling bool
+	tmplEntry.OnChanged = func(string) {
+		if !refilling {
+			edited = true
+		}
+	}
+	fillTemplate := func() {
+		if edited {
+			return // keep the user's edit across type changes
+		}
+		tmpl := tc.Config.ImportDest[resolvedType()]
+		if tmpl == "" {
+			tmpl = defaultAlbumTemplate
+		}
+		refilling = true
+		tmplEntry.SetText(tmpl)
+		refilling = false
+	}
+	typeSel.OnChanged = func(string) { fillTemplate() }
+	custom.OnChanged = func(string) { fillTemplate() }
+	fillTemplate()
+
 	dialog.ShowForm("Import as albums: "+e.Name, "Scan", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("Directory type", typeSel),
 			widget.NewFormItem("Custom", custom),
+			widget.NewFormItem("Destination", tmplEntry),
+			widget.NewFormItem("", remember),
 			widget.NewFormItem("Tags", tagsEntry),
 		}, func(ok bool) {
 			if !ok {
 				return
 			}
-			dirType := strings.TrimSpace(custom.Text)
-			if dirType == "" {
-				dirType = typeSel.Selected
-			}
+			dirType := resolvedType()
 			if dirType == "" {
 				return
 			}
-			fm.scanAlbumPlan(e, provider.Client().Config, dirType, splitTags(tagsEntry.Text))
+			tmpl := strings.TrimSpace(tmplEntry.Text)
+			if err := client.ValidateDestTemplate(tmpl); err != nil {
+				dialog.ShowError(err, fm.win)
+				return
+			}
+			if remember.Checked {
+				fm.saveAlbumTemplate(tc, dirType, tmpl)
+			}
+			fm.scanAlbumPlan(e, tc.Config, dirType, tmpl, splitTags(tagsEntry.Text))
 		}, fm.win)
+}
+
+// defaultAlbumTemplate is the destination template suggested when the tie
+// config's ImportDest has no entry for the picked directory type: the common
+// "Artist/Year - Album" music layout ({albumartist} falls back to artist).
+const defaultAlbumTemplate = "/{albumartist}/{year} - {album}"
+
+// saveAlbumTemplate records tmpl as the tie config's ImportDest entry for
+// dirType — the default the tie CLI and future imports render from — and
+// persists the config file. A save failure is reported but not fatal: the
+// import proceeds with the template either way.
+func (fm *FileManager) saveAlbumTemplate(tc *client.TieClient, dirType, tmpl string) {
+	if tc.Config.ImportDest == nil {
+		tc.Config.ImportDest = map[string]string{}
+	}
+	if tc.Config.ImportDest[dirType] == tmpl {
+		return
+	}
+	tc.Config.ImportDest[dirType] = tmpl
+	name := tc.Config.Path()
+	if name == "" {
+		// tie-fm runs on its embedded default config: materialize it as the
+		// standard user config so the CLI picks the template up too.
+		name = "config.toml"
+	}
+	if err := client.SaveConfig(name, tc.Config); err != nil {
+		dialog.ShowError(fmt.Errorf("template default not saved: %w", err), fm.win)
+	}
 }
 
 // splitTags parses a comma-separated tag list, trimming spaces and dropping
@@ -81,7 +155,9 @@ func splitTags(s string) []string {
 // scanAlbumPlan runs the album planner off the UI goroutine — probing a large
 // or network-mounted library can take minutes, so progress is shown. The
 // finished plan (or the scan error) returns to the UI goroutine via fyne.Do.
-func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType string, tags []string) {
+// template overrides the tie config's ImportDest entry for dirType (an empty
+// string falls back to the config, then to source-path placement).
+func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType, template string, tags []string) {
 	root := strings.TrimPrefix(e.Path, "file:")
 	status := widget.NewLabel("Scanning " + root + " …")
 	bar := widget.NewProgressBarInfinite()
@@ -90,7 +166,8 @@ func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType stri
 	scan.Show()
 	go func() {
 		plan, err := client.PlanAlbumImport(cfg, root, client.AlbumPlanOptions{
-			DirType: dirType,
+			DirType:  dirType,
+			Template: template,
 			ScanProgress: func(scanned, total int) {
 				fyne.Do(func() {
 					status.SetText(fmt.Sprintf("Scanning %s — %d / %d files probed", root, scanned, total))

@@ -381,6 +381,95 @@ func TestImportAlbumFileList(t *testing.T) {
 	}
 }
 
+func TestImportAlbumFileSubPaths(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "rip")
+	for _, sub := range []string{filepath.Join("CD1", "a.flac"), filepath.Join("CD2", "b.flac"), filepath.Join("bonus", "c.flac")} {
+		if err := os.MkdirAll(filepath.Join(srcDir, filepath.Dir(sub)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(srcDir, sub), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := &fakeImportFS{}
+	ops := NewOperations(NewRegistry(nil, fake))
+	// The planner's disc-aware routing: CD1/CD2 members land in cd1/cd2
+	// subdirectories; a file missing from SubPaths keeps its legacy relative
+	// placement.
+	a := filepath.Join(srcDir, "CD1", "a.flac")
+	b := filepath.Join(srcDir, "CD2", "b.flac")
+	c := filepath.Join(srcDir, "bonus", "c.flac")
+	g := client.AlbumGroup{
+		SourceDir: srcDir,
+		Files:     []string{a, b, c},
+		SubPaths:  map[string]string{a: "cd1/a.flac", b: "cd2/b.flac"},
+		Dest:      "/music/Artist/Album",
+	}
+	op := ops.ImportAlbum(g, "audio-dir", nil, nil)
+	waitDone(t, op)
+
+	wantImports := map[string]bool{
+		"tie:/music/Artist/Album/cd1|a.flac":   true,
+		"tie:/music/Artist/Album/cd2|b.flac":   true,
+		"tie:/music/Artist/Album/bonus|c.flac": true,
+	}
+	if len(fake.imports) != len(wantImports) {
+		t.Fatalf("imports = %v", fake.imports)
+	}
+	for _, imp := range fake.imports {
+		if !wantImports[imp] {
+			t.Fatalf("unexpected import %q", imp)
+		}
+	}
+}
+
+func TestImportAlbumConvertedWholeTree(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "rip")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"a.flac", "b.flac", "cover.jpg"} {
+		if err := os.WriteFile(filepath.Join(srcDir, sub), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := &fakeImportFS{}
+	ops := NewOperations(NewRegistry(nil, fake))
+	// A whole-tree group the planner converted for its disc structure arrives
+	// as Files+Sidecars+SubPaths: the sidecars import too (cover art must not
+	// be left behind), at their planned subpaths.
+	a := filepath.Join(srcDir, "a.flac")
+	b := filepath.Join(srcDir, "b.flac")
+	cover := filepath.Join(srcDir, "cover.jpg")
+	g := client.AlbumGroup{
+		SourceDir: srcDir,
+		Files:     []string{a, b},
+		Sidecars:  []string{cover},
+		SubPaths:  map[string]string{a: "cd1/a.flac", b: "cd2/b.flac", cover: "cover.jpg"},
+		Dest:      "/music/Artist/Album",
+	}
+	op := ops.ImportAlbum(g, "audio-dir", nil, nil)
+	waitDone(t, op)
+
+	wantImports := map[string]bool{
+		"tie:/music/Artist/Album/cd1|a.flac": true,
+		"tie:/music/Artist/Album/cd2|b.flac": true,
+		"tie:/music/Artist/Album|cover.jpg":  true,
+	}
+	if len(fake.imports) != len(wantImports) {
+		t.Fatalf("imports = %v", fake.imports)
+	}
+	for _, imp := range fake.imports {
+		if !wantImports[imp] {
+			t.Fatalf("unexpected import %q", imp)
+		}
+	}
+}
+
 func TestImportAlbumArchiveSingleFile(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "live")

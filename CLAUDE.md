@@ -566,31 +566,50 @@ stamps and edits them:
   (`StatInfo.DirTypes`, filled from `client.GetDirType` — `Stat`'s own
   TieType collapses multi-valued tie-types and never surfaces labels).
 - **Import as albums…** (local directory context menu,
-  `ui/albumimport.go`) bulk-imports a local library as albums: a form picks
-  the dir-type (built-ins + custom, default `audio-dir` — it selects the
-  config's `ImportDest` template and the label stamped on each album root)
-  and optional comma-separated **tags**, then `client.PlanAlbumImport` runs
-  off the UI goroutine with a ScanProgress dialog (network-mounted libraries
-  take minutes to probe), and a plan dialog lists one checkbox row per album
-  (title, rendered destination, tracks, size, warnings; dest-less groups are
-  fixed unchecked). Confirming enqueues one op per selected group via
+  `ui/albumimport.go`; full user docs: `docs/TIE-FM-ALBUM-IMPORT.md`)
+  bulk-imports a local library as albums: a form picks the dir-type
+  (built-ins + custom, default `audio-dir` — it selects the label stamped on
+  each album root), a **destination template**, and optional comma-separated
+  **tags**, then `client.PlanAlbumImport` runs off the UI goroutine with a
+  ScanProgress dialog (network-mounted libraries take minutes to probe), and
+  a plan dialog lists one checkbox row per album (title, rendered
+  destination, tracks, size, warnings; dest-less groups are fixed
+  unchecked). The template field pre-fills from the tie config's
+  `ImportDest[dir-type]` (falling back to `/{albumartist}/{year} - {album}`,
+  refilled on type change unless hand-edited), is validated on Scan via
+  `client.ValidateDestTemplate`, and overrides the config lookup as
+  `AlbumPlanOptions.Template` (the same semantics as the CLI's `--dest`; an
+  empty field keeps source-path placement). The form's "Remember as default
+  for this type" checkbox writes the template back into the tie config's
+  `[ImportDest]` (`client.SaveConfig` at `Config.Path()`, or a fresh
+  user-config `config.toml` when tie-fm runs on its embedded default), so
+  the CLI renders the same layout. Placement below the album root is
+  **disc-aware** (tie ≥ v0.5.3): multi-disc albums route each disc'd member
+  to `cd<N>/…` and single-disc albums drop disc-like directory levels, keyed
+  off DISCNUMBER tags with a fallback to disc-like directory names
+  (`CD1`, `Disc 2`); the planner records per-file destinations in
+  `AlbumGroup.SubPaths`, and a disc-structured whole-tree group converts to
+  an explicit `Files`+`Sidecars`+`SubPaths` import (cover art rides along).
+  Confirming enqueues one op per selected group via
   `Operations.ImportAlbum` (from a goroutine — the queue is small and
   feeding it blocks), each album shown as its own progress row; failures are
   per-group (one bad album doesn't abort the batch) and summarized when the
   batch finishes. The ops engine's album path (`fs/ops.go`) imports at
   `g.Dest` **verbatim** (`Op.ExactDest` — not the usual `B.Path/<name>`):
   whole-tree groups mirror their `SourceDir` there, file-list groups
-  (`Op.Files`) import only the listed files into `Dest/<rel-below-SourceDir>`
-  via the `Importer` interface with `TotalSize` preset from the plan, and
-  archive groups are plain single-file imports with no dir-type stamp (the
-  blob carries the audio-archive classification itself). The form's tags are
-  applied to every imported file (`Op.Tags`, via the `fs.TagImporter`
-  interface — a backend without it fails the op) and to the album root
-  (`Op.DirTags`), so the albums appear on tie-audio's tag-driven cover wall;
-  the group's aggregated artist/album/year ride the `DirLabel` onto the
-  album root (`Op.AlbumArtist`/`AlbumTitle`/`AlbumYear`). Archive groups tag
-  only the blob — the destination directory stays unlabeled, untagged and
-  without aggregates.
+  (`Op.Files` = `g.Files` ∪ `g.Sidecars`) place each file per
+  `Op.FileSubPaths` (copied from `g.SubPaths`) or, when absent, into
+  `Dest/<rel-below-SourceDir>` via the `Importer` interface with `TotalSize`
+  preset from the plan, and archive groups are plain single-file imports
+  with no dir-type stamp (the blob carries the audio-archive classification
+  itself). The form's tags are applied to every imported file (`Op.Tags`,
+  via the `fs.TagImporter` interface — a backend without it fails the op)
+  and to the album root (`Op.DirTags`), so the albums appear on tie-audio's
+  tag-driven cover wall; the group's aggregated artist/album/year ride the
+  `DirLabel` onto the album root
+  (`Op.AlbumArtist`/`AlbumTitle`/`AlbumYear`). Archive groups tag only the
+  blob — the destination directory stays unlabeled, untagged and without
+  aggregates.
 
 ---
 

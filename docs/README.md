@@ -7,6 +7,9 @@ User and developer documentation for the tie-gui clients
 
 - **[QUICKSTART.md](QUICKSTART.md)** — install, first run, configuration,
   keyboard reference, troubleshooting.
+- **[TIE-FM-ALBUM-IMPORT.md](TIE-FM-ALBUM-IMPORT.md)** — bulk-importing a
+  music library into tie as albums: destination templates, cd1/cd2 disc
+  placement, dir-types, review dialog, caveats.
 - **[ANDROID.md](ANDROID.md)** — building and installing the Android APKs.
 
 ## For developers

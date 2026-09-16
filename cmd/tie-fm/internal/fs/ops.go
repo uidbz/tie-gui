@@ -127,13 +127,17 @@ func (o *Operations) MoveAs(source, dest Entry, dirType string, done func(*Op)) 
 // client.PlanAlbumImport). Unlike Copy/Move the destination is exact: the
 // group lands at g.Dest verbatim, not at B.Path/<source name>. A whole-tree
 // group mirrors its SourceDir there (sidecars included), a file-list group
-// imports only its listed files into Dest/<rel-below-SourceDir>, and an
-// archive group is a single-file import. dirType is stamped on the imported
-// album root like CopyAs — except for archive groups, where the blob itself
-// carries the audio-archive classification. tags, when non-empty, are applied
-// to every imported file and to the album root (the archive blob only for
-// archive groups), so the album is queryable in media apps like tie-audio;
-// the group's aggregated artist/album/year are recorded on the album root.
+// imports its listed files following the planner's disc-aware placement
+// (g.SubPaths: multi-disc members route to cd<N> subdirectories) or, for
+// files without a subpath, into Dest/<rel-below-SourceDir>, and an archive
+// group is a single-file import. A whole-tree group the planner converted
+// for its disc structure arrives as Files+Sidecars+SubPaths and takes the
+// same file-list path. dirType is stamped on the imported album root like
+// CopyAs — except for archive groups, where the blob itself carries the
+// audio-archive classification. tags, when non-empty, are applied to every
+// imported file and to the album root (the archive blob only for archive
+// groups), so the album is queryable in media apps like tie-audio; the
+// group's aggregated artist/album/year are recorded on the album root.
 func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, tags []string, done func(*Op)) *Op {
 	src := Entry{Path: g.SourceDir, Name: filepath.Base(g.SourceDir), IsDir: true}
 	dest := Entry{Path: tieURI(g.Dest), IsDir: true}
@@ -147,7 +151,13 @@ func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, tags []str
 		op.A = Entry{Path: g.Files[0], Name: filepath.Base(g.Files[0]), Size: g.Size}
 		op.DirType = ""
 	case !g.WholeTree():
-		op.Files = g.Files
+		// Files ∪ Sidecars: a disc-structured whole-tree group converts to an
+		// explicit import in the planner, its cover art riding along as
+		// sidecars. SubPaths carries the disc-aware placement (cd<N> routing).
+		op.Files = make([]string, 0, len(g.Files)+len(g.Sidecars))
+		op.Files = append(op.Files, g.Files...)
+		op.Files = append(op.Files, g.Sidecars...)
+		op.FileSubPaths = g.SubPaths
 		op.TotalSize = g.Size // probed by the planner; drives the progress bar
 	default:
 		op.ExactDest = true
@@ -235,6 +245,11 @@ type Op struct {
 	// import (an album group's audio files) instead of walking the whole
 	// tree; each lands at B.Path/<rel-below-A.Path>.
 	Files []string
+	// FileSubPaths, when non-nil, overrides per-file placement for Files: a
+	// source path maps to its slash-separated destination below B.Path
+	// (the planner's disc-aware cd<N> routing). Files missing from the map
+	// fall back to <rel-below-A.Path>.
+	FileSubPaths map[string]string
 
 	OnComplete func(*Op) // optional; called after the op finishes (ok or error)
 
@@ -488,22 +503,34 @@ func (op *Op) importDir() error {
 }
 
 // importFileList imports an explicit list of files (an album group's audio
-// files), each landing at B.Path/<rel-below-A.Path>. Unlike importDir only the
-// listed files transfer — sidecars and unlisted members stay local.
+// files and sidecars). Placement follows op.FileSubPaths when the planner
+// routed the file (disc-aware cd<N> subdirectories), else each file lands at
+// B.Path/<rel-below-A.Path>. Unlike importDir only the listed files transfer
+// — unlisted members stay local.
 func (op *Op) importFileList() error {
 	for _, f := range op.Files {
 		if err := op.wait(); err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(op.A.Path, f)
-		if err != nil {
-			return err
+		var destDir, name string
+		if sub, ok := op.FileSubPaths[f]; ok {
+			destDir = op.B.Path
+			if dir := path.Dir(sub); dir != "." {
+				destDir += "/" + dir
+			}
+			name = path.Base(sub)
+		} else {
+			rel, err := filepath.Rel(op.A.Path, f)
+			if err != nil {
+				return err
+			}
+			destDir = op.B.Path
+			if sub := filepath.ToSlash(filepath.Dir(rel)); sub != "." {
+				destDir += "/" + sub
+			}
+			name = filepath.Base(f)
 		}
-		destDir := op.B.Path
-		if sub := filepath.ToSlash(filepath.Dir(rel)); sub != "." {
-			destDir += "/" + sub
-		}
-		if err := op.importFile(destDir, f, filepath.Base(f)); err != nil {
+		if err := op.importFile(destDir, f, name); err != nil {
 			return err
 		}
 	}
