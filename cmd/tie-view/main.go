@@ -296,8 +296,8 @@ func main() {
 
 	// A tie: URL argument loads its subject instead of the default startup
 	// view. On mobile, load the default image directory (DCIM/Camera). On
-	// desktop, load images by tag (default "favorite") to populate the
-	// gallery with quick-access content.
+	// desktop, load the configured startup page (Settings → Startup, default
+	// favorites) to populate the gallery with quick-access content.
 	if tieURL != "" {
 		go loadTieURL(myWindow, viewer, tieClient, fsTree, browseDir, tieURL)
 	} else if viewer.Platform().IsMobile() {
@@ -319,7 +319,30 @@ func main() {
 			fyne.Do(viewer.ChangeGallery)
 		}()
 	} else {
-		readFromTie(viewer, tieClient, []string{*tieTag}, nil, "tag", browseDir)
+		// Desktop startup page (Settings → Startup): favorites (the default,
+		// images tagged "favorite"), the latest imports, a chosen tag, or a
+		// blank gallery. An explicit -tag flag overrides the configured page
+		// for this launch.
+		page := myApp.Preferences().StringWithFallback(prefStartupPage, startupFavorites)
+		tagName := myApp.Preferences().String(prefStartupTag)
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "tag" {
+				page = startupTag
+				tagName = *tieTag
+			}
+		})
+		switch page {
+		case startupNone:
+			// Leave the gallery empty until a tag is picked.
+		case startupLatest:
+			latestFromTie(viewer, tieClient, browseDir)
+		case startupTag:
+			if tagName != "" {
+				readFromTie(viewer, tieClient, []string{tagName}, nil, "tag", browseDir)
+			}
+		default: // startupFavorites
+			readFromTie(viewer, tieClient, []string{"favorite"}, nil, "tag", browseDir)
+		}
 		// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
 	}
 

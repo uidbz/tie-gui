@@ -404,6 +404,30 @@ func classifyTieRow(row client.Row) tieRowKind {
 	return tieRowSkip
 }
 
+// latestFromTie replaces the viewer's gallery with every image in the
+// collection, most recently imported first — the startup "latest" page. The
+// match runs on tie-type (a reverse query over the image-file subjects), so
+// untagged images are included; ordering is by tag-date (the last import
+// time), so a re-imported image resurfaces at the top.
+func latestFromTie(viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID)) {
+	spec := client.QuerySpec{
+		Terms:   []string{client.TieImageFile.String()},
+		Filter:  client.TieTypeProperty.String(),
+		Reverse: true,
+		Expand:  true,
+		Limit:   -1,
+	}
+	viewer.ReadCustomAsync(func() []gallery.CustomReader {
+		rows, _, err := tc.Query(spec)
+		if err != nil {
+			fmt.Println("Error happened querying tie:", err)
+			return nil
+		}
+		sortRows(rows, sortNewest)
+		return buildReaders(viewer, tc, rows, browseDir)
+	})
+}
+
 // readFromTie queries tie for images carrying all of the include tags and
 // none of the exclude tags, and replaces the viewer's gallery with the
 // results. Tagged image directories in the results become browsable

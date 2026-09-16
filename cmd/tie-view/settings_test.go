@@ -43,7 +43,7 @@ func TestSettingsTabWrapsTabsInBorder(t *testing.T) {
 	if tabs == nil {
 		t.Fatal("settings tab border does not contain the inner AppTabs")
 	}
-	if len(tabs.Items) != 2 {
-		t.Fatalf("inner tabs = %d, want 2 (Connection + Quick tags)", len(tabs.Items))
+	if len(tabs.Items) != 3 {
+		t.Fatalf("inner tabs = %d, want 3 (Connection + Quick tags + Startup)", len(tabs.Items))
 	}
 }
