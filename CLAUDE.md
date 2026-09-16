@@ -540,12 +540,24 @@ stamps and edits them:
   tie") transfers with a chosen label — the four built-ins
   (`fs.BuiltinDirTypes`) plus a "Custom…" prompt. `Operations.CopyAs`/`MoveAs`
   set `Op.DirType`; after a successful import the engine type-asserts the
-  destination backend to `fs.DirTypeSetter` and stamps the freshly created
-  directory root (directory transfers) or the destination directory itself
-  (file transfers). `TieFS.AddDirType` creates the path when absent, so an
-  empty source tree still gets its label; stamping is additive (existing
-  labels preserved), and a backend without `DirTypeSetter` fails the op rather
-  than silently dropping the label.
+  destination backend to `fs.DirLabeler` and stamps an `fs.DirLabel` (dir-type
+  + display name + tag-date) on the freshly created directory root (directory
+  transfers) or the destination directory itself (file transfers, name
+  skipped). `TieFS.LabelDir` creates the path when absent, so an empty source
+  tree still gets its label; stamping is additive (existing labels preserved),
+  and a backend without `DirLabeler` fails the op rather than silently
+  dropping the label (a name/tag-date-only label is best-effort and skipped
+  instead, so plain copies to non-tie backends keep working).
+- **Import metadata parity with `tie import`:** every file imported into tie
+  (any copy, not just album imports) goes through `TieFS.importFile`, which
+  follows `WriteFileWithProgress` with `writeAudioMetadata` —
+  `client.ExtractMediaMetadata` + a batch writing the same
+  title/artist/album-artist/album/year/track/duration triples
+  `client.ImportFile` writes (non-audio files yield no metadata and no
+  write). Directory transfers additionally record the new root's folder name
+  (`filename`/`name`) and tag-date via the `DirLabel`, so media apps
+  (tie-audio) can title the directory and sort it by import time without
+  listing it.
 - **Directory type…** (tie directory context menu) shows the current labels
   and edits them as a checkbox set (built-ins + current customs) plus a
   comma-separated custom field, applied via `fs.DirTyper.SetDirTypes`
@@ -556,12 +568,12 @@ stamps and edits them:
 - **Import as albums…** (local directory context menu,
   `ui/albumimport.go`) bulk-imports a local library as albums: a form picks
   the dir-type (built-ins + custom, default `audio-dir` — it selects the
-  config's `ImportDest` template and the label stamped on each album root),
-  then `client.PlanAlbumImport` runs off the UI goroutine with a
-  ScanProgress dialog (network-mounted libraries take minutes to probe), and
-  a plan dialog lists one checkbox row per album (title, rendered
-  destination, tracks, size, warnings; dest-less groups are fixed
-  unchecked). Confirming enqueues one op per selected group via
+  config's `ImportDest` template and the label stamped on each album root)
+  and optional comma-separated **tags**, then `client.PlanAlbumImport` runs
+  off the UI goroutine with a ScanProgress dialog (network-mounted libraries
+  take minutes to probe), and a plan dialog lists one checkbox row per album
+  (title, rendered destination, tracks, size, warnings; dest-less groups are
+  fixed unchecked). Confirming enqueues one op per selected group via
   `Operations.ImportAlbum` (from a goroutine — the queue is small and
   feeding it blocks), each album shown as its own progress row; failures are
   per-group (one bad album doesn't abort the batch) and summarized when the
@@ -571,7 +583,14 @@ stamps and edits them:
   (`Op.Files`) import only the listed files into `Dest/<rel-below-SourceDir>`
   via the `Importer` interface with `TotalSize` preset from the plan, and
   archive groups are plain single-file imports with no dir-type stamp (the
-  blob carries the audio-archive classification itself).
+  blob carries the audio-archive classification itself). The form's tags are
+  applied to every imported file (`Op.Tags`, via the `fs.TagImporter`
+  interface — a backend without it fails the op) and to the album root
+  (`Op.DirTags`), so the albums appear on tie-audio's tag-driven cover wall;
+  the group's aggregated artist/album/year ride the `DirLabel` onto the
+  album root (`Op.AlbumArtist`/`AlbumTitle`/`AlbumYear`). Archive groups tag
+  only the blob — the destination directory stays unlabeled, untagged and
+  without aggregates.
 
 ---
 
@@ -636,6 +655,14 @@ an inner `AppTabs`:
   changes. tie-view remembers its collection selection in Preferences
   (`tie.collection`); see "Per-app tie collection (profile)" below.
 - **Quick tags** — `makeQuickTagEditor` (see "Quick tagging mode").
+- **Startup** — `makeStartupTab` chooses what the desktop gallery shows at
+  launch (Preferences `startup.page`/`startup.tag`, written on change):
+  favorites (the default — images tagged `favorite`, the historical `-tag`
+  flag default), latest images (`latestFromTie`: a reverse tie-type query for
+  every `image-file`, sorted client-side by tag-date, so untagged imports
+  appear), a chosen tag, or a blank gallery. An explicit `-tag` flag
+  overrides the configured page for that launch; a tie: URL argument and the
+  mobile DCIM view take precedence over the setting.
 
 ---
 
@@ -681,9 +708,15 @@ Settings** tabs, mirroring tie-view's sidebar.
   directory replaces the cover wall with its subdirectories as album tiles
   (titles from the subdir's own album/name triple, else the folder name)
   followed by its standalone tracks as single-track albums; selecting a file
-  opens it as a single-track album. Listings are cached per session,
-  failures included (a dead server would otherwise be re-queried per tree
-  layout pass). Hidden directories (leading `.`) are toggled via the
+  opens it as a single-track album. Successful listings are cached per
+  session and failures too (a dead server would otherwise be re-queried per
+  tree layout pass) — but an *unmapped* path (no DirUID yet) is deliberately
+  not cached, so a directory imported there later appears on the next read.
+  The ☰ menu's "Reload directories" (`fsTree.reload`) drops the cache and
+  re-reads the directory currently on the wall (`fsTree.currentDir`), so
+  albums imported while tie-audio runs (e.g. via tie-fm) appear without an
+  app restart; a collection switch likewise resets the cache
+  (`fsTree.reset`). Hidden directories (leading `.`) are toggled via the
   gallery ☰ menu (matching tie-view).
 - **Settings** is built by the App shell (`buildSettingsTab`) and appended
   to the same `AppTabs`; the shell reuses the tab item's content to open the
@@ -708,6 +741,17 @@ collection (profile)" above). The sidebar then reloads its tags (selection
 cleared) and `clearAlbums` empties the wall in the background, so stale
 albums from the prior collection can neither display nor be opened; the user
 stays on the settings page (no `ChangeGallery`).
+
+**Startup page:** the app form's "startup page"/"startup tag" items
+(`AppConfig.StartupPage`/`StartupTag`, settings.go) choose what the cover
+wall shows at launch and after a collection switch
+(`browsePage.applyStartupPage`): blank (default), latest albums
+(`Session.LatestAlbums` — every audio-dir and audio-archive merged, sorted
+by tag-date, so untagged tie-fm imports appear), favorites (the `favorite`
+tag), playlists (the reserved `playlist` tag), or a chosen tag. Tag-based
+pages select their tag in the sidebar via `SetSelected` (no
+`OnSelectedChanged`, and no co-tag refinement — the full tag list stays
+until the user changes the selection).
 
 **Compact vs regular layout:** see "tie-audio compact layout" below — on a
 phone-width window the sidebar becomes a slide-over drawer, the queue an
