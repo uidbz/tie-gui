@@ -3,6 +3,7 @@ package ui
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2/test"
 
@@ -191,5 +192,59 @@ func TestMiniBarVolumeRow(t *testing.T) {
 	p.apply(playback.Status{Volume: 0.4})
 	if got := bar.volume.Value; got != 0.4 {
 		t.Errorf("volume slider = %v, want 0.4 after a poll", got)
+	}
+}
+
+// closableBackend tracks Stop/Close for the SetBackend swap test.
+type closableBackend struct {
+	fakeBackend
+	mu     sync.Mutex
+	stops  int
+	closes int
+}
+
+func (b *closableBackend) Stop() error {
+	b.mu.Lock()
+	b.stops++
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *closableBackend) Close() error {
+	b.mu.Lock()
+	b.closes++
+	b.mu.Unlock()
+	return nil
+}
+
+// SetBackend swaps the backend the poll loop and actions target, and stops
+// and closes the old one (the local engine holds a sink and a goroutine).
+func TestPlayerSetBackend(t *testing.T) {
+	test.NewApp()
+	old := &closableBackend{}
+	replacement := &fakeBackend{}
+	p := newPlayer(old, nil)
+
+	p.SetBackend(replacement)
+	if got := p.be(); got != playback.PlaybackBackend(replacement) {
+		t.Fatalf("backend = %T, want the replacement", got)
+	}
+	waitForCond(t, "old backend stopped and closed", func() bool {
+		old.mu.Lock()
+		defer old.mu.Unlock()
+		return old.stops == 1 && old.closes == 1
+	})
+
+	// Actions land on the new backend.
+	p.volumeStep(0.1)
+	waitForCond(t, "volume on new backend", func() bool { return replacement.volumeCount() == 1 })
+
+	// Swapping to the same backend is a no-op (no stop/close).
+	p.SetBackend(replacement)
+	time.Sleep(50 * time.Millisecond)
+	old.mu.Lock()
+	defer old.mu.Unlock()
+	if old.stops != 1 || old.closes != 1 {
+		t.Errorf("same-backend swap touched the old backend (stops=%d closes=%d)", old.stops, old.closes)
 	}
 }

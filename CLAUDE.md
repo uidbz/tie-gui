@@ -37,11 +37,13 @@ Go module proxy; no local checkout is needed. (It was previously referenced via
 a `replace` directive to a sibling `../tie` checkout — removed when v0.4.2 was
 tagged — and was imported as `git.sr.ht/~uid/tie` before the sourcehut→GitHub
 migration.) The pwplay client (`github.com/uidbz/pwplay/client`, stdlib-only
-HTTP client for the pwplay-server REST API that tie-audio drives) is a pinned
-dependency the same way; its old vendored copy under
-`cmd/tie-audio/internal/pwplay/` was deleted. The pwplay *server* itself stays
-in its own repo — tie-audio's `test-env` builds it from the sibling `../pwplay`
-checkout.
+HTTP client for the pwplay-server REST API that tie-audio's remote backend
+drives) is a pinned dependency the same way; its old vendored copy under
+`cmd/tie-audio/internal/pwplay/` was deleted. tie-audio's **local** playback
+backend uses the same module's `player` package (the engine pwplay-server
+runs) — currently resolved via a `replace` directive to the sibling
+`../pwplay` checkout. The pwplay *server* itself stays in its own repo —
+tie-audio's `test-env` builds it from the sibling `../pwplay` checkout.
 
 Note: the `gallery` library serves `imgview`, `tie-view` and tie-fm's preview
 grid; `tie-audio` has its own UI code and shares only the `tagselection`
@@ -95,7 +97,8 @@ compiles under `!nompv` (not `!android`), with EGL vs GLFW glue split into
 
 The Android scripts (`build-android.sh`, `install-android.sh`,
 `build-install-android.sh`) cover imgview, tie-view, and tie-audio. The
-audio player bundles no native libs (it's a pwplay-server remote client), so
+audio player bundles no native libs (local playback outputs through OpenSL
+ES, an Android system library), so
 the scripts skip the libmpv vendored-libs check and the bundling step for it
 (`needs_mpv` gate in `build-android.sh`) and **always build it with
 `-tags nompv`**: tie-audio imports `gallery` (album grid) → `mpvplayer`, and
@@ -722,6 +725,56 @@ the file's DefaultCollection.
 In the shared connection editor, picking a collection in the dropdown switches
 the picking app immediately (no tie-file write); only Apply writes the tie
 file (setting its `DefaultCollection`, which the tie CLI then follows).
+
+---
+
+## tie-audio playback backends (`cmd/tie-audio/internal/playback/`)
+
+tie-audio plays through a `PlaybackBackend` interface (16 methods: queue ops,
+transport, seek/volume, `Status()` polling at 500 ms). Two backends:
+
+- **pwplay remote** (`pwplay.go`) — drives a pwplay-server over HTTP.
+- **local** (`local.go`) — pwplay's own `player` engine
+  (`github.com/uidbz/pwplay/player`, the same code pwplay-server runs:
+  gapless queue, boundary-accurate position, volume 0–2, pure-Go
+  FLAC/MP3/WAV/OGG/Opus decoders) running in-process, outputting through the
+  engine's platform sink: PipeWire on Linux, OpenSL ES on Android
+  (`player/sink_opensl.go` in the pwplay repo; the sink abstraction is
+  `PlayerOptions.Sink`, nil = platform default). Queue entries stay
+  `Session.StreamURL(hash)` strings — the engine downloads each track to
+  `$TMPDIR` on load and sniffs the format from the filehost's Content-Type —
+  so the UI's URL-keyed metadata registry, resolver and playlist saving are
+  unchanged. Queue mutations settle synchronously (bounded in-process polls
+  of the engine's playlist length) so the UI's optimistic-update contract
+  holds; `PlayAlbum` mirrors the remote's append-trim-settle-play dance
+  (never a transient empty queue — the engine's `select` drains its command
+  channels in random order). `localBackend.Close()` (io.Closer) shuts the
+  engine down; `player.SetBackend` swaps backends live on settings Save.
+
+Selection: `AppConfig.Backend` = `pwplay` | `local` (Settings → "playback"
+select); empty = platform default — **local on Android, pwplay elsewhere**
+(`config.DefaultBackend`, FILESDIR probe). `Session.BackendErr` records a
+failed local construction (falls back to remote; surfaced as a dialog at
+startup and on settings save).
+
+**Desktop build note:** the local backend links `libpipewire-0.3` (build-time
+headers via pkg-config; runtime `.so`), so desktop tie-audio now needs
+PipeWire dev packages installed to build — same toolchain as pwplay itself.
+
+**Android media session** (`internal/ui/mediabridge.go`): a permanent
+`transportView` feeding the fork's `MediaSessionDriver` API
+(`fyne.io/fyne/v2/driver/mobile`, Android-only; the type assertion fails
+elsewhere). It pushes metadata/state/artwork to the foreground-service
+notification + lock screen and owns the audio-focus policy (transient loss →
+pause + resume on gain, duck → volume ×0.35 + restore, permanent loss →
+pause, becoming-noisy → pause). Enabled only while the local backend is
+active. The Java side (`PlaybackService` in the fork's dex), the JNI glue
+and tie-audio's custom `AndroidManifest.xml` are documented in
+docs/ANDROID.md ("tie-audio local playback").
+
+**Engine limitations inherited from pwplay-server:** the sink format is
+fixed by the first track loaded (a later different-rate track plays at the
+wrong speed), and formats are FLAC/MP3/WAV/OGG/Opus only (no AAC/M4A/ALAC).
 
 ---
 

@@ -115,7 +115,7 @@ func TestGroupedTableHeadersAreInert(t *testing.T) {
 		t.Error("track row is not selectable")
 	}
 
-	backend := q.backend.(*scriptBackend)
+	backend := q.session.Backend.(*scriptBackend)
 	q.playDisplayRow(0) // header: must not play
 	q.playDisplayRow(4) // b1: plays playlist index 2
 	waitForCond(t, "goto for the double-tapped track", func() bool { return backend.gotoCount() == 1 })

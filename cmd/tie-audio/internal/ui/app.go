@@ -4,6 +4,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"path"
 
 	"fyne.io/fyne/v2"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
 
 // shellWindow wraps the real window so every SetContent keeps the transport
@@ -137,6 +139,7 @@ type App struct {
 	player   *player
 	browse   *browsePage
 	queue    *queuePage
+	media    *mediaBridge
 	regular  *regularBar
 	mini     *miniBar
 	playing  *nowPlayingPage
@@ -181,6 +184,13 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.player.AddView(a.regular)
 	a.player.AddView(a.mini)
 	a.player.AddView(a.playing)
+
+	// The media bridge feeds the Android media session / foreground service
+	// (a no-op off Android). It is enabled only for local playback: phone
+	// audio focus and lock-screen controls must never drive a remote server.
+	a.media = newMediaBridge(a.player)
+	a.media.SetEnabled(playback.IsLocal(session.Backend))
+	a.player.AddView(a.media)
 
 	a.shell = &shellWindow{Window: win, compact: a.compact}
 	a.shell.watcher = newWidthWatcher(a.onWidth)
@@ -250,7 +260,14 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.initHotkeys()
 	a.syncBackHandler()
 
-	win.SetOnClosed(a.player.Stop)
+	win.SetOnClosed(func() {
+		a.player.Stop()
+		a.media.Stop()
+		// The local engine holds a sink and a decoder goroutine; close it.
+		if c, ok := a.player.be().(io.Closer); ok {
+			_ = c.Close()
+		}
+	})
 	a.player.Start()
 	return a
 }

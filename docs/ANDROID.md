@@ -5,9 +5,10 @@ playback (arm64-v8a). `./build-android.sh` links against a cross-compiled
 libmpv+ffmpeg vendored in `third_party/android-libs/` and bundles those native
 libraries into the APK. A libmpv-free build is available via `NOMPV=1`.
 
-tie-audio also packages as an APK through the same script, but as a
-remote client (it controls a pwplay-server over HTTP) it bundles no native
-libraries — a plain `fyne package` build.
+tie-audio also packages as an APK through the same script and bundles no
+native libraries — its on-device playback engine (pwplay's pure-Go decoders)
+outputs through OpenSL ES, an Android system library. See "tie-audio local
+playback" below.
 
 ## How the build works
 
@@ -81,6 +82,49 @@ highest-numbered platform and build-tools directories. Platforms and
 build-tools can be dropped in from the official zips, e.g.
 `platform-35_r02.zip` → `$ANDROID_HOME/platforms/android-35` and
 `build-tools_r35_linux.zip` → `$ANDROID_HOME/build-tools/35.0.0`.
+
+The dex compiles **all** `internal/driver/mobile/app/*.java` — which now
+includes `PlaybackService.java` (media session / foreground service, see
+below). Apps whose manifest does not declare the service never start it;
+their manifests and permissions are unchanged.
+
+## tie-audio local playback
+
+tie-audio plays on-device (no pwplay-server) when `Backend = "local"` — the
+default on Android. The engine is pwplay's own `player` package (the same
+code pwplay-server runs: queue, gapless, seek, volume 0–2, pure-Go FLAC /
+MP3 / WAV / OGG / Opus decoders) behind a pluggable sink; on Android the
+sink is OpenSL ES (`player/sink_opensl.go` in the pwplay repo), a system
+library, so the APK bundles no native `.so` and still builds with
+`-tags nompv`. Track URLs (`http://filehost/<hash>`) are downloaded to the
+app cache dir (the driver sets `$TMPDIR`) and decoded by content type, so a
+phone must be able to reach the filehost.
+
+Background playback, lock-screen controls and audio focus ride a media
+playback **foreground service** in the fork's dex
+(`internal/driver/mobile/app/PlaybackService.java` — framework
+`MediaSession`, `Notification.MediaStyle`, `AudioFocusRequest`, the
+becoming-noisy broadcast; no androidx in the dex toolchain). Go reaches it
+through `fyne.io/fyne/v2/driver/mobile.MediaSessionDriver` (a type
+assertion on the driver; it fails off Android); tie-audio's `mediaBridge`
+(`cmd/tie-audio/internal/ui/mediabridge.go`) is a permanent transport view
+that pushes track/state/artwork and owns the focus policy (transient loss →
+pause + resume, duck → volume ×0.35 + restore, permanent loss → pause,
+headphone unplug → pause). Regenerate the dex after editing the Java (see
+the previous section), and note `PlaybackService` needs
+`cmd/tie-audio/AndroidManifest.xml` — tie-audio ships its own manifest (the
+generated template cannot declare services) and must stay in sync with the
+fork's template. The manifest's `android:foregroundServiceType` attribute is
+resolved by a fallback table in the fork's `binres` package
+(`attrsAddedAfterMinSDK`) — the embedded attribute table predates API 29 and
+its generator cannot parse modern platform tables.
+
+The first local playback requests the POST_NOTIFICATIONS runtime permission
+(API 33+); denying it hides the notification but the service still runs and
+lock-screen session controls still work. Playback survives screen-off and
+backgrounding while the process lives; the service is deliberately not
+sticky (without the Go process there is nothing to play).
+
 
 ## Toolchain discovery (no hardcoded paths)
 

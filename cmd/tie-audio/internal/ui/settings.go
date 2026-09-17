@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 	"github.com/uidbz/tie-gui/tieconfig"
 )
 
@@ -19,6 +22,30 @@ import (
 // item to open the settings view, so the sidebar shows Tags / Files /
 // Settings like tie-view's.
 func (a *App) buildSettingsTab() *container.TabItem {
+	// Playback target: a pwplay-server over HTTP, or on-device playback via
+	// pwplay's player engine (the default on Android). Applies on Save —
+	// the transport and queue are re-wired live, no restart needed.
+	backendOptions := []string{
+		"this device (on-device playback)",
+		"pwplay server (remote playback)",
+	}
+	backendValues := []string{config.BackendLocal, config.BackendPwplay}
+	backend := widget.NewSelect(backendOptions, nil)
+	backend.Selected = backendOptions[1]
+	for i, v := range backendValues {
+		if v == a.session.Cfg.Backend {
+			backend.Selected = backendOptions[i]
+		}
+	}
+	backendValue := func() string {
+		for i, text := range backendOptions {
+			if text == backend.Selected {
+				return backendValues[i]
+			}
+		}
+		return config.DefaultBackend()
+	}
+
 	server := widget.NewEntry()
 	server.SetText(a.session.Cfg.PwplayServer)
 	server.SetPlaceHolder("http://host:8080")
@@ -99,6 +126,7 @@ func (a *App) buildSettingsTab() *container.TabItem {
 
 	current := func() config.AppConfig {
 		return config.AppConfig{
+			Backend:      backendValue(),
 			PwplayServer: server.Text,
 			TieConfig:    tieCfg.Text,
 			FileHost:     fileHost.Text,
@@ -117,6 +145,7 @@ func (a *App) buildSettingsTab() *container.TabItem {
 	}
 
 	form := widget.NewForm(
+		widget.NewFormItem("playback", backend),
 		widget.NewFormItem("pwplay server", server),
 		widget.NewFormItem("tie config", tieCfg),
 		widget.NewFormItem("filehost", fileHost),
@@ -134,12 +163,22 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		}
 		a.session = data.NewSession(cfg)
 		a.browse.session = a.session
+		a.queue.session = a.session
+		// The playback backend may have changed: rewire the transport's poll
+		// and action target (stops and closes the old one) and let the media
+		// bridge know whether local playback is now in charge.
+		a.player.SetBackend(a.session.Backend)
+		a.media.SetEnabled(playback.IsLocal(a.session.Backend))
 		// The cover store fetches through the session's filehost, so it has to
 		// follow the swap — and its cached art was resolved against the old
 		// one.
 		a.covers.session = a.session
 		a.covers.Clear()
 		a.browse.loadTags()
+		if a.session.BackendErr != nil {
+			dialog.ShowError(fmt.Errorf("local playback unavailable, using pwplay remote: %w", a.session.BackendErr), a.win)
+			return
+		}
 		dialog.ShowInformation("Saved", "Settings saved.", a.win)
 	})
 

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image"
+	"io"
 	"sync"
 	"time"
 
@@ -27,6 +28,15 @@ type transportState struct {
 	position float64
 	duration float64
 	volume   float64
+	// artist and album are the structured fields of the current track's tie
+	// metadata (empty when unknown); views render the combined subtitle, the
+	// Android media-session bridge needs them separately.
+	artist string
+	album  string
+	// hasTrack is true when the backend has a current track (regardless of
+	// metadata); the media-session bridge tears the service down when it
+	// goes false with playback stopped.
+	hasTrack bool
 	// applyPosition is false while the user drags a seek slider, and
 	// applyVolume while they drag a volume slider: the server's value must not
 	// fight the thumb under the finger.
@@ -116,6 +126,34 @@ func newPlayer(backend playback.PlaybackBackend, covers *coverStore) *player {
 	}
 }
 
+// be returns the current backend. The poll goroutine and the action handlers
+// read it through here because SetBackend swaps it behind the lock.
+func (p *player) be() playback.PlaybackBackend {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.backend
+}
+
+// SetBackend swaps the playback backend (the user changed the playback target
+// in settings). The old backend is stopped and, when it implements io.Closer
+// (the local engine), closed in the background. The next poll already reports
+// the new backend's queue.
+func (p *player) SetBackend(b playback.PlaybackBackend) {
+	p.mu.Lock()
+	old := p.backend
+	p.backend = b
+	p.mu.Unlock()
+	if old == nil || old == b {
+		return
+	}
+	go func() {
+		_ = old.Stop()
+		if c, ok := old.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}()
+}
+
 // AddView registers a rendering of the player. Views are never removed: a view
 // that is off screen costs one widget update per poll, which is cheaper than
 // re-subscribing (and re-syncing) every time the user navigates.
@@ -154,7 +192,7 @@ func (p *player) newSeekSlider() *widget.Slider {
 		if applying {
 			return
 		}
-		go func() { _ = p.backend.Seek(v) }()
+		go func() { _ = p.be().Seek(v) }()
 	}
 	return s
 }
@@ -187,7 +225,7 @@ func (p *player) newVolumeSlider() *widget.Slider {
 		if applying {
 			return
 		}
-		go func() { _ = p.backend.SetVolume(v) }()
+		go func() { _ = p.be().SetVolume(v) }()
 	}
 	return s
 }
@@ -277,9 +315,9 @@ func (p *player) Playing() bool {
 // togglePlay pauses when playing, otherwise resumes.
 func (p *player) togglePlay() {
 	if p.Playing() {
-		p.do(p.backend.Pause)
+		p.do(p.be().Pause)
 	} else {
-		p.do(p.backend.Play)
+		p.do(p.be().Play)
 	}
 }
 
@@ -298,13 +336,13 @@ func (p *player) volumeStep(delta float64) {
 	}
 	p.pendVol = &v
 	p.mu.Unlock()
-	go func() { _ = p.backend.SetVolume(v) }()
+	go func() { _ = p.be().SetVolume(v) }()
 }
 
 // seekBy jumps relative to the current position; bound to the
 // SeekForward/SeekBackward hotkeys.
 func (p *player) seekBy(sec float64) {
-	p.do(func() error { return p.backend.SeekRelative(sec) })
+	p.do(func() error { return p.be().SeekRelative(sec) })
 }
 
 // do runs a backend action off the UI goroutine so the click returns instantly.
@@ -322,7 +360,7 @@ func (p *player) Start() {
 			case <-p.stopCh:
 				return
 			case <-ticker.C:
-				s, err := p.backend.Status()
+				s, err := p.be().Status()
 				if err != nil {
 					continue
 				}
@@ -396,6 +434,9 @@ func (p *player) apply(s playback.Status) {
 		position:      pos,
 		duration:      s.TrackDuration,
 		volume:        s.Volume,
+		artist:        now.artist,
+		album:         now.album,
+		hasTrack:      now.url != "",
 		applyPosition: !seeking,
 		applyVolume:   !adjVol && pendVol == nil,
 	}
@@ -483,7 +524,7 @@ func (p *player) maybeRepeat(s playback.Status) {
 	p.mu.Unlock()
 
 	if restart {
-		go func() { _ = p.backend.Play() }()
+		go func() { _ = p.be().Play() }()
 	}
 }
 
@@ -529,6 +570,8 @@ type trackInfo struct {
 	url      string
 	title    string
 	subtitle string
+	artist   string
+	album    string
 	albumUID string
 	known    bool
 }
@@ -543,6 +586,8 @@ func (p *player) nowPlaying(s playback.Status) trackInfo {
 		if m, ok := p.metas[info.url]; ok {
 			info.known = true
 			info.albumUID = m.AlbumUID
+			info.artist = m.Artist
+			info.album = m.Album
 			info.subtitle = trackSubtitle(m)
 			if label := m.Display(); label != "" {
 				info.title = label

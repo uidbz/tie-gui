@@ -37,7 +37,6 @@ import (
 type queuePage struct {
 	win       fyne.Window
 	session   *data.Session
-	backend   playback.PlaybackBackend
 	transport *player
 	covers    *coverStore
 	back      func() // restore the album cover wall (compact back button)
@@ -81,12 +80,18 @@ type queuePage struct {
 	dragRows []int
 }
 
+// be returns the live playback backend. It is read through the session (not
+// cached) so a backend swap from the settings page — which updates
+// a.queue.session — reaches every queue operation without re-wiring.
+func (q *queuePage) be() playback.PlaybackBackend {
+	return q.session.Backend
+}
+
 // newQueuePage builds the queue view once; show() (re)binds it to the live poll.
 func newQueuePage(win fyne.Window, session *data.Session, transport *player, covers *coverStore, compact bool, back func(), onColumnsChanged func([]string)) *queuePage {
 	q := &queuePage{
 		win:       win,
 		session:   session,
-		backend:   session.Backend,
 		transport: transport,
 		covers:    covers,
 		compact:   compact,
@@ -247,7 +252,7 @@ func (q *queuePage) show() {
 	q.table.show() // size columns now that the canvas width is known
 	q.transport.SetStatusListener(q.applyStatus)
 	go func() {
-		s, err := q.backend.Status()
+		s, err := q.be().Status()
 		if err != nil {
 			return
 		}
@@ -287,7 +292,7 @@ func (q *queuePage) noteQueueReplaced(urls []string) {
 // table converges to the server's state immediately.
 func (q *queuePage) endQueueMutation() {
 	go func() {
-		s, err := q.backend.Status()
+		s, err := q.be().Status()
 		fyne.Do(func() {
 			if q.pending > 0 {
 				q.pending--
@@ -409,12 +414,12 @@ func (q *queuePage) removeRange(start, count int) {
 
 	go func() {
 		for i := start + count - 1; i >= start; i-- {
-			if err := q.backend.Remove(i); err != nil {
+			if err := q.be().Remove(i); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
 				return
 			}
 		}
-		if s, err := q.backend.Status(); err == nil {
+		if s, err := q.be().Status(); err == nil {
 			fyne.Do(func() { q.applyStatus(s) })
 		}
 	}()
@@ -520,14 +525,14 @@ func (q *queuePage) insertTracksAt(gap int, urls []string, meta []data.Track) {
 	}
 	q.transport.AppendQueue(urls, meta)
 	go func() {
-		if err := q.backend.Insert(gap, urls...); err != nil {
+		if err := q.be().Insert(gap, urls...); err != nil {
 			fyne.Do(func() { dialog.ShowError(err, q.win) })
 			return
 		}
 		// Insert blocks until the backend has applied the add (and the move),
 		// so the status fetched here already lists the tracks; update the
 		// table now rather than at the next poll tick.
-		if s, err := q.backend.Status(); err == nil {
+		if s, err := q.be().Status(); err == nil {
 			fyne.Do(func() { q.applyStatus(s) })
 		}
 	}()
@@ -614,13 +619,13 @@ func (q *queuePage) playRow(row int) {
 		return
 	}
 	go func() {
-		if err := q.backend.Goto(row); err != nil {
+		if err := q.be().Goto(row); err != nil {
 			fyne.Do(func() { dialog.ShowError(err, q.win) })
 			return
 		}
 		for i := 0; i < 60; i++ {
 			time.Sleep(50 * time.Millisecond)
-			s, err := q.backend.Status()
+			s, err := q.be().Status()
 			if err != nil {
 				return
 			}
@@ -628,7 +633,7 @@ func (q *queuePage) playRow(row int) {
 				continue // the jump has not been applied yet
 			}
 			if !s.Playing {
-				if err := q.backend.Play(); err != nil {
+				if err := q.be().Play(); err != nil {
 					fyne.Do(func() { dialog.ShowError(err, q.win) })
 				}
 			}
@@ -646,7 +651,7 @@ func (q *queuePage) commit(moves [][2]int) {
 	}
 	go func() {
 		for _, m := range moves {
-			if err := q.backend.MoveItems(m[0], 1, m[1]); err != nil {
+			if err := q.be().MoveItems(m[0], 1, m[1]); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
 				return
 			}
@@ -678,7 +683,7 @@ func (q *queuePage) shuffle() {
 	q.rebuildTracks()
 	go func() {
 		for _, m := range moves {
-			if err := q.backend.MoveItems(m[0], 1, m[1]); err != nil {
+			if err := q.be().MoveItems(m[0], 1, m[1]); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
 				return
 			}
@@ -732,11 +737,11 @@ func (q *queuePage) clearPlaylist() {
 		q.playlist = q.playlist[:0]
 		q.rebuildTracks()
 		go func() {
-			if err := q.backend.Clear(); err != nil {
+			if err := q.be().Clear(); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
 				return
 			}
-			if s, err := q.backend.Status(); err == nil {
+			if s, err := q.be().Status(); err == nil {
 				fyne.Do(func() { q.applyStatus(s) })
 			}
 		}()

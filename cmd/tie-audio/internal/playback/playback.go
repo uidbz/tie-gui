@@ -1,7 +1,7 @@
 // Package playback defines the audio playback abstraction used by the UI and
-// its concrete backends. The remote-first backend (pwplayRemote) drives a
-// pwplay-server over HTTP; a local libmpv backend is planned behind the same
-// interface (see the plan's Phase 6).
+// its concrete backends. pwplayRemote drives a pwplay-server over HTTP;
+// localBackend plays on the device itself using pwplay's player engine
+// (PipeWire on Linux, OpenSL ES on Android) behind the same interface.
 package playback
 
 // Status is a backend-agnostic snapshot of the player, polled by the transport

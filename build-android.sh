@@ -8,12 +8,19 @@
 # After `fyne package` links the app, bundle-native-libs.sh injects the native
 # .so files into the APK's lib/arm64-v8a/ and re-signs it.
 #
-# tie-audio is a remote client (it controls a pwplay-server over HTTP),
-# so it needs no native libraries. It does import the gallery (album grid),
+# tie-audio plays on-device through OpenSL ES (an Android system library,
+# linked from the NDK sysroot) or drives a pwplay-server over HTTP; either
+# way it bundles no native libraries. It does import the gallery (album grid),
 # which pulls in mpvplayer, so it is always built with `-tags nompv`: the stub
 # compiles without mpv headers and leaves the APK with no libmpv dependency
 # to bundle. (Without the tag, a solo `build-android.sh tie-audio` fails on
 # `mpv/client.h`, and a combined build silently links libmpv it never ships.)
+#
+# tie-audio ships its own cmd/tie-audio/AndroidManifest.xml (the generated
+# template cannot declare the media playback foreground service); keep it in
+# sync with the fork's template when bumping fyne. The service lives in the
+# fork's dex (internal/driver/mobile/app/PlaybackService.java) — after
+# editing it, regenerate dex.go as described below.
 #
 # For a libmpv-free build of the viewers (no video, no native libs to bundle),
 # pass NOMPV=1 — it adds `-tags nompv` and skips the bundling step.

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  tie-audio ships its own manifest (fyne package uses an AndroidManifest.xml
+  from the app dir verbatim) because it must declare the media playback
+  foreground service and its permissions — the generated template manifest
+  cannot express them. Keep the activity block in sync with the fyne fork's
+  template (third_party/fyne/cmd/fyne/internal/templates/data/AndroidManifest.xml).
+  The package name, lib_name, label and version fields match what the
+  template would generate for this app (libName = androidPkgName("tie-audio")).
+  android:debuggable matches the default (non-RELEASE) build; flip to false
+  when cutting a signed release APK.
+-->
+<manifest
+	xmlns:android="http://schemas.android.com/apk/res/android"
+	package="github.com.uidbz.tieaudio"
+	android:versionCode="1"
+	android:versionName="0.0.1">
+
+	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+	<uses-permission android:name="android.permission.INTERNET" />
+	<!-- Media playback foreground service (keeps audio alive in the
+	     background) and its lock-screen/notification surfaces. -->
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+	<application android:label="Tie-audio" android:debuggable="true">
+	<activity android:name="org.golang.app.GoNativeActivity"
+		android:label="Tie-audio"
+		android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+		android:exported="true"
+		android:theme="@android:style/Theme"
+		android:windowSoftInputMode="adjustResize">
+		<meta-data android:name="android.app.lib_name" android:value="tie_audio" />
+		<intent-filter>
+			<action android:name="android.intent.action.MAIN" />
+			<category android:name="android.intent.category.LAUNCHER" />
+		</intent-filter>
+	</activity>
+	<!-- org.golang.app.PlaybackService ships in the shared fyne dex; only
+	     apps declaring it here start it (audio focus, media session,
+	     foreground notification). -->
+	<service android:name="org.golang.app.PlaybackService"
+		android:exported="false"
+		android:foregroundServiceType="mediaPlayback" />
+	</application>
+</manifest>

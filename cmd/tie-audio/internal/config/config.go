@@ -70,6 +70,27 @@ type AppConfig struct {
 	//	Next = ["N", "Right"]
 	//	Stop = []            # unbound
 	Hotkeys map[string][]string
+	// Backend selects who plays the audio: BackendPwplay (a pwplay-server
+	// over HTTP, PwplayServer below) or BackendLocal (on this device, via
+	// pwplay's player engine). Empty means the platform default: local on
+	// Android, pwplay elsewhere.
+	Backend string
+}
+
+// Backend values for AppConfig.Backend.
+const (
+	BackendPwplay = "pwplay" // remote pwplay-server over HTTP
+	BackendLocal  = "local"  // on-device playback (pwplay player engine)
+)
+
+// DefaultBackend returns the backend used when the config sets none:
+// local playback on Android (a phone rarely runs a pwplay-server), the
+// pwplay remote everywhere else.
+func DefaultBackend() string {
+	if os.Getenv("FILESDIR") != "" {
+		return BackendLocal
+	}
+	return BackendPwplay
 }
 
 // Hotkey action names for AppConfig.Hotkeys.
@@ -163,14 +184,22 @@ func Load() (AppConfig, string) {
 	if d := os.Getenv("FILESDIR"); d != "" {
 		cfg := Default()
 		if err := conf.ReadConfig(path, &cfg); err == nil {
-			return cfg, path
+			return fillDefaults(cfg), path
 		}
 	}
 	cfg := Default()
 	if p, err := conf.LoadFromUserConfigDir(appName, configFile, &cfg); err == nil {
-		return cfg, p
+		return fillDefaults(cfg), p
 	}
-	return Default(), path
+	return fillDefaults(Default()), path
+}
+
+// fillDefaults resolves values left empty in the config file.
+func fillDefaults(cfg AppConfig) AppConfig {
+	if cfg.Backend == "" {
+		cfg.Backend = DefaultBackend()
+	}
+	return cfg
 }
 
 // Save writes the app config back to the file Load resolved (Android-safe:
