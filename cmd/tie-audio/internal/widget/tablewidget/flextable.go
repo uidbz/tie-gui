@@ -91,6 +91,10 @@ type FlexTable struct {
 	// takes precedence over OnDrop, which stays for cross-widget drops. The
 	// pixel-delta approach is scroll-position independent within a single drag.
 	OnReorder     func(from, to int)
+	// RowSelectable, when set, reports whether a row can be selected, dragged
+	// or double-tapped. Non-selectable rows (e.g. the queue's album header
+	// rows) ignore taps and drags entirely. Nil means every row is.
+	RowSelectable func(row int) bool
 	dragging      bool
 	dragStartRow  int
 	dragStartPos  fyne.Position
@@ -137,6 +141,11 @@ type FlexTable struct {
 	// direction and erase the header arrow.
 	sortCol string
 	sortAsc bool
+
+	// templateHeight caches the table's default row height (the header's
+	// MinSize — the widget-mode cell wrapper measures zero on its own), used
+	// by SetRowHeight to reset a row to the template height.
+	templateHeight float32
 }
 
 func NewFlexTable(data *TableData, onClick func(row int)) *FlexTable {
@@ -150,8 +159,10 @@ func NewFlexTable(data *TableData, onClick func(row int)) *FlexTable {
 		SelectionColor: theme.Color(theme.ColorNameSelection),
 		CellBgColor:    theme.Color(theme.ColorNameBackground),
 		CellBgColorAlt: theme.Color(theme.ColorNameInputBackground),
-		// headerBgColor:  color.RGBA{89, 89, 89, 255},
-		// headerBgColor: color.RGBA{85, 170, 127, 255},
+		// headerBgColor must be a real color: a nil one leaves the header
+		// background rectangle's FillColor nil, which the GL painter tolerates
+		// but the software painter (tests, Capture) crashes on.
+		headerBgColor: theme.Color(theme.ColorNameBackground),
 	}
 
 	table.table = widget.NewTable(
@@ -265,6 +276,20 @@ func (t *FlexTable) SetColumnWidth(id int, width float32) {
 	t.table.SetColumnWidth(id, width)
 }
 
+// SetRowHeight sets one row's height. height <= 0 resets the row to the
+// template height — widget.Table.SetRowHeight has no reset of its own (a 0
+// there would collapse the row to nothing), and a row that was once given an
+// explicit height keeps it until reset.
+func (t *FlexTable) SetRowHeight(id int, height float32) {
+	if height <= 0 {
+		if t.templateHeight == 0 {
+			t.templateHeight = NewHeader("Mg", nil, t).MinSize().Height
+		}
+		height = t.templateHeight
+	}
+	t.table.SetRowHeight(id, height)
+}
+
 // SetSort records the current sort column and direction for the header arrow
 // without triggering a sort. Consumers that own their own sort state (via
 // OnSort) call it to seed the arrow before any header click.
@@ -372,7 +397,11 @@ func (c *TableCell) CreateRenderer() fyne.WidgetRenderer {
 // semantics) and fires OnClick; a tap in any other column fires OnActivate.
 // When OnDoubleTap is set, a second tap on the same row within doubleTapInterval
 // fires OnDoubleTap instead (the first tap's selection has already applied).
+// Rows RowSelectable rejects ignore the tap entirely.
 func (t *FlexTable) cellTapped(row, col int) {
+	if t.RowSelectable != nil && !t.RowSelectable(row) {
+		return
+	}
 	if t.OnDoubleTap != nil {
 		now := time.Now()
 		if t.lastTapRow == row && now.Sub(t.lastTapTime) < doubleTapInterval {
@@ -442,9 +471,13 @@ func (t *FlexTable) rowSecondary(row int, obj fyne.CanvasObject) {
 
 // dragStart marks the beginning of a drag gesture on the given display row. It
 // is idempotent within a gesture: OnDragStart fires only on the first event so
-// dragStartRow captures the row the drag was grabbed from.
+// dragStartRow captures the row the drag was grabbed from. Rows RowSelectable
+// rejects cannot be grabbed.
 func (t *FlexTable) dragStart(row int, cell fyne.CanvasObject, startPos fyne.Position, rowHeight float32) {
 	if t.dragging {
+		return
+	}
+	if t.RowSelectable != nil && !t.RowSelectable(row) {
 		return
 	}
 	t.dragging = true
@@ -754,6 +787,14 @@ func (r *widgetCellRenderer) Destroy() {}
 
 func (r *widgetCellRenderer) Layout(size fyne.Size) {
 	r.stack.Resize(size)
+	// Resize the content directly: the vendored container.Clip drops its
+	// first layout (NewClip does not ExtendBaseWidget, so the Resize before
+	// its renderer exists is a no-op), leaving the content at zero size until
+	// a second layout pass — one frame of unlaid-out content in production,
+	// and permanently in single-pass test renders.
+	if r.cell.content != nil {
+		r.cell.content.Resize(size)
+	}
 }
 
 func (r *widgetCellRenderer) MinSize() fyne.Size {

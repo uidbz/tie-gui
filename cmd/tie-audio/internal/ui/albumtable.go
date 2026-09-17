@@ -48,6 +48,19 @@ var defaultAlbumColumns = []albumColumn{
 	{"duration", "Duration"},
 }
 
+// defaultQueueColumns is the play queue's column set — and its whole
+// available set. The queue groups consecutive same-album tracks under an
+// album header row that carries the cover, so there is no per-track Art
+// column (a config that still lists "cover" has it dropped on load).
+var defaultQueueColumns = []albumColumn{
+	{"trackno", "Track no"},
+	{"title", "Title"},
+	{"artist", "Artist"},
+	{"album", "Album"},
+	{"year", "Year"},
+	{"duration", "Duration"},
+}
+
 // compactAlbumColumns is the album view's column set in the compact layout: a
 // phone has room for one text column, so only the track number, the title and
 // the running time are shown (and the Columns dialog is not offered, since
@@ -58,8 +71,8 @@ var compactAlbumColumns = []albumColumn{
 	{"duration", "Duration"},
 }
 
-func lookupAlbumColumn(key string) (albumColumn, bool) {
-	for _, c := range allAlbumColumns {
+func lookupAlbumColumn(key string, available []albumColumn) (albumColumn, bool) {
+	for _, c := range available {
 		if c.key == key {
 			return c, true
 		}
@@ -68,23 +81,25 @@ func lookupAlbumColumn(key string) (albumColumn, bool) {
 }
 
 func albumColumnTitle(key string) string {
-	if c, ok := lookupAlbumColumn(key); ok {
+	if c, ok := lookupAlbumColumn(key, allAlbumColumns); ok {
 		return c.title
 	}
 	return key
 }
 
-// resolveAlbumColumns maps persisted column keys to columns, dropping unknown or
-// duplicate keys and falling back to the given default set when the result is
-// empty (no config yet, or a config listing only stale keys).
-func resolveAlbumColumns(keys []string, fallback []albumColumn) []albumColumn {
+// resolveAlbumColumns maps persisted column keys to columns, dropping unknown
+// or duplicate keys and falling back to the given default set when the result
+// is empty (no config yet, or a config listing only stale keys). Keys not in
+// the available set are dropped as unknown (e.g. the queue no longer offers
+// the artwork column).
+func resolveAlbumColumns(keys []string, fallback, available []albumColumn) []albumColumn {
 	var cols []albumColumn
 	seen := map[string]bool{}
 	for _, k := range keys {
 		if seen[k] {
 			continue
 		}
-		if c, ok := lookupAlbumColumn(k); ok {
+		if c, ok := lookupAlbumColumn(k, available); ok {
 			cols = append(cols, c)
 			seen[k] = true
 		}
@@ -118,21 +133,37 @@ type trackTableOpts struct {
 	// builtinColumnsButton adds a "Columns" button in a built-in toolbar above
 	// the table (album view). The queue supplies its own toolbar button instead.
 	builtinColumnsButton bool
-	// covers supplies album artwork for the "cover" column. When nil that
-	// column renders empty placeholders.
+	// covers supplies album artwork for the "cover" column and the grouped
+	// mode's album header rows. When nil those render empty placeholders.
 	covers *coverStore
 	// defaultCols is the column set used when the persisted keys are empty or
 	// stale; nil selects defaultAlbumColumns.
 	defaultCols []albumColumn
+	// availableCols is the column catalog the persisted keys and the Columns
+	// dialog draw from; nil selects allAlbumColumns. The queue passes
+	// defaultQueueColumns: its album header rows carry the artwork, so the
+	// per-track Art column is gone.
+	availableCols []albumColumn
+	// grouped, when set, interleaves the track rows with album header rows
+	// (buildQueueRows): consecutive same-album runs get a two-row-tall header
+	// with the album cover, name and artist. Header rows are inert (no
+	// selection, no drag) and carry trackIndex -1.
+	grouped bool
 }
 
 // trackTable renders a slice of tracks as a column-customizable table shared by
 // the album view and the queue. It owns the track slice; with sorting enabled
 // it re-sorts that slice in place on a header click (via the FlexTable OnSort
 // hook), so a row tap always maps to the track at that displayed position.
+//
+// In grouped mode (the queue) the rendered row model is rows: the tracks with
+// an album header row inserted before each consecutive same-album run. Track
+// rows address their track by rows[i].trackIndex, so display indices never
+// touch at.tracks directly.
 type trackTable struct {
 	win    fyne.Window
 	tracks []data.Track
+	rows   []queueRow // grouped mode only: headers + tracks in display order
 	cols   []albumColumn
 	opts   trackTableOpts
 
@@ -155,10 +186,13 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 	if opts.defaultCols == nil {
 		opts.defaultCols = defaultAlbumColumns
 	}
+	if opts.availableCols == nil {
+		opts.availableCols = allAlbumColumns
+	}
 	at := &trackTable{
 		win:              win,
 		tracks:           tracks,
-		cols:             resolveAlbumColumns(colKeys, opts.defaultCols),
+		cols:             resolveAlbumColumns(colKeys, opts.defaultCols, opts.availableCols),
 		opts:             opts,
 		onPlay:           onPlay,
 		onColumnsChanged: onColumnsChanged,
@@ -167,27 +201,42 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 	at.table = tablewidget.NewTableWidget("Tracks", 1000)
 	at.table.Data = func(offset, limit int) *tablewidget.TableData {
 		td := tablewidget.NewTableData("album")
+		n := len(at.tracks)
+		if at.opts.grouped {
+			n = len(at.rows)
+		}
 		end := offset + limit
-		if end > len(at.tracks) {
-			end = len(at.tracks)
+		if end > n {
+			end = n
 		}
 		for i := offset; i < end; i++ {
 			if at.opts.indicator != nil {
 				td.AddStringCell("", at.opts.indicator(i))
 			}
 			for _, c := range at.cols {
-				td.AddStringCell(c.title, at.cellValue(c.key, at.tracks[i]))
+				td.AddStringCell(c.title, at.rowCellValue(c.key, i))
 			}
 		}
 		return td
 	}
-	at.table.RowCount = func() int { return len(at.tracks) }
+	at.table.RowCount = func() int {
+		if at.opts.grouped {
+			return len(at.rows)
+		}
+		return len(at.tracks)
+	}
 
 	ft := at.table.GetFlexTable()
 	// Cells are built per position, so the artwork column can be an image while
 	// every other column stays a label. The table's row height comes from the
-	// header, not from these cells, so the cover simply fits the row.
+	// header, not from these cells, so the cover simply fits the row. In
+	// grouped mode the title column is always a queueTitleCell, which renders
+	// either a track title or an album header, so a cell recycled between row
+	// kinds never needs recreation.
 	ft.SetCreateCell(func(col, row int) fyne.CanvasObject {
+		if at.opts.grouped && at.columnKeyAt(col) == "title" {
+			return newQueueTitleCell(at.opts.covers)
+		}
 		if at.columnKeyAt(col) == "cover" {
 			return newCoverCell(at.opts.covers)
 		}
@@ -196,6 +245,10 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 		return lbl
 	})
 	ft.SetUpdateCell(func(col, row int, obj fyne.CanvasObject) {
+		if at.opts.grouped {
+			at.updateGroupedCell(col, row, obj)
+			return
+		}
 		if row < 0 || row >= len(at.tracks) {
 			return
 		}
@@ -217,6 +270,12 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 		}
 		lbl.SetText(at.cellValue(at.cols[ci].key, at.tracks[row]))
 	})
+	if at.opts.grouped {
+		// Album header rows are inert: no selection, no drag, no double-tap.
+		ft.RowSelectable = func(row int) bool {
+			return row >= 0 && row < len(at.rows) && at.rows[row].kind == queueRowTrack
+		}
+	}
 	if at.opts.sortable {
 		// Re-sort our own track slice rather than the built-in in-place TableData
 		// sort, so widget-mode cells (rendered from at.tracks by row index) stay
@@ -340,6 +399,76 @@ func (at *trackTable) cellValue(key string, t data.Track) string {
 		return ""
 	}
 	return ""
+}
+
+// rowCellValue renders a display row's string value for a column key (the
+// TableData backing; widget-mode cells render via updateGroupedCell instead).
+// In grouped mode, header rows carry the album title and its artist line;
+// track rows render their track.
+func (at *trackTable) rowCellValue(key string, row int) string {
+	if at.opts.grouped {
+		if row < 0 || row >= len(at.rows) {
+			return ""
+		}
+		r := at.rows[row]
+		if r.kind == queueRowAlbum {
+			return at.headerCellValue(key, r)
+		}
+		if r.trackIndex < 0 || r.trackIndex >= len(at.tracks) {
+			return ""
+		}
+		return at.cellValue(key, at.tracks[r.trackIndex])
+	}
+	if row < 0 || row >= len(at.tracks) {
+		return ""
+	}
+	return at.cellValue(key, at.tracks[row])
+}
+
+// headerCellValue renders an album header row's string value for a column
+// key: the album title in the title column, nothing elsewhere — the header's
+// artist·year·count line lives in the title cell's second row, so repeating
+// it in the artist column would only duplicate it.
+func (at *trackTable) headerCellValue(key string, r queueRow) string {
+	if key == "title" {
+		return r.title
+	}
+	return ""
+}
+
+// updateGroupedCell renders one cell of the grouped queue table: the title
+// column's queueTitleCell shows either an album header (cover, name, artist
+// line) or the track title; the other columns stay labels.
+func (at *trackTable) updateGroupedCell(col, row int, obj fyne.CanvasObject) {
+	if row < 0 || row >= len(at.rows) {
+		return
+	}
+	r := at.rows[row]
+	if cell, ok := obj.(*queueTitleCell); ok {
+		cell.set(r)
+		return
+	}
+	lbl, ok := obj.(*widget.Label)
+	if !ok {
+		return
+	}
+	if at.opts.indicator != nil && col == 0 {
+		lbl.SetText(at.opts.indicator(row))
+		return
+	}
+	ci := col - at.colOffset()
+	if ci < 0 || ci >= len(at.cols) {
+		return
+	}
+	if r.kind == queueRowAlbum {
+		lbl.SetText(at.headerCellValue(at.cols[ci].key, r))
+		return
+	}
+	if r.trackIndex < 0 || r.trackIndex >= len(at.tracks) {
+		lbl.SetText("")
+		return
+	}
+	lbl.SetText(at.cellValue(at.cols[ci].key, at.tracks[r.trackIndex]))
 }
 
 // onSort handles a header click: it maps the header label back to a column key,
@@ -483,31 +612,53 @@ func (at *trackTable) show() {
 }
 
 // setTracks replaces the rendered track slice and refreshes. Used by the queue,
-// which rebuilds its rows from the live playlist on each status poll.
+// which rebuilds its rows from the live playlist on each status poll. In
+// grouped mode it also rebuilds the album-header row model and re-applies the
+// per-row heights (a row that was a header before may now be a track).
 func (at *trackTable) setTracks(tracks []data.Track) {
 	at.tracks = tracks
+	if at.opts.grouped {
+		at.rows = buildQueueRows(tracks)
+	}
 	at.table.Refresh()
+	if at.opts.grouped {
+		at.applyRowHeights()
+	}
+}
+
+// applyRowHeights gives album header rows their two-track-row height and
+// resets track rows to the template height (widget.Table has no
+// reset-to-template, so the FlexTable computes it).
+func (at *trackTable) applyRowHeights() {
+	ft := at.table.GetFlexTable()
+	for i, row := range at.rows {
+		if row.kind == queueRowAlbum {
+			ft.SetRowHeight(i, queueAlbumRowHeight)
+		} else {
+			ft.SetRowHeight(i, 0)
+		}
+	}
 }
 
 // setColumns applies a new visible-column set and refreshes.
 func (at *trackTable) setColumns(keys []string) {
-	at.cols = resolveAlbumColumns(keys, at.opts.defaultCols)
+	at.cols = resolveAlbumColumns(keys, at.opts.defaultCols, at.opts.availableCols)
 	at.applyColumnConfig()
 	at.table.Refresh()
 }
 
 // showColumnsDialog lets the user toggle and reorder columns. The working list
-// holds every column (visible ones first, in their current order, then hidden
-// ones); a checkbox selects visibility and the up/down buttons reorder. The
-// applied visible set is the checked columns in list order.
+// holds every available column (visible ones first, in their current order,
+// then hidden ones); a checkbox selects visibility and the up/down buttons
+// reorder. The applied visible set is the checked columns in list order.
 func (at *trackTable) showColumnsDialog() {
-	order := make([]string, 0, len(allAlbumColumns))
+	order := make([]string, 0, len(at.opts.availableCols))
 	checks := map[string]bool{}
 	for _, c := range at.cols {
 		order = append(order, c.key)
 		checks[c.key] = true
 	}
-	for _, c := range allAlbumColumns {
+	for _, c := range at.opts.availableCols {
 		if !checks[c.key] {
 			order = append(order, c.key)
 		}

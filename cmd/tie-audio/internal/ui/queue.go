@@ -102,12 +102,16 @@ func newQueuePage(win fyne.Window, session *data.Session, transport *player, cov
 			onReorder:   q.onReorder,
 			onDragStart: q.onDragStart,
 			onDragMove:  q.onDragMove,
-			onDoubleTap: q.playRow,
+			onDoubleTap: q.playDisplayRow,
 			multiSelect: true,
 			covers:      covers,
-			// The queue mixes albums, so artwork earns its column here (unlike
-			// the album view, where every row would repeat one cover).
-			defaultCols: allAlbumColumns,
+			// The queue groups consecutive same-album tracks under a header row
+			// carrying the cover, artist and album name, so there is no
+			// per-track Art column (defaultQueueColumns is also the available
+			// set: the Columns dialog cannot bring it back).
+			grouped:       true,
+			defaultCols:   defaultQueueColumns,
+			availableCols: defaultQueueColumns,
 		},
 	)
 	q.list = newQueueList(q)
@@ -163,12 +167,48 @@ func (q *queuePage) Object() fyne.CanvasObject { return q.object }
 // rowIndicator returns the play glyph for the current row, else "". A text glyph
 // (not a widget.Icon) because Icon.SetResource(nil) does not reliably repaint
 // inside a recycled table cell — the old play icon lingers on rows the current
-// track has moved past. Labels repaint correctly here.
+// track has moved past. Labels repaint correctly here. The row argument is a
+// display row; the table's grouped row model maps it to a playlist index.
 func (q *queuePage) rowIndicator(row int) string {
-	if row == q.current {
+	if q.playlistIndexForRow(row) == q.current && q.current >= 0 {
 		return "▶" // ▶
 	}
 	return ""
+}
+
+// playlistIndexForRow maps a display row in the grouped table to its playlist
+// index, or -1 for album header rows and out-of-range indices.
+func (q *queuePage) playlistIndexForRow(row int) int {
+	if row < 0 || row >= len(q.table.rows) {
+		return -1
+	}
+	return q.table.rows[row].trackIndex
+}
+
+// playlistIndexForRowLenient maps a display row to a playlist index like
+// playlistIndexForRow, but an album header row maps to the index of its first
+// track (dropping a row onto a header means "before that album").
+func (q *queuePage) playlistIndexForRowLenient(row int) int {
+	if row < 0 || row >= len(q.table.rows) {
+		return -1
+	}
+	r := q.table.rows[row]
+	if r.kind == queueRowAlbum {
+		return r.groupStart
+	}
+	return r.trackIndex
+}
+
+// playlistGapAt maps a display-row insertion gap (rows above the gap, in
+// [0, len(rows)]) to a playlist gap: the playlist index of the first track at
+// or below the gap, i.e. the count of tracks above it.
+func (q *queuePage) playlistGapAt(displayGap int) int {
+	for i := displayGap; i < len(q.table.rows); i++ {
+		if q.table.rows[i].kind == queueRowTrack {
+			return q.table.rows[i].trackIndex
+		}
+	}
+	return len(q.playlist)
 }
 
 // buildToolbar builds the top row: shuffle, repeat, save, clear, columns. The
@@ -435,7 +475,7 @@ func (q *queuePage) onDragStart(row int) {
 // visible feedback.
 func (q *queuePage) onDragMove(pos fyne.Position) {
 	if q.dragGhost == nil {
-		text := q.trackLabel(q.dragFrom)
+		text := q.trackLabel(q.playlistIndexForRow(q.dragFrom))
 		if len(q.dragRows) > 1 {
 			text = fmt.Sprintf("%d tracks", len(q.dragRows))
 		}
@@ -455,11 +495,17 @@ func (q *queuePage) clearDragGhost() {
 }
 
 // dropLineAt draws the insertion indicator for an external (album-cover) drag at
-// pos and returns the playlist gap it points to.
-func (q *queuePage) dropLineAt(pos fyne.Position) int { return q.table.showInsertionLineAt(pos) }
+// pos and returns the playlist gap it points to. The table reports a display-row
+// gap; playlistGapAt maps it through the grouped row model (the album headers
+// occupy display rows but no playlist slots).
+func (q *queuePage) dropLineAt(pos fyne.Position) int {
+	return q.playlistGapAt(q.table.showInsertionLineAt(pos))
+}
 
 // gapAt returns the playlist gap under pos without drawing anything.
-func (q *queuePage) gapAt(pos fyne.Position) int { return q.table.gapAt(pos) }
+func (q *queuePage) gapAt(pos fyne.Position) int {
+	return q.playlistGapAt(q.table.gapAt(pos))
+}
 
 // clearDropLine hides the external-drag insertion indicator.
 func (q *queuePage) clearDropLine() { q.table.hideInsertionLine() }
@@ -488,9 +534,12 @@ func (q *queuePage) insertTracksAt(gap int, urls []string, meta []data.Track) {
 }
 
 // onReorder moves the dragged rows locally for instant feedback, then commits
-// the change to the backend; the next poll reconciles any drift. A single
-// grabbed row is one MoveItems; a multi-row selection is diffed into a sequence
-// of single-item moves that reproduce the new order.
+// the change to the backend; the next poll reconciles any drift. The row
+// arguments are display rows in the grouped table; they are mapped to
+// playlist indices first (album header rows cannot be grabbed — the table
+// marks them non-selectable). A single grabbed row is one MoveItems; a
+// multi-row selection is diffed into a sequence of single-item moves that
+// reproduce the new order.
 func (q *queuePage) onReorder(from, to int) {
 	q.dragging = false
 	q.clearDragGhost()
@@ -498,24 +547,34 @@ func (q *queuePage) onReorder(from, to int) {
 	q.dragRows = nil
 	n := len(q.playlist)
 
-	if from < 0 || to < 0 || from >= n || to >= n || from == to {
+	fromP := q.playlistIndexForRow(from)
+	toP := q.playlistIndexForRowLenient(to)
+	if fromP < 0 || toP < 0 || fromP >= n || toP >= n || from == to {
 		q.rebuildTracks()
 		return
 	}
 
 	if len(sel) <= 1 {
-		q.moveTrack(from, to)
+		q.moveTrack(fromP, toP)
 		return
 	}
 
+	// Map the display selection to playlist indices.
+	selP := make([]int, 0, len(sel))
+	for _, r := range sel {
+		if idx := q.playlistIndexForRow(r); idx >= 0 {
+			selP = append(selP, idx)
+		}
+	}
 	// Recover the insertion gap the drop landed at from the grabbed row's final
 	// index (the inverse of the widget's single-row gap→index conversion), so the
-	// moved block's top aligns with the drawn drop line.
+	// moved block's top aligns with the drawn drop line, then map it to a
+	// playlist gap through the grouped row model.
 	gap := to
 	if to > from {
 		gap = to + 1
 	}
-	want := reorderSelection(n, sel, gap)
+	want := reorderSelection(n, selP, q.playlistGapAt(gap))
 	if want == nil {
 		q.rebuildTracks()
 		return
@@ -533,6 +592,15 @@ func (q *queuePage) onReorder(from, to int) {
 	q.table.clearSelection()
 	q.rebuildTracks()
 	q.commit(moves)
+}
+
+// playDisplayRow plays the track behind a double-tapped table row, mapping
+// the display row to its playlist index. Album header rows (trackIndex -1)
+// are inert.
+func (q *queuePage) playDisplayRow(displayRow int) {
+	if idx := q.playlistIndexForRow(displayRow); idx >= 0 {
+		q.playRow(idx)
+	}
 }
 
 // playRow jumps playback to the double-tapped queue position and makes sure

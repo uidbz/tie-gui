@@ -58,6 +58,12 @@ func (b *scriptBackend) playCount() int {
 	return b.plays
 }
 
+func (b *scriptBackend) gotoCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.gotos)
+}
+
 func newTestQueuePage(backend playback.PlaybackBackend) *queuePage {
 	win := test.NewWindow(nil)
 	session := &data.Session{Backend: backend}
