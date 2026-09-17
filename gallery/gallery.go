@@ -91,8 +91,10 @@ type Gallery struct {
 	// CustomReaders holds the current list of content sources (populated via
 	// ReadCustom).
 	CustomReaders []CustomReader
-	// Thumbnailer, when non-nil, supplies thumbnails for all items instead
-	// of the local thumbnail directory (see GeneralConfig.ThumbnailDir).
+	// Thumbnailer, when non-nil, supplies thumbnails for reader-backed
+	// items (CustomReader != nil) instead of the local thumbnail directory
+	// (see GeneralConfig.ThumbnailDir). Plain local files always use the
+	// local thumbnail directory.
 	Thumbnailer Thumbnailer
 	// Sidebar, when non-nil, is shown left of the gallery (e.g. a tag
 	// selector) instead of a plain full-width gallery.

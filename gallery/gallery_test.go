@@ -407,10 +407,10 @@ func (f *flakyThumbnailer) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) 
 }
 
 // setupRetryGallery builds a one-image gallery whose thumbnails come from ft.
+// The entry is reader-backed: a Thumbnailer only serves CustomReader items
+// (plain local files always use the local disk cache).
 func setupRetryGallery(t *testing.T, ft *flakyThumbnailer) *Gallery {
 	t.Helper()
-	dir := t.TempDir()
-	writeTestImages(t, dir, 1)
 	test.NewApp()
 	win := test.NewWindow(nil)
 
@@ -424,7 +424,7 @@ func setupRetryGallery(t *testing.T, ft *flakyThumbnailer) *Gallery {
 	viewer := NewGallery(fyne.CurrentApp(), win, config, nil)
 	viewer.Thumbnailer = ft // must be set before Init copies it into the layout
 	viewer.Init()
-	viewer.ReadImageDir(dir, nil)
+	viewer.ReadCustom([]CustomReader{memReader{path: "image", data: []byte("x")}})
 	win.SetContent(viewer.Content)
 	win.Resize(fyne.NewSize(800, 600))
 	viewer.LoadGallery()

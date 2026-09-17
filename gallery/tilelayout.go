@@ -37,9 +37,10 @@ var loading []byte
 // label when filenames are shown.
 const labelHeight = float32(22)
 
-// Thumbnailer supplies scaled thumbnails for gallery items. When the viewer's
-// Thumbnailer field is nil, thumbnails are generated from the image content
-// and cached in the directory given by GeneralConfig.ThumbnailDir.
+// Thumbnailer supplies scaled thumbnails for reader-backed gallery items
+// (CustomReader != nil). Items without a CustomReader (plain local files)
+// are always thumbnailed from the image content and cached in the directory
+// given by GeneralConfig.ThumbnailDir, regardless of the Thumbnailer.
 type Thumbnailer interface {
 	GetThumbnail(info *ImageInfo) (io.ReadSeeker, error)
 }
@@ -599,8 +600,11 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	}
 
 	// A custom Thumbnailer (e.g. one backed by network storage) takes
-	// precedence over the local thumbnail directory.
-	if layout.thumbnailer != nil {
+	// precedence over the local thumbnail directory, but only for
+	// reader-backed entries. Plain local files (no CustomReader) always use
+	// the local disk cache — tie-view browsing a local directory keeps
+	// imgview's cache, whose content-hash keys are shared with tie.
+	if layout.thumbnailer != nil && info.CustomReader != nil {
 		return layout.thumbnailer.GetThumbnail(info)
 	}
 

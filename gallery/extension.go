@@ -99,8 +99,10 @@ package gallery
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Thumbnailer supplies scaled thumbnails for gallery items. When the Gallery's
-// Thumbnailer field is non-nil, the gallery calls GetThumbnail instead of
-// generating thumbnails locally (via disk cache in ThumbnailDir).
+// Thumbnailer field is non-nil, the gallery calls GetThumbnail for
+// reader-backed items (CustomReader != nil) instead of generating thumbnails
+// locally (via disk cache in ThumbnailDir). Plain local files always use the
+// local disk cache, even when a Thumbnailer is set.
 //
 // The returned ReadSeeker should be a pre-scaled JPEG at ~2× the tile width
 // (see Config.TileWidth). The gallery decodes it and renders it directly; no

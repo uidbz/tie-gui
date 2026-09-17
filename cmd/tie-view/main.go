@@ -37,12 +37,14 @@ func main() {
 	flag.StringVar(&tieHostName, "host", "", "Fetch content from this filehost named in the tie config (default: \"fast\" when configured, else the first DefaultFileHosts entry)")
 	flag.Parse()
 
-	// The first positional argument may be a tie: URL to open at startup
+	// The first positional argument opens content at startup: a tie: URL
 	// (tie:<hash> for a single subject, tie:/path for a virtual-filesystem
-	// location) — e.g. handed over by tie-fm's "tie URL" file association.
-	tieURL := ""
+	// location) — e.g. handed over by tie-fm's "tie URL" file association —
+	// or a local filesystem path (directory, image, or archive), opened the
+	// way imgview opens it.
+	arg := ""
 	if args := flag.Args(); len(args) > 0 {
-		tieURL = args[0]
+		arg = args[0]
 	}
 
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.tieview", "tieview", icon)
@@ -98,11 +100,24 @@ func main() {
 	quickBar.OnRatingChanged = tagger.SetRating
 
 	viewer := gallery.NewGallery(myApp, myWindow, config, func(t *gallery.Tile) {
-		if t.Info.InputIsVideo {
-			go openTieVideo(t.Viewer, t.Info)
-			return
+		switch true {
+		// Local archive and directory entries navigate like imgview. Tie
+		// entries never carry these flags — their readers are Openable and
+		// go through ChangeImage → OnOpen instead.
+		case t.Info.ShowArchive:
+			t.Viewer.ShowImageArchive(t.Info.FullPath)
+		case t.Info.InputIsDir:
+			t.Viewer.ShowImageDir(filepath.Dir(t.Info.Path))
+		case t.Info.InputIsVideo:
+			// Local videos play in place; tie videos stream/download.
+			if t.Info.CustomReader == nil {
+				go openLocalVideo(t.Viewer, t.Info)
+			} else {
+				go openTieVideo(t.Viewer, t.Info)
+			}
+		default:
+			t.Viewer.ChangeImage(t.Info)
 		}
-		t.Viewer.ChangeImage(t.Info)
 	})
 	viewer.Thumbnailer = tiethumb.New(
 		func() *client.TieClient { return tieClient },
@@ -118,6 +133,11 @@ func main() {
 			return folderIcon(int(config.General.TileWidth) * 2), nil
 		})
 	toggleTagger := func() {
+		if tagger.hash == "" {
+			// Local image: it has no tie subject, so there is nothing to
+			// tag (the panel's writes are keyed by content hash).
+			return
+		}
 		tagger.Toggle(tagger.hash)
 		viewer.Content.Refresh()
 	}
@@ -294,56 +314,74 @@ func main() {
 		}, myWindow)
 	}
 
-	// A tie: URL argument loads its subject instead of the default startup
-	// view. On mobile, load the default image directory (DCIM/Camera). On
-	// desktop, load the configured startup page (Settings → Startup, default
-	// favorites) to populate the gallery with quick-access content.
-	if tieURL != "" {
-		go loadTieURL(myWindow, viewer, tieClient, fsTree, browseDir, tieURL)
-	} else if viewer.Platform().IsMobile() {
-		// Try /DCIM/Camera first (typical Android camera directory), then /DCIM,
-		// then fall back to root if neither exists. DirUIDFromPath and showDir
-		// are network calls, so they must not run on the main thread: with a
-		// dead server the timeout-less tie HTTP client would hang startup
-		// (ANR) for minutes. ChangeGallery below runs via fyne.Do once the
-		// listing is in.
-		go func() {
-			dir := "/DCIM/Camera"
-			if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
-				dir = "/DCIM"
+	// A local path argument (directory, image, or archive) loads like
+	// imgview; a tie: URL (or bare hash/virtual path) loads its subject
+	// instead of the default startup view. On mobile, load the default
+	// image directory (DCIM/Camera). On desktop, load the configured
+	// startup page (Settings → Startup, default favorites) to populate the
+	// gallery with quick-access content.
+	var selected *gallery.ImageInfo
+	loadingImage := false
+	abs, localKind := classifyLocalInput(arg)
+	switch localKind {
+	case localDir:
+		viewer.ReadImageDir(abs, nil)
+	case localImage:
+		selected = gallery.NewImageInfo(-1, abs)
+		viewer.ReadImageDir(filepath.Dir(abs), selected)
+		loadingImage = true
+	case localArchive:
+		viewer.ReadImageArchive(abs)
+	case localUnsupported:
+		dialog.ShowError(fmt.Errorf("unsupported file type: %s", abs), myWindow)
+	case localNone:
+		if arg != "" {
+			go loadTieURL(myWindow, viewer, tieClient, fsTree, browseDir, arg)
+		} else if viewer.Platform().IsMobile() {
+			// Try /DCIM/Camera first (typical Android camera directory), then /DCIM,
+			// then fall back to root if neither exists. DirUIDFromPath and showDir
+			// are network calls, so they must not run on the main thread: with a
+			// dead server the timeout-less tie HTTP client would hang startup
+			// (ANR) for minutes. ChangeGallery below runs via fyne.Do once the
+			// listing is in.
+			go func() {
+				dir := "/DCIM/Camera"
 				if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
-					dir = "/"
+					dir = "/DCIM"
+					if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
+						dir = "/"
+					}
 				}
+				fsTree.showDir(dir, "")
+				fyne.Do(viewer.ChangeGallery)
+			}()
+		} else {
+			// Desktop startup page (Settings → Startup): favorites (the default,
+			// images tagged "favorite"), the latest imports, a chosen tag, or a
+			// blank gallery. An explicit -tag flag overrides the configured page
+			// for this launch.
+			page := myApp.Preferences().StringWithFallback(prefStartupPage, startupFavorites)
+			tagName := myApp.Preferences().String(prefStartupTag)
+			flag.Visit(func(f *flag.Flag) {
+				if f.Name == "tag" {
+					page = startupTag
+					tagName = *tieTag
+				}
+			})
+			switch page {
+			case startupNone:
+				// Leave the gallery empty until a tag is picked.
+			case startupLatest:
+				latestFromTie(viewer, tieClient, browseDir)
+			case startupTag:
+				if tagName != "" {
+					readFromTie(viewer, tieClient, []string{tagName}, nil, "tag", browseDir)
+				}
+			default: // startupFavorites
+				readFromTie(viewer, tieClient, []string{"favorite"}, nil, "tag", browseDir)
 			}
-			fsTree.showDir(dir, "")
-			fyne.Do(viewer.ChangeGallery)
-		}()
-	} else {
-		// Desktop startup page (Settings → Startup): favorites (the default,
-		// images tagged "favorite"), the latest imports, a chosen tag, or a
-		// blank gallery. An explicit -tag flag overrides the configured page
-		// for this launch.
-		page := myApp.Preferences().StringWithFallback(prefStartupPage, startupFavorites)
-		tagName := myApp.Preferences().String(prefStartupTag)
-		flag.Visit(func(f *flag.Flag) {
-			if f.Name == "tag" {
-				page = startupTag
-				tagName = *tieTag
-			}
-		})
-		switch page {
-		case startupNone:
-			// Leave the gallery empty until a tag is picked.
-		case startupLatest:
-			latestFromTie(viewer, tieClient, browseDir)
-		case startupTag:
-			if tagName != "" {
-				readFromTie(viewer, tieClient, []string{tagName}, nil, "tag", browseDir)
-			}
-		default: // startupFavorites
-			readFromTie(viewer, tieClient, []string{"favorite"}, nil, "tag", browseDir)
+			// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
 		}
-		// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
 	}
 
 	viewer.OnImageChange = func(info *gallery.ImageInfo) {
@@ -368,8 +406,12 @@ func main() {
 	}
 
 	myWindow.SetContent(viewer.Content)
-	viewer.LoadGallery()
-	viewer.CreateView()
+	if loadingImage {
+		viewer.ChangeImage(selected)
+	} else {
+		viewer.LoadGallery()
+		viewer.CreateView()
+	}
 
 	myWindow.Resize(fyne.NewSize(config.General.DefaultWidth, config.General.DefaultHeight))
 

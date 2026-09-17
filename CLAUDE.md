@@ -9,7 +9,7 @@ Fyne fork — hence the monorepo.
 | Path | What |
 |------|------|
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
-| `cmd/tie-view/` | tie-network image viewer entry point |
+| `cmd/tie-view/` | tie-network image viewer entry point (also opens local directories/images/archives like imgview) |
 | `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider) |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
@@ -286,7 +286,7 @@ tiles on desktop, 300 on mobile.
 (JPEG only) → `ScaleImage(decoded, tileWidth*2)` (imaging **Linear** filter,
 not Lanczos) → JPEG quality 90 → write cache.
 
-**Remote (`tie-view`):** `tiethumb.Thumbnailer.GetThumbnail` (shared package, used by tie-fm's preview grid too) →
+**Remote (`tie-view`):** `tiethumb.Thumbnailer.GetThumbnail` (shared package, used by tie-fm's preview grid too; consulted only for reader-backed entries — local files keep the local pipeline even when a `Thumbnailer` is set) →
 1. Check the reader's cached `thumbHash` (pre-populated from query expand, or a `tc.Get` fallback) → `GET filehost/<thumbHash>`
 2. On miss: download full blob → decode → scale → encode → `PUT filehost/upload/<thumbHash>` → `Set(imageHash, "thumbnail", thumbHash)` → `Set(imageHash, "dimensions", "WxH")`
 
@@ -344,7 +344,7 @@ preventing layout reflow as thumbnails load.
 - `imageFiles []*ImageInfo` — full list for the current gallery source
 - `currentPath string` — absolute path of the currently open directory
 - `isFullscreen bool` — tracks fullscreen state; toggled by `ToggleFullscreen()`
-- `Thumbnailer Thumbnailer` — if non-nil, used instead of local disk cache
+- `Thumbnailer Thumbnailer` — if non-nil, used instead of the local disk cache for reader-backed items (CustomReader != nil); plain local files always use the local disk cache
 - `OnImageChange func(*ImageInfo)` — called after `ChangeImage`
 - `Platform() *Platform` — accessor for mobile vs desktop behavior (Phase 5)
 
@@ -480,6 +480,24 @@ falls back to the single-image view. A hash with no triples (`ErrNotFound`,
 e.g. a never-imported blob) is still attempted as a plain image. tie-fm's
 "tie URL" file associations hand the path form to tie-view
 (`Command = "tie-view %f"`, `TieURL = true`).
+
+**Local path argument** (`cmd/tie-view/local.go`): when the first positional
+argument is neither a tie: URL nor a bare hash and exists on the local
+filesystem, tie-view opens it the way imgview does
+(`classifyLocalInput`): a directory becomes the gallery (`ReadImageDir` —
+subdirectories and archives browsable, videos playable), an image opens
+full-size inside its parent directory's gallery, an archive opens on its
+image members; anything else shows an "unsupported file type" dialog. The
+tile-tap handler dispatches like imgview's (`ShowArchive` →
+`ShowImageArchive`, `InputIsDir` → `ShowImageDir`, video → `openLocalVideo`
+playing in place when `CustomReader == nil`, else `openTieVideo`), so local
+navigation (tiles, PathLevelUp) works without a tie server. Local images
+are thumbnailed through the local disk cache even though tie-view sets a
+`Thumbnailer` — the gallery only consults it for reader-backed entries
+(`layout.thumbnailer != nil && info.CustomReader != nil` in
+`TileLayout.GetThumbnail`) — and the tag panel/quick tag bar stay inert
+(the tagger is keyed by content hash; `toggleTagger` returns early on a
+local image).
 
 ---
 
