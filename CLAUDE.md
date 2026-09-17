@@ -813,9 +813,9 @@ in landscape) has room for the split layout:
 | | regular (desktop, tablet in landscape) | compact (phone, tablet in portrait) |
 |---|---|---|
 | Tags/Files sidebar | `HSplit` pane inside the gallery | slide-over **drawer** over the grid + filter chip row |
-| Playlist | `trackTable` in a permanent right-hand `HSplit` pane | full-screen **album-grouped list** (`queueList`) |
+| Playlist | `trackTable` in a permanent right-hand `HSplit` pane, grouped by album headers | full-screen **album-grouped list** (`queueList`) |
 | Album track list | persisted column set + Columns dialog | fixed `compactAlbumColumns` (track no / title / duration) |
-| Transport | `regularBar` (one row, both sliders) | `miniBar` (full-size controls) → full-screen `nowPlayingPage` |
+| Transport | `regularBar` (one row, both sliders) | `miniBar` (full-size controls; + volume row on the playlist view) → full-screen `nowPlayingPage` |
 | Bottom nav | — | Tags / Playlist / Settings / Refresh under the mini bar |
 
 - `gallery.Platform.CompactLayout(width)` is the width heuristic
@@ -842,13 +842,24 @@ in landscape) has room for the split layout:
   `showCurrentView`). `shellWindow.dropSplit` remembers the divider offset so a
   compact excursion doesn't reset it.
 - **Back key:** `App.syncBackHandler` installs the window-level
-  `SetOnTypedKey` handler *only* while something can be unwound (drawer open,
-  or a view other than the cover wall). With no handler set, Fyne's mobile
-  driver routes Back to `GoBack()` (leave the app) — capturing it
-  unconditionally would make tie-audio impossible to exit. Gallery hotkeys are
-  deliberately not dispatched (their defaults include Quit). Drawer state
-  changes arrive via `gallery.Gallery.OnSidebarToggled`, which also fires on a
-  scrim dismiss.
+  `SetOnTypedKey` handler *only* while it has work to do: something to unwind
+  (drawer open, or a view other than the cover wall), or the configured
+  desktop hotkeys. With no handler set, Fyne's mobile driver routes Back to
+  `GoBack()` (leave the app) — capturing it unconditionally would make
+  tie-audio impossible to exit. Gallery hotkeys are deliberately not
+  dispatched (their defaults include Quit). Drawer state changes arrive via
+  `gallery.Gallery.OnSidebarToggled`, which also fires on a scrim dismiss.
+- **Desktop hotkeys** (`ui/hotkeys.go`): the app config's `[Hotkeys]` table
+  binds playback actions to Fyne key names — `PlayPause`, `Stop`, `Next`,
+  `Previous`, `SeekForward`/`SeekBackward` (±10 s), `VolumeUp`/`VolumeDown`
+  (±10 %). Defaults: Space, X, N, P, Right, Left, `=`, `-`. The table merges
+  over the defaults per action (`config.ResolveHotkeys`): an unmentioned
+  action keeps its default, an empty list unbinds it, unknown actions are
+  ignored. Desktop only (`initHotkeys` returns early on mobile); the
+  bindings drive the shared `player`, so they fire from every view, and a
+  focused text entry consumes keys first, so Space is safe while typing.
+  `App.keyPress` handles the Back/Escape unwind first, then dispatches
+  hotkeys.
 - Swipes: left on the wall → playlist, right → open the drawer (compact),
   pull down at the top of the wall → reload its feed
   (`gallery.OnPullRefresh`), swipe up on the mini bar → Now Playing, swipe
@@ -888,14 +899,17 @@ the Now Playing page (prev / play / next / stop at the `nowPlayingButton` /
 the track labels and the two sliders are Now-Playing-only. (The bar once
 carried the labels, but a `Label` with `TextTruncateEllipsis` reports a
 MinSize of just "…", so the centered pair always rendered as two rows of
-dots.)
+dots.) The exception is the volume slider: it joins the mini bar (below the
+controls row, `miniBar.setVolumeVisible`) while the compact **playlist** view
+is on screen — the one compact view with room for it, and the only one
+besides Now Playing where volume matters.
 
 ### Album artwork (`covers.go`)
 
 `coverStore` caches **decoded** album art keyed by album UID, shared by the
-cover wall's `coverThumbnailer`, the queue's cover column, the grouped list's
-headers, the mini bar and the Now Playing page. Covers are downscaled to
-`coverMaxEdge` (512) and the cache is bounded (`coverLimit` = 120, insertion
+cover wall's `coverThumbnailer`, the queue's album header rows, the grouped
+list's headers, the mini bar and the Now Playing page. Covers are downscaled
+to `coverMaxEdge` (512) and the cache is bounded (`coverLimit` = 120, insertion
 -order eviction) — decoded RGBA is ~1 MB each.
 
 - `Lookup` is the non-blocking cache peek; `Request` resolves off the UI
@@ -926,12 +940,15 @@ album with one cover.
 by **consecutive** runs of `AlbumUID` (falling back to the `Album` tag, then
 one "Unknown album" run), so the same album at two positions is two groups —
 what the user sees and reorders. Header rows carry `groupStart`/`groupCount`
-so album-level actions address the block directly.
+so album-level actions address the block directly. The same row model backs
+the **desktop** playlist table (see below).
 
-- tap a track → `Goto`; long-press (`TappedSecondary` on mobile) → Play /
-  Remove track / Move up / Move down; header ⋮ or long-press → Play album /
-  Remove album / Move album up / down (block moves reuse
-  `reorderSelection`+`reorderMoves`).
+- tap a track → `playRow` (Goto + a Play when the server still isn't playing:
+  pwplay's Goto clears `stopped` but not `paused`, so a bare Goto on a paused
+  player loaded the track without resuming); long-press (`TappedSecondary` on
+  mobile) → Play / Remove track / Move up / Move down; header ⋮ or
+  long-press → Play album / Remove album / Move album up / down (block moves
+  reuse `reorderSelection`+`reorderMoves`).
 - Reordering uses a `≡` drag handle only: a drag starting anywhere on the row
   is the same gesture as the list's own scrolling. `queueDragHandle` converts
   travelled pixels to queue positions via the fixed track-row height and shows
@@ -942,6 +959,39 @@ so album-level actions address the block directly.
 
 `rebuildTracks` feeds **both** the table and the list regardless of which is on
 screen, so a layout switch shows a populated view immediately.
+
+### Desktop playlist table (`albumtable.go`, `queuetitlecell.go`)
+
+The regular layout's `trackTable` runs in **grouped mode**: the same
+`buildQueueRows` model as the compact list, so consecutive same-album runs
+get a two-row-tall header row (72 px, via a new `FlexTable.SetRowHeight`
+wrapper — `widget.Table` has no reset-to-template, so 0 recomputes it) with
+the cover, album name and artist·year·count line. There is no per-track Art
+column: `defaultQueueColumns` is both the queue's default and its available
+set (`trackTableOpts.availableCols`), so the Columns dialog can't resurrect
+it and a persisted `cover` key is dropped on load. Details:
+
+- The title column's cell is a `queueTitleCell` — one widget that renders
+  either a track title or the album header, so a recycled cell never needs
+  recreation (the FlexTable only recreates cell content when the *position*
+  changes, not when the row kind flips under it).
+- Header rows are inert: `FlexTable.RowSelectable` blocks selection, drags
+  and double-taps on them.
+- Display rows ≠ playlist indices: the play indicator, double-tap play,
+  drag-reorder and external drop gaps all map through the row model
+  (`playlistIndexForRow`, `playlistGapAt`).
+- "Play album" / "Add to playlist" update the view **optimistically**
+  (`noteQueueReplaced`/`noteEnqueued`) and `queuePage.pending` suppresses
+  status polls until the backend call has settled, so a stale mid-mutation
+  poll can't flicker the table back to before the action;
+  `pwplayRemote.Enqueue` waits for pwplay's asynchronous add to land before
+  returning (mirroring `Insert`). `endQueueMutation` then reconciles with one
+  forced status fetch.
+- Two latent tablewidget bugs fixed here: `FlexTable.headerBgColor` was never
+  set (nil-colored header backgrounds — the GL painter tolerates it, the
+  software painter crashes), and `WidgetCell` never resized its content on
+  the first layout pass (the vendored `container.Clip` drops its first
+  layout), so the renderer resizes the content directly.
 
 ### Sidebar drawer (`gallery/drawer.go`, `gallery/filterchips.go`)
 
