@@ -60,6 +60,15 @@ type queuePage struct {
 	qtracks  []data.Track
 	current  int
 	dragging bool
+	// pending counts queue-mutating backend operations (enqueue, play-album)
+	// started by the user but not yet settled server-side. While one is in
+	// flight, status polls are skipped: pwplay applies queue mutations
+	// asynchronously, so a poll landing mid-mutation would briefly show the
+	// queue as it was BEFORE the user's action — a visible flicker back and
+	// forth. The optimistic local update (noteEnqueued/noteQueueReplaced)
+	// shows the result instantly, and the poll skip keeps it on screen until
+	// endQueueMutation reconciles with the settled server state.
+	pending int
 
 	// dragGhost is a floating label that follows the cursor during a reorder
 	// drag so the user can see which track they picked up. Created on the first
@@ -211,15 +220,42 @@ func (q *queuePage) hide() {
 	q.transport.SetStatusListener(nil)
 }
 
-// refreshSoon polls the backend once it has had a moment to apply a just-issued
-// add (Enqueue applies asynchronously), so the table reflects it immediately
-// instead of at the next periodic tick.
-func (q *queuePage) refreshSoon() {
+// noteEnqueued reflects a just-issued enqueue locally: the tracks appear in
+// the table immediately instead of whenever the server's asynchronous add
+// lands. The matching endQueueMutation lifts the poll skip and reconciles.
+func (q *queuePage) noteEnqueued(urls []string) {
+	q.pending++
+	q.playlist = append(q.playlist, urls...)
+	q.rebuildTracks()
+}
+
+// noteQueueReplaced reflects a just-issued queue replacement (Play album)
+// locally, so the table shows the new queue instantly rather than after the
+// server's append-trim-settle dance (which can take a second over a large
+// old queue). The matching endQueueMutation lifts the poll skip and
+// reconciles.
+func (q *queuePage) noteQueueReplaced(urls []string) {
+	q.pending++
+	q.playlist = append(q.playlist[:0], urls...)
+	q.current = -1 // playback of the new queue has not been observed yet
+	q.rebuildTracks()
+}
+
+// endQueueMutation marks a mutation started via noteEnqueued /
+// noteQueueReplaced as settled (the backend call blocks until pwplay has
+// applied it), lifting the poll skip and forcing one status refresh so the
+// table converges to the server's state immediately.
+func (q *queuePage) endQueueMutation() {
 	go func() {
-		time.Sleep(250 * time.Millisecond)
-		if s, err := q.backend.Status(); err == nil {
-			fyne.Do(func() { q.applyStatus(s) })
-		}
+		s, err := q.backend.Status()
+		fyne.Do(func() {
+			if q.pending > 0 {
+				q.pending--
+			}
+			if err == nil {
+				q.applyStatus(s)
+			}
+		})
 	}()
 }
 
@@ -233,9 +269,11 @@ func (q *queuePage) leave() {
 
 // applyStatus refreshes the table from a status snapshot. Runs on the UI
 // goroutine (the transport invokes its listener there). It skips refreshing
-// mid-drag so a rebuild does not disrupt the gesture.
+// mid-drag so a rebuild does not disrupt the gesture, and while a user-started
+// queue mutation is in flight so a stale mid-mutation server state cannot
+// flicker the table back to before the action.
 func (q *queuePage) applyStatus(s playback.Status) {
-	if q.dragging {
+	if q.dragging || q.pending > 0 {
 		return
 	}
 	q.playlist = append(q.playlist[:0], s.Playlist...)
@@ -497,7 +535,12 @@ func (q *queuePage) onReorder(from, to int) {
 	q.commit(moves)
 }
 
-// playRow jumps playback to the double-tapped queue position.
+// playRow jumps playback to the double-tapped queue position and makes sure
+// playback actually starts: pwplay's Goto loads the target track even while
+// paused or stopped, but it only clears the stopped flag — a paused player
+// stays paused. A double-click means "play this track", so once the jump has
+// landed (bounded wait for the decoder loop to apply it) a Play is issued if
+// the server still isn't playing.
 func (q *queuePage) playRow(row int) {
 	if row < 0 || row >= len(q.playlist) {
 		return
@@ -505,6 +548,23 @@ func (q *queuePage) playRow(row int) {
 	go func() {
 		if err := q.backend.Goto(row); err != nil {
 			fyne.Do(func() { dialog.ShowError(err, q.win) })
+			return
+		}
+		for i := 0; i < 60; i++ {
+			time.Sleep(50 * time.Millisecond)
+			s, err := q.backend.Status()
+			if err != nil {
+				return
+			}
+			if s.CurrentTrack != row {
+				continue // the jump has not been applied yet
+			}
+			if !s.Playing {
+				if err := q.backend.Play(); err != nil {
+					fyne.Do(func() { dialog.ShowError(err, q.win) })
+				}
+			}
+			return
 		}
 	}()
 }

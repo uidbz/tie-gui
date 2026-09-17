@@ -197,6 +197,10 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 
 	a.browse = newBrowsePage(fyne.CurrentApp(), a.shell, session, a.covers, a.compact)
 	a.browse.transport = a.player
+	// Let the browse page reach the queue page regardless of layout, so
+	// play/enqueue actions update the queue view optimistically even in the
+	// compact layout (where enableAlbumDragToQueue is not wired).
+	a.browse.queue = a.queue
 	// The Settings tab lives in the sidebar (Tags / Files / Settings, like
 	// tie-view); the same tab item is reused to open the settings view.
 	settingsTab := a.buildSettingsTab()

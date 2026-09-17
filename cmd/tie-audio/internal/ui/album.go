@@ -139,7 +139,9 @@ func (b *browsePage) streamable(tracks []data.Track) (urls []string, meta []data
 }
 
 // playTracks replaces the queue with the album from index start onward and
-// starts playback. Selecting a track plays from that track.
+// starts playback. Selecting a track plays from that track. The queue view is
+// told about the replacement up front (noteQueueReplaced), so the new queue
+// shows immediately instead of when the server's asynchronous replace lands.
 func (b *browsePage) playTracks(tracks []data.Track, start int) {
 	if start < 0 || start >= len(tracks) {
 		start = 0
@@ -150,16 +152,22 @@ func (b *browsePage) playTracks(tracks []data.Track, start int) {
 		return
 	}
 	b.transport.SetQueue(urls, meta)
+	if b.queue != nil {
+		b.queue.noteQueueReplaced(urls)
+	}
 	go func() {
+		if b.queue != nil {
+			defer b.queue.endQueueMutation()
+		}
 		if err := b.session.Backend.PlayAlbum(urls); err != nil {
 			fyne.Do(func() { b.reportPlaybackError(err) })
 		}
 	}()
 }
 
-// enqueueTracks appends the album's tracks to the current queue, then forces
-// an immediate queue-table refresh (the periodic poll has an up-to-500ms
-// lag, which made an enqueued album appear to not land).
+// enqueueTracks appends the album's tracks to the current queue. The queue
+// view is told about the addition up front (noteEnqueued), so the tracks
+// appear immediately instead of at the next status poll.
 func (b *browsePage) enqueueTracks(tracks []data.Track) {
 	urls, meta := b.streamable(tracks)
 	if len(urls) == 0 {
@@ -167,13 +175,15 @@ func (b *browsePage) enqueueTracks(tracks []data.Track) {
 		return
 	}
 	b.transport.AppendQueue(urls, meta)
+	if b.queue != nil {
+		b.queue.noteEnqueued(urls)
+	}
 	go func() {
+		if b.queue != nil {
+			defer b.queue.endQueueMutation()
+		}
 		if err := b.session.Backend.Enqueue(urls...); err != nil {
 			fyne.Do(func() { b.reportPlaybackError(err) })
-			return
-		}
-		if b.queue != nil {
-			b.queue.refreshSoon()
 		}
 	}()
 }

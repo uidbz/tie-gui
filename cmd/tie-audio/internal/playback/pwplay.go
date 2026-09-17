@@ -21,7 +21,30 @@ func (r *pwplayRemote) Enqueue(urls ...string) error {
 	if len(urls) == 0 {
 		return nil
 	}
-	return r.c.AddTracks(urls...)
+	s, err := r.c.Status()
+	if err != nil {
+		return err
+	}
+	oldCount := s.TotalTracks
+	if err := r.c.AddTracks(urls...); err != nil {
+		return err
+	}
+	// AddTracks is applied asynchronously by pwplay's decoder loop (see
+	// PlayAlbum), so a Status issued right after the POST can still show the
+	// pre-add queue. Wait (bounded) until the add has landed, so callers
+	// refreshing the queue view immediately see the new tracks.
+	target := oldCount + len(urls)
+	for i := 0; i < 40; i++ {
+		st, err := r.c.Status()
+		if err != nil {
+			return err
+		}
+		if st.TotalTracks >= target {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return nil
 }
 
 // Insert adds urls so the first lands at index `at` in the queue. pwplay has no
