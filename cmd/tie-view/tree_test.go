@@ -112,6 +112,12 @@ func TestNewTieFSTree(t *testing.T) {
 	test.NewApp()
 	config := client.DefaultConfig()
 	config.TripleStoreURL = "http://127.0.0.1:1"
+	// DefaultConfig loads the user's config file, whose [Collections.*] entry
+	// carries its own TripleStoreURL and would override the dead one above,
+	// making this test hit the real server. Drop both so the client truly
+	// binds the unreachable top-level URL.
+	config.Collections = nil
+	config.DefaultCollection = ""
 	tc := client.NewTieClient(config)
 	tree := newTieFSTree(nil, tc).tree
 	if got := tree.ChildUIDs(""); len(got) != 1 || got[0] != "/" {
