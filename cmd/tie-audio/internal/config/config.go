@@ -59,6 +59,56 @@ type AppConfig struct {
 	StartupPage string
 	// StartupTag is the tag shown at launch when StartupPage is StartupTag.
 	StartupTag string
+	// Hotkeys maps a playback action name (the Hotkey* constants) to the
+	// Fyne key names bound to it, from the config file's [Hotkeys] table.
+	// Desktop only — there is no keyboard on mobile. Actions the file does
+	// not mention keep their DefaultHotkeys binding; an action bound to an
+	// empty list is left unbound. Example:
+	//
+	//	[Hotkeys]
+	//	PlayPause = ["Space"]
+	//	Next = ["N", "Right"]
+	//	Stop = []            # unbound
+	Hotkeys map[string][]string
+}
+
+// Hotkey action names for AppConfig.Hotkeys.
+const (
+	HotkeyPlayPause    = "PlayPause"    // toggle play/pause
+	HotkeyStop         = "Stop"         // stop and rewind
+	HotkeyNext         = "Next"         // next track
+	HotkeyPrevious     = "Previous"     // previous track
+	HotkeySeekForward  = "SeekForward"  // seek 10s ahead
+	HotkeySeekBackward = "SeekBackward" // seek 10s back
+	HotkeyVolumeUp     = "VolumeUp"     // volume +10%
+	HotkeyVolumeDown   = "VolumeDown"   // volume -10%
+)
+
+// DefaultHotkeys is the built-in desktop key binding set, used for every
+// action the config file's [Hotkeys] table does not mention.
+func DefaultHotkeys() map[string][]string {
+	return map[string][]string{
+		HotkeyPlayPause:    {"Space"},
+		HotkeyStop:         {"X"},
+		HotkeyNext:         {"N"},
+		HotkeyPrevious:     {"P"},
+		HotkeySeekForward:  {"Right"},
+		HotkeySeekBackward: {"Left"},
+		HotkeyVolumeUp:     {"="},
+		HotkeyVolumeDown:   {"-"},
+	}
+}
+
+// ResolveHotkeys merges the config file's [Hotkeys] table over the defaults:
+// an action the file does not mention keeps its default binding, an action
+// bound to an empty list is left unbound, and unknown actions are kept as
+// given (they simply never fire).
+func ResolveHotkeys(cfg map[string][]string) map[string][]string {
+	out := DefaultHotkeys()
+	for action, keys := range cfg {
+		out[action] = keys
+	}
+	return out
 }
 
 // Layout values for AppConfig.Layout.

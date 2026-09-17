@@ -143,6 +143,10 @@ type App struct {
 	compact  bool
 	view     appView
 	prevView appView
+	// hotkeys is the resolved key-name → action map from the config file's
+	// [Hotkeys] table (desktop only; nil on mobile). Installed on the window
+	// by syncBackHandler.
+	hotkeys map[fyne.KeyName]func()
 	// lastWidth is the most recent window width the watcher reported, used to
 	// re-resolve the layout when the user changes the layout preference.
 	lastWidth float32
@@ -243,6 +247,7 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	// not dispatched here: tie-audio never shows a single image, and the
 	// gallery's default bindings include Quit.
 	a.browse.viewer.OnSidebarToggled = func(bool) { a.syncBackHandler() }
+	a.initHotkeys()
 	a.syncBackHandler()
 
 	win.SetOnClosed(a.player.Stop)
@@ -502,42 +507,47 @@ func (a *App) applyBottomBar() {
 	a.syncBackHandler()
 }
 
-// syncBackHandler installs the window-level key handler only while a Back press
-// has something to unwind (an open drawer, or a view other than the cover
-// wall). On the cover wall with nothing open the handler is removed, so the
-// platform's own back behavior — leaving the app on Android — still works.
+// syncBackHandler installs the window-level key handler while it has work to
+// do: a Back press with something to unwind (an open drawer, or a view other
+// than the cover wall), or the configured hotkeys (desktop — they must fire
+// from every view, including the cover wall). With neither, the handler is
+// removed so the platform's own back behavior — leaving the app on Android —
+// still works.
 func (a *App) syncBackHandler() {
 	c := a.shell.Canvas()
 	if c == nil {
 		return
 	}
-	if a.view != viewBrowse || a.browse.sidebarOpen() {
+	if a.view != viewBrowse || a.browse.sidebarOpen() || len(a.hotkeys) > 0 {
 		c.SetOnTypedKey(a.keyPress)
 		return
 	}
 	c.SetOnTypedKey(nil)
 }
 
-// keyPress unwinds the view stack on Back (Android) and Escape: an open
+// keyPress unwinds the view stack on Back (Android) and Escape — an open
 // sidebar drawer closes first, then Now Playing / queue / settings return to
-// the cover wall.
+// the cover wall — and dispatches the configured hotkeys (desktop) for every
+// other key.
 //
 // Android and iOS deliver the system back button as the key name "Back" (there
 // is no fyne.Key constant for it).
 func (a *App) keyPress(ev *fyne.KeyEvent) {
 	switch ev.Name {
 	case fyne.KeyEscape, backKeyName:
-	default:
+		if a.browse.sidebarOpen() {
+			a.browse.closeSidebar()
+			return
+		}
+		switch a.view {
+		case viewNowPlaying:
+			a.leaveNowPlaying()
+		case viewQueue, viewSettings:
+			a.showBrowseView()
+		}
 		return
 	}
-	if a.browse.sidebarOpen() {
-		a.browse.closeSidebar()
-		return
-	}
-	switch a.view {
-	case viewNowPlaying:
-		a.leaveNowPlaying()
-	case viewQueue, viewSettings:
-		a.showBrowseView()
+	if fn, ok := a.hotkeys[ev.Name]; ok {
+		fn()
 	}
 }

@@ -67,6 +67,7 @@ type player struct {
 	// The queue view subscribes to stay live off the same poll as the player.
 	listener func(playback.Status)
 	playing  bool // last observed play state, for the play/pause toggle
+	volume   float64
 	seeking  bool // true while the user drags a seek slider
 	adjVol   bool // true while the user drags a volume slider
 	// applying is true while apply() is pushing server state into the views'
@@ -108,6 +109,7 @@ func newPlayer(backend playback.PlaybackBackend, covers *coverStore) *player {
 	return &player{
 		backend:   backend,
 		covers:    covers,
+		volume:    1,
 		metas:     map[string]data.Track{},
 		resolving: map[string]bool{},
 		stopCh:    make(chan struct{}),
@@ -281,6 +283,30 @@ func (p *player) togglePlay() {
 	}
 }
 
+// volumeStep nudges the volume by delta (the sliders' range is 0…2), holding
+// the new value as pending so the next poll doesn't snap the sliders back
+// before the server confirms — the same guard the volume slider uses. Bound
+// to the VolumeUp/VolumeDown hotkeys.
+func (p *player) volumeStep(delta float64) {
+	p.mu.Lock()
+	v := p.volume + delta
+	if v < 0 {
+		v = 0
+	}
+	if v > 2 {
+		v = 2
+	}
+	p.pendVol = &v
+	p.mu.Unlock()
+	go func() { _ = p.backend.SetVolume(v) }()
+}
+
+// seekBy jumps relative to the current position; bound to the
+// SeekForward/SeekBackward hotkeys.
+func (p *player) seekBy(sec float64) {
+	p.do(func() error { return p.backend.SeekRelative(sec) })
+}
+
 // do runs a backend action off the UI goroutine so the click returns instantly.
 func (p *player) do(fn func() error) {
 	go func() { _ = fn() }()
@@ -315,6 +341,7 @@ func (p *player) Stop() {
 func (p *player) apply(s playback.Status) {
 	p.mu.Lock()
 	p.playing = s.Playing
+	p.volume = s.Volume
 	seeking, adjVol := p.seeking, p.adjVol
 	pendVol := p.pendVol
 	if pendVol != nil && absDiff(s.Volume, *pendVol) < 0.02 {
