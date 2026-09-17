@@ -165,3 +165,31 @@ func TestPlayerSyncCoverRetriesUnknownTrack(t *testing.T) {
 		t.Errorf("coverURL = %q after a resolved track, want %q", p.coverURL, "u1")
 	}
 }
+
+// The mini bar's volume row is hidden by default and shown by
+// setVolumeVisible (the compact playlist view turns it on); the slider tracks
+// the polled volume like every other view.
+func TestMiniBarVolumeRow(t *testing.T) {
+	test.NewApp()
+
+	p := newPlayer(&fakeBackend{}, nil)
+	bar := newMiniBar(p, func() {})
+	p.AddView(bar)
+
+	if bar.volRow.Visible() {
+		t.Error("volume row visible by default, want hidden")
+	}
+	bar.setVolumeVisible(true)
+	if !bar.volRow.Visible() {
+		t.Error("volume row not shown by setVolumeVisible(true)")
+	}
+	bar.setVolumeVisible(false)
+	if bar.volRow.Visible() {
+		t.Error("volume row not hidden by setVolumeVisible(false)")
+	}
+
+	p.apply(playback.Status{Volume: 0.4})
+	if got := bar.volume.Value; got != 0.4 {
+		t.Errorf("volume slider = %v, want 0.4 after a poll", got)
+	}
+}

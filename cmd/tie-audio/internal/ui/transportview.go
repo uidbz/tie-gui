@@ -126,20 +126,28 @@ func (b *regularBar) setCover(img image.Image) { b.cover.set(img) }
 // page, which the bar opens when tapped or swiped up — they used to sit in the
 // bar, but a Label with TextTruncateEllipsis reports a MinSize of just "…", so
 // the centered pair rendered as two rows of dots no matter how much room they
-// had. Seek and volume are Now-Playing-only too: a phone has no room for a bar
+// had. The seek slider is Now-Playing-only too: a phone has no room for a bar
 // wide enough to hold a usable seek slider, and a cramped slider is worse than
 // no slider.
+//
+// The volume slider is the exception: it joins the bar (below the controls
+// row) while the playlist view is showing — there is room under the
+// full-screen queue, and reaching Now Playing just to ride the volume was the
+// one gap in the playlist's transport coverage. setVolumeVisible toggles it.
 type miniBar struct {
 	object   *fyne.Container
 	cover    *coverView
 	play     *transportButton
 	progress *thinProgress
+	volume   *widget.Slider
+	volRow   *fyne.Container
 }
 
 func newMiniBar(p *player, onOpen func()) *miniBar {
 	b := &miniBar{
 		cover:    newCoverView(miniCoverSize),
 		progress: newThinProgress(),
+		volume:   p.newVolumeSlider(),
 	}
 
 	// The same controls, at the same sizes, as the Now Playing page.
@@ -157,25 +165,48 @@ func newMiniBar(p *player, onOpen func()) *miniBar {
 
 	row := container.NewBorder(nil, nil, b.cover.object, nil, controls)
 
-	// The tap/swipe catcher sits *below* the row: the buttons take their own
-	// taps, and everything else (cover, padding) falls through to it, so the
-	// whole strip opens Now Playing without stealing the controls.
+	// The volume row mirrors the Now Playing page's: icon at the left, the
+	// slider taking the full remaining width. Hidden until the playlist view
+	// asks for it (setVolumeVisible).
+	b.volRow = container.NewBorder(nil, nil,
+		widget.NewIcon(theme.VolumeUpIcon()), nil,
+		container.NewPadded(b.volume),
+	)
+	b.volRow.Hide()
+
+	// The tap/swipe catcher sits *below* the rows: the buttons and the volume
+	// slider take their own taps and drags, and everything else (cover,
+	// padding) falls through to it, so the rest of the strip opens Now
+	// Playing without stealing the controls.
 	opener := newTapArea(onOpen, onOpen)
 	b.object = container.NewBorder(
 		widget.NewSeparator(),
 		b.progress,
 		nil, nil,
-		container.NewStack(opener, row),
+		container.NewStack(opener, container.NewVBox(row, b.volRow)),
 	)
 	return b
 }
 
 func (b *miniBar) Object() fyne.CanvasObject { return b.object }
 
+// setVolumeVisible shows or hides the volume slider row (shown while the
+// compact playlist view is on screen).
+func (b *miniBar) setVolumeVisible(on bool) {
+	if on {
+		b.volRow.Show()
+	} else {
+		b.volRow.Hide()
+	}
+}
+
 func (b *miniBar) apply(st transportState) {
 	applyPlayIcon(b.play, st.playing)
 	if st.applyPosition {
 		b.progress.setFraction(fraction(st.position, st.duration))
+	}
+	if st.applyVolume {
+		b.volume.SetValue(st.volume)
 	}
 }
 

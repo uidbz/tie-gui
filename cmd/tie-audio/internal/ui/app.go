@@ -491,8 +491,11 @@ func (a *App) showCurrentView() {
 // transport bar in the regular layout; in the compact layout the mini bar plus
 // the nav bar on the cover wall, the mini bar alone on the queue and settings
 // views, and nothing on Now Playing (which carries its own full-width
-// controls).
+// controls). The compact playlist view also gets the mini bar's volume row:
+// it is the one view with room for it, and the only compact view besides Now
+// Playing where volume matters.
 func (a *App) applyBottomBar() {
+	a.mini.setVolumeVisible(a.compact && a.view == viewQueue)
 	switch {
 	case !a.compact:
 		a.shell.SetBottom(a.regular.Object())
