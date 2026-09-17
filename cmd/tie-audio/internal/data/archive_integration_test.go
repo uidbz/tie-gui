@@ -19,11 +19,14 @@ import (
 )
 
 // testEnvConfig mirrors the tie repo's test-env (triplestore :2161, filehost
-// :2162, namespace Collections, collection Main).
+// :2162, namespace Collections, collection Main). DefaultCollection is what
+// NewTieClient binds (Collection alone is only the fallback name), so it must
+// be set for the client to operate on Main.
 func testEnvConfig() client.Config {
 	cfg := client.DefaultConfig()
 	cfg.Namespace = "Collections"
 	cfg.Collection = "Main"
+	cfg.DefaultCollection = "Main"
 	cfg.TripleStoreURL = "http://localhost:2161"
 	cfg.DefaultFileHosts = []string{"default"}
 	cfg.FileHosts = map[string]client.FileHost{"default": {URL: "http://localhost:2162"}}

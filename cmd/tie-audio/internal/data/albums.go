@@ -16,6 +16,7 @@ import (
 
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/io/getlib"
+	"github.com/uidbz/tie/metadata/tag"
 )
 
 // PlaylistTag is the tie tag every saved playlist carries, so playlists are a
@@ -126,18 +127,10 @@ func (s *Session) fetchBlob(hash string) ([]byte, error) {
 var ErrNoCover = errors.New("no cover")
 
 // CoverReader returns the album's cover-image bytes, or an error when the
-// album has no cover (the tile then shows a placeholder). tie's audio-dir
-// import stores no thumbnail triple, so for a dir the cover falls back to a
-// cover image file among its children (e.g. cover.jpg).
+// album has no cover (the tile then shows a placeholder). See coverBytes for
+// the resolution order.
 func (s *Session) CoverReader(a Album) (io.ReadSeeker, error) {
-	hash := a.ThumbHash
-	if hash == "" && a.Kind == AlbumDir {
-		hash = s.dirCoverHash(a.UID)
-	}
-	if hash == "" {
-		return nil, ErrNoCover
-	}
-	b, err := s.fetchBlob(hash)
+	b, err := s.coverBytes(a.UID, a.ThumbHash)
 	if err != nil {
 		return nil, err
 	}
@@ -146,37 +139,62 @@ func (s *Session) CoverReader(a Album) (io.ReadSeeker, error) {
 
 // CoverBytesForUID returns the cover-image bytes for an album identified only
 // by its UID (a Track's AlbumUID, which the queue has but no Album struct for).
-// It resolves the album's own thumbnail relation first, then falls back to a
-// cover image file among a directory's children. ErrNoCover means the album has
-// none; any other error is a fetch failure worth retrying later.
+// ErrNoCover means the album has none; any other error is a fetch failure
+// worth retrying later.
 //
 // The UID may be a directory UID or a content hash (a standalone track); a
 // directory read on a non-directory simply yields no candidate, so the two
 // shapes need not be distinguished by the caller.
 func (s *Session) CoverBytesForUID(uid string) ([]byte, error) {
+	return s.coverBytes(uid, "")
+}
+
+// coverBytes resolves an album's cover-image bytes, trying in order:
+//  1. thumbHash, when already known (a query-expanded album row)
+//  2. the subject's own thumbnail relation (archive covers land there)
+//  3. an external cover image among a directory's children (cover.jpg etc.)
+//  4. the first track's embedded picture — the first audio file of a
+//     directory album, or the track itself for a standalone track
+//
+// ErrNoCover means the album has no cover anywhere; any other error is a
+// fetch failure worth retrying later.
+func (s *Session) coverBytes(uid, thumbHash string) ([]byte, error) {
 	if uid == "" {
 		return nil, ErrNoCover
 	}
-	hash := ""
-	if row, err := s.Tie.Get(uid); err == nil {
-		hash = client.RowFirst(row, "thumbnail")
+	row, _ := s.Tie.Get(uid) // an absent subject yields a zero Row
+	if thumbHash == "" {
+		thumbHash = client.RowFirst(row, "thumbnail")
 	}
-	if hash == "" {
-		hash = s.dirCoverHash(uid)
+	if thumbHash != "" {
+		return s.fetchBlob(thumbHash)
 	}
-	if hash == "" {
-		return nil, ErrNoCover
+	// ReadTieDir on a non-directory subject yields an empty listing rather
+	// than an error, so a standalone track falls through to probing itself.
+	if dir, err := client.ReadTieDir(s.Tie, client.DirUID(uid)); err == nil {
+		if hash := dirCoverHash(dir); hash != "" {
+			return s.fetchBlob(hash)
+		}
+		if hash := firstTrackHash(dir); hash != "" {
+			pic, err := s.trackEmbeddedCover(hash)
+			if err != nil || pic != nil {
+				return pic, err
+			}
+			return nil, ErrNoCover
+		}
 	}
-	return s.fetchBlob(hash)
+	if isAudioRow(row) {
+		pic, err := s.trackEmbeddedCover(uid)
+		if err != nil || pic != nil {
+			return pic, err
+		}
+	}
+	return nil, ErrNoCover
 }
 
 // dirCoverHash finds a cover image among an album dir's children, preferring a
 // file named cover/folder/front, else the first image. Returns "" if none.
-func (s *Session) dirCoverHash(uid string) string {
-	dir, err := client.ReadTieDir(s.Tie, client.DirUID(uid))
-	if err != nil {
-		return ""
-	}
+func dirCoverHash(dir client.Directory) string {
 	var first string
 	for _, f := range dir.Files {
 		if !isImageFile(f) {
@@ -193,6 +211,51 @@ func (s *Session) dirCoverHash(uid string) string {
 		}
 	}
 	return first
+}
+
+// firstTrackHash returns the content hash of the album dir's first audio file
+// in filename order — rips are almost always track-number-prefixed, so this
+// is the album's first track, the one probed for an embedded cover. "" when
+// the dir holds no audio files.
+func firstTrackHash(dir client.Directory) string {
+	hash, name := "", ""
+	for _, f := range dir.Files {
+		if !isAudioFile(f) {
+			continue
+		}
+		if hash == "" || f.Filename < name {
+			hash, name = f.Uid, f.Filename
+		}
+	}
+	return hash
+}
+
+// isAudioRow reports whether a subject's triples mark it an audio file, using
+// the raw multi-valued tie-type (a collapsed single TieType is unreliable).
+func isAudioRow(row client.Row) bool {
+	if slices.Contains(client.RowValues(row, client.TieTypeProperty.String()), client.TieAudioFile.String()) {
+		return true
+	}
+	return strings.HasPrefix(client.RowFirst(row, client.TieMediaType.String()), "audio/")
+}
+
+// trackEmbeddedCover fetches a track's blob and returns its first embedded
+// picture's bytes, or (nil, nil) when the track has none — including when its
+// tags are unreadable: the blob downloaded fine, so a retry would change
+// nothing. A download error is returned so the caller retries later.
+func (s *Session) trackEmbeddedCover(hash string) ([]byte, error) {
+	data, err := s.fetchBlob(hash)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := tag.ReadFrom(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil
+	}
+	if pic := meta.Picture(); pic != nil {
+		return pic.Data, nil
+	}
+	return nil, nil
 }
 
 func isImageFile(f client.File) bool {

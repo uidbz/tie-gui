@@ -924,8 +924,10 @@ to `coverMaxEdge` (512) and the cache is bounded (`coverLimit` = 120, insertion
   forces the queue's play indicator to be a label rather than an icon.
 - Resolution: `Session.CoverBytesForUID(uid)` → the album's own `thumbnail`
   relation, else `dirCoverHash` (a `cover.*`/`folder.*`/`front.*` child, else
-  the first image). A collection switch clears the store and re-points its
-  session (`settings.go`).
+  the first image), else the first track's embedded picture
+  (`trackEmbeddedCover`: the first audio file of a directory album in
+  filename order, or the track itself for a standalone track). A collection
+  switch clears the store and re-points its session (`settings.go`).
 
 `data.Track.AlbumUID` is what artwork and grouping key off: `TrackForHash`
 takes it from the track's `tie-parent` edges, `AlbumTracks` overrides it with
@@ -1063,7 +1065,12 @@ resolution, upload dedup, the session cache and the host-keyed cache.
 `archive_integration_test.go` skips unless the tie test-env runs and verifies
 the flow end to end with real tagged FLAC fixtures
 (`testdata/archive-src/`): parsed tags, byte-identical member streaming, and
-the cover thumbnail relation.
+the cover thumbnail relation. `cover_test.go` / `cover_integration_test.go`
+cover the album-cover resolution chain, including the embedded-picture
+fallback (fixture `testdata/track-with-cover.flac`, a tagged FLAC with an
+embedded cover). Integration configs must set `cfg.DefaultCollection` (not
+just `cfg.Collection`) — `NewTieClient` binds the former, and the library
+default points at the user's real server via their config file.
 
 ---
 
