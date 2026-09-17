@@ -37,7 +37,7 @@ func newQueueTitleCell(covers *coverStore) *queueTitleCell {
 	c.headerBox = container.NewBorder(nil, nil,
 		container.NewGridWrap(fyne.NewSize(groupCoverSize, groupCoverSize), c.cover),
 		nil,
-		container.NewVBox(c.albumTitle, c.albumDetail),
+		container.New(twoLineLayout{}, c.albumTitle, c.albumDetail),
 	)
 
 	c.ExtendBaseWidget(c)

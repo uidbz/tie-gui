@@ -197,6 +197,52 @@ func (q *queueList) setTracks(tracks []data.Track, current int) {
 	}
 }
 
+// twoLineLayout stacks the title and subtitle labels of a fixed-height list
+// row. A plain VBox gives each label its full padded MinSize (~35 px with the
+// default theme), which is taller than the 48 px track row: the second line
+// was pushed below the row's bottom edge and overlapped the next row. This
+// layout instead gives each label an equal slice of the row and shifts it up
+// by its inner padding, so the two *text* lines — not the padded label boxes
+// — sit centered in the row.
+type twoLineLayout struct{}
+
+func (twoLineLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	visible := make([]fyne.CanvasObject, 0, len(objects))
+	for _, o := range objects {
+		if o.Visible() {
+			visible = append(visible, o)
+		}
+	}
+	if len(visible) == 0 {
+		return
+	}
+	pad := theme.InnerPadding()
+	lineH := size.Height / float32(len(visible))
+	y := float32(0)
+	for _, o := range visible {
+		m := o.MinSize()
+		// Center the text within its slice: the label draws its text pad
+		// below the box top, so the box is shifted up by pad.
+		o.Move(fyne.NewPos(0, y+(lineH-(m.Height-2*pad))/2-pad))
+		o.Resize(fyne.NewSize(size.Width, m.Height))
+		y += lineH
+	}
+}
+
+func (twoLineLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	pad := theme.InnerPadding()
+	min := fyne.NewSize(0, 0)
+	for _, o := range objects {
+		if !o.Visible() {
+			continue
+		}
+		m := o.MinSize()
+		min.Width = fyne.Max(min.Width, m.Width)
+		min.Height += m.Height - 2*pad // the text lines, without the padding
+	}
+	return min
+}
+
 // queueListRow renders either shape of row. One widget serves both so the list
 // can recycle items freely: the unused variant is simply hidden.
 type queueListRow struct {
@@ -235,7 +281,7 @@ func newQueueListRow(owner *queueList) *queueListRow {
 	r.albumBox = container.NewBorder(nil, nil,
 		container.NewGridWrap(fyne.NewSize(groupCoverSize, groupCoverSize), r.cover),
 		r.albumMenu,
-		container.NewVBox(r.albumTitle, r.albumDetail),
+		container.New(twoLineLayout{}, r.albumTitle, r.albumDetail),
 	)
 
 	r.indicator = widget.NewLabel("")
@@ -249,7 +295,7 @@ func newQueueListRow(owner *queueList) *queueListRow {
 	r.trackBox = container.NewBorder(nil, nil,
 		container.NewHBox(r.indicator, r.trackNo),
 		container.NewHBox(r.duration, r.handle),
-		container.NewVBox(r.title, r.subtitle),
+		container.New(twoLineLayout{}, r.title, r.subtitle),
 	)
 
 	r.ExtendBaseWidget(r)

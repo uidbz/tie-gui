@@ -3,6 +3,12 @@ package ui
 import (
 	"testing"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
@@ -113,5 +119,65 @@ func TestBuildQueueRowsFallbackGrouping(t *testing.T) {
 func TestBuildQueueRowsEmpty(t *testing.T) {
 	if rows := buildQueueRows(nil); len(rows) != 0 {
 		t.Fatalf("buildQueueRows(nil) = %v, want empty", rows)
+	}
+}
+
+// The 48 px track row cannot hold two full-height labels (~35 px each with
+// the default theme): with a VBox the artist line was pushed below the row
+// and overlapped the next track. Both text lines must land inside the row.
+func TestTwoLineLayoutFitsRowHeight(t *testing.T) {
+	test.NewApp()
+
+	for _, height := range []float32{queueTrackRowHeight, queueAlbumRowHeight} {
+		title := widget.NewLabel("Track title")
+		subtitle := widget.NewLabel("Artist name")
+		box := container.New(twoLineLayout{}, title, subtitle)
+		box.Resize(fyne.NewSize(200, height))
+
+		pad := theme.InnerPadding()
+		textRect := func(l *widget.Label) (top, bottom float32) {
+			return l.Position().Y + pad, l.Position().Y + l.Size().Height - pad
+		}
+		titleTop, titleBottom := textRect(title)
+		subTop, subBottom := textRect(subtitle)
+
+		if titleTop < 0 {
+			t.Errorf("row %v: title text starts at %v, above the row", height, titleTop)
+		}
+		if subBottom > height {
+			t.Errorf("row %v: subtitle text ends at %v, below the row", height, subBottom)
+		}
+		if subTop < titleBottom {
+			t.Errorf("row %v: subtitle text (top %v) overlaps title text (bottom %v)", height, subTop, titleBottom)
+		}
+	}
+}
+
+// The layout above only helps if the rows actually use it: the compact list's
+// track row and album header, and the desktop table's header cell.
+func TestQueueRowsUseTwoLineLayout(t *testing.T) {
+	test.NewApp()
+
+	usesTwoLine := func(box *fyne.Container) bool {
+		for _, o := range box.Objects {
+			if c, ok := o.(*fyne.Container); ok {
+				if _, ok := c.Layout.(twoLineLayout); ok {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	row := newQueueListRow(&queueList{page: &queuePage{}})
+	if !usesTwoLine(row.trackBox) {
+		t.Error("compact track row does not use twoLineLayout for title/subtitle")
+	}
+	if !usesTwoLine(row.albumBox) {
+		t.Error("compact album header does not use twoLineLayout for title/detail")
+	}
+	cell := newQueueTitleCell(nil)
+	if !usesTwoLine(cell.headerBox) {
+		t.Error("desktop album header cell does not use twoLineLayout for title/detail")
 	}
 }
