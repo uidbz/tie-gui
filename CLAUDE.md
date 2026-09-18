@@ -22,8 +22,8 @@ Fyne fork — hence the monorepo.
 | `gallery/helper.go` | File-type detection utilities (extracted from imageview.go in Phase 1) |
 | `gallery/apphelper.go` | Shared app bootstrap helpers (Phase 4) |
 | `gallery/platform.go` | Mobile vs desktop platform abstraction (Phase 5) + `CompactLayout` width threshold |
-| `gallery/drawer.go` | Slide-over sidebar drawer (`SidebarDrawer`), the phone alternative to the sidebar `HSplit` |
-| `gallery/filterchips.go` | Filter summary chip row above the grid (`SetFilterChips`, `TagFilterChips`) |
+| `gallery/drawer.go` | Slide-over sidebar drawer (`SidebarDrawer`), the phone alternative to the sidebar `HSplit`; `Gallery.DrawerObject()` exposes the overlay so an app-level view can stack the same drawer over its own content |
+| `gallery/filterchips.go` | Filter summary chip row above the grid (`SetFilterChips`, `TagFilterChips`); `FilterChipRow` renders a chip list for app-level views that replace the grid |
 | `gallery/extension.go` | Extension interface documentation (Phase 6) |
 | `tagselection/` | Tag-picker widget used by tie-view sidebar, image tagger, and tie-fm tag panel |
 | `tagselection/trie/` | 256-ary prefix trie backing tag search |
@@ -854,6 +854,56 @@ album-grouped list, and the transport a mini bar plus a full-screen Now
 Playing page. `App.showBrowseView` is the shared back target;
 `shellWindow.SetBottom` swaps the pinned bottom bar without touching the
 window content.
+
+---
+
+## tie-audio browse wall table view (`cmd/tie-audio/internal/ui/walltable.go`)
+
+The browse wall can render its albums two ways, and the user chooses between
+them: the cover grid (default) or a sortable **table** listing the same
+albums. The toggle is the gallery ☰ menu's "Table view" item (cover mode) and
+the table's own "Cover view" button in its top button row; the choice
+persists as `AppConfig.BrowseView` (`covers` | `table`, preserved across
+settings saves like the column sets).
+
+- **One listing, two renderings.** Every wall feed (tag query, latest,
+  directory listing, clear) records its `[]data.Album` on the browse page via
+  `setWallAlbums` (feed goroutines hand off with `fyne.Do`), then calls
+  `showWall`, which routes to `viewer.ChangeGallery()` (covers) or
+  `showWallTable()` (table). `showBrowse` is view-aware the same way, so Back
+  from an open album returns to the active rendering; a layout-mode switch
+  keeps it too (`showCurrentView` → `showBrowse`).
+- **The table** (`wallTable`, mirroring `trackTable` on the shared
+  `tablewidget`): columns `cover`/`title`/`artist`/`year`/`kind`
+  (`allWallColumns`; compact layout uses `compactWallColumns` = cover, title,
+  artist with no Columns dialog, like the album view). The Columns dialog
+  (regular layout) persists to `AppConfig.WallColumns`. Header-click sorting
+  re-sorts the table's own album slice via the FlexTable `OnSort` hook and is
+  re-applied when a fresh listing arrives, so a reload keeps the order.
+  A row tap opens the album (`openAlbum`); a secondary tap opens the same
+  Play/Add-to-playlist popup as a cover tile (`showAlbumMenu`, which now
+  takes any `fyne.CanvasObject` for positioning).
+- **Row/cell consistency:** the Art column's cell *text* is the album UID and
+  cells render via `FlexTable.CellText(col, row)` (the cover cell reads the
+  UID back from it), so the TableWidget's in-page filter, its pagination
+  (1000/page) and sorting can never desync a displayed cell from its album.
+  Activation maps display rows back with `albumAt` (`table.Offset + row`,
+  already filter-translated by the TableWidget).
+- **View composition** (`wallTableRoot`): in the regular layout the sidebar
+  is re-parented into the table's own `HSplit` (the gallery's tree is
+  off-screen; only one tree is ever attached to the canvas). In the compact
+  layout the table gets a locally built `gallery.FilterChipRow` above it and
+  the gallery's sidebar drawer is stacked over it via the new
+  `Gallery.DrawerObject()` accessor, so `OpenSidebar`/`CloseSidebar`/
+  `SidebarOpen` (and the Back-key unwind) work unchanged over the table.
+  `gallery.FilterChipRow` is the exported renderer `SetFilterChips` now
+  shares. The table view has no cover→queue drag and no swipe gestures (the
+  compact nav bar covers navigation).
+- Tests: `walltable_test.go` (columns, cell values, sort, offset mapping,
+  re-sort on re-feed) and `walltable_smoke_test.go` (live integration against
+  the tie test-env — skips when it is down, self-seeds two fixture albums
+  tagged `smoketest` on first run — driving the full App through feed, sort,
+  open, back and both toggle directions).
 
 ---
 

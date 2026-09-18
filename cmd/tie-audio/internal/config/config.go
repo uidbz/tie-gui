@@ -47,6 +47,15 @@ type AppConfig struct {
 	// QueueColumns is the ordered set of visible column keys for the play queue
 	// table, configured independently of AlbumColumns. Empty means the default.
 	QueueColumns []string
+	// BrowseView selects how the browse wall renders its albums: BrowseCovers
+	// (the cover grid) or BrowseTable (a sortable table listing the same
+	// albums). Empty means BrowseCovers. Toggled from the gallery ☰ menu and
+	// the table view's own button row.
+	BrowseView string
+	// WallColumns is the ordered set of visible column keys for the browse
+	// wall's table view (e.g. "cover", "title", "artist", "year", "kind").
+	// Empty means the built-in default set and order.
+	WallColumns []string
 	// Layout pins the UI layout instead of deriving it from the window width:
 	// LayoutCompact for the phone layout (drawer sidebar, grouped playlist,
 	// mini bar + Now Playing page), LayoutRegular for the split layout.
@@ -146,6 +155,12 @@ const (
 	StartupFavorites = "favorites" // albums tagged "favorite"
 	StartupPlaylists = "playlists" // saved playlists
 	StartupTag       = "tag"       // albums tagged StartupTag
+)
+
+// BrowseView values for AppConfig.BrowseView.
+const (
+	BrowseCovers = "covers" // cover grid (the default)
+	BrowseTable  = "table"  // sortable table of the same albums
 )
 
 // Default returns the built-in defaults used before any config file exists.

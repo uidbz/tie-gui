@@ -301,8 +301,9 @@ func (t *tieFSTree) showListing(dir client.Directory) {
 		}
 		albums = append(albums, data.Album{UID: a.Hash, Kind: data.AlbumArchive, Title: a.Filename})
 	}
+	t.page.setWallAlbums(albums)
 	t.page.viewer.ReadCustomAsync(func() []gallery.CustomReader { return t.page.readers(albums) })
-	t.page.viewer.ChangeGallery()
+	t.page.showWall()
 }
 
 // subTitle resolves a subdirectory's display title: its own "album" or

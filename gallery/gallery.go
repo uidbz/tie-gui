@@ -385,6 +385,20 @@ func (viewer *Gallery) SidebarOpen() bool {
 	return viewer.Sidebar != nil
 }
 
+// DrawerObject returns the sidebar drawer's overlay object in drawer mode, so
+// an app-level view that replaces the gallery grid (e.g. tie-audio's album
+// table view) can stack the same drawer over its own content — OpenSidebar /
+// CloseSidebar / SidebarOpen keep working regardless of which view parents it.
+// The object must only ever be on screen in one parent at a time (the gallery
+// grid and the replacing view are swapped via window content, never shown
+// together). Nil in split mode or when there is no sidebar.
+func (viewer *Gallery) DrawerObject() fyne.CanvasObject {
+	if viewer.drawer == nil {
+		return nil
+	}
+	return viewer.drawer.object
+}
+
 // updateSidebarToggle re-labels the bottom-bar sidebar button for the current
 // state: an arrow pointing the way the split pane will move, or a filter icon
 // in drawer mode (where the panel slides over the grid rather than beside it).

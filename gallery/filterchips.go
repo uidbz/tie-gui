@@ -50,6 +50,29 @@ func TagFilterChips(include, exclude []string, remove func(tag string)) []Filter
 	return chips
 }
 
+// FilterChipRow renders a chip list as a horizontally scrollable row — the
+// same rendering SetFilterChips places above the grid — for app-level views
+// that replace the gallery grid but keep the filter summary (e.g. tie-audio's
+// album table view). onTap is the row's own action (typically: open the tag
+// picker). Returns nil when there are no chips, so the caller can skip the row.
+func FilterChipRow(chips []FilterChip, onTap func()) fyne.CanvasObject {
+	if len(chips) == 0 {
+		return nil
+	}
+	objects := make([]fyne.CanvasObject, 0, len(chips)+1)
+	if onTap != nil {
+		// A leading affordance that opens the picker, so the row is useful even
+		// when every chip's own tap is taken by its remove button.
+		edit := widget.NewButtonWithIcon("", theme.SearchIcon(), onTap)
+		edit.Importance = widget.LowImportance
+		objects = append(objects, edit)
+	}
+	for _, chip := range chips {
+		objects = append(objects, newFilterChipButton(chip, onTap))
+	}
+	return container.NewHScroll(container.NewHBox(objects...))
+}
+
 // rebuildFilterChips repopulates the chip row from the stored chips. It is a
 // no-op until CreateView has built the row's container.
 func (viewer *Gallery) rebuildFilterChips() {
@@ -57,25 +80,14 @@ func (viewer *Gallery) rebuildFilterChips() {
 	if row == nil {
 		return
 	}
-	if len(viewer.filterChips) == 0 {
+	content := FilterChipRow(viewer.filterChips, viewer.filterChipsOnTap)
+	if content == nil {
 		row.Hide()
 		viewer.refreshFilterChipParent()
 		return
 	}
 
-	objects := make([]fyne.CanvasObject, 0, len(viewer.filterChips)+1)
-	if viewer.filterChipsOnTap != nil {
-		// A leading affordance that opens the picker, so the row is useful even
-		// when every chip's own tap is taken by its remove button.
-		edit := widget.NewButtonWithIcon("", theme.SearchIcon(), viewer.filterChipsOnTap)
-		edit.Importance = widget.LowImportance
-		objects = append(objects, edit)
-	}
-	for _, chip := range viewer.filterChips {
-		objects = append(objects, newFilterChipButton(chip, viewer.filterChipsOnTap))
-	}
-
-	row.Objects = []fyne.CanvasObject{container.NewHScroll(container.NewHBox(objects...))}
+	row.Objects = []fyne.CanvasObject{content}
 	row.Show()
 	row.Refresh()
 	viewer.refreshFilterChipParent()

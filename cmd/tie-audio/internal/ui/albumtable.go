@@ -80,8 +80,11 @@ func lookupAlbumColumn(key string, available []albumColumn) (albumColumn, bool) 
 	return albumColumn{}, false
 }
 
-func albumColumnTitle(key string) string {
-	if c, ok := lookupAlbumColumn(key, allAlbumColumns); ok {
+// albumColumnTitleIn maps a column key to its human title against a
+// caller-supplied catalog (the track table and the wall table use different
+// column sets), falling back to the raw key.
+func albumColumnTitleIn(key string, available []albumColumn) string {
+	if c, ok := lookupAlbumColumn(key, available); ok {
 		return c.title
 	}
 	return key
@@ -565,7 +568,7 @@ func (at *trackTable) hideInsertionLine() { at.table.GetFlexTable().HideInsertio
 const indicatorWidth float32 = 32
 
 func columnFixedWidth(key string) float32 {
-	fixed := map[string]float32{"cover": 44, "trackno": 70, "year": 70, "duration": 90, "artist": 180, "album": 180}
+	fixed := map[string]float32{"cover": 44, "trackno": 70, "year": 70, "duration": 90, "artist": 180, "album": 180, "kind": 80}
 	if w := fixed[key]; w > 0 {
 		return w
 	}
@@ -650,15 +653,28 @@ func (at *trackTable) setColumns(keys []string) {
 // showColumnsDialog lets the user toggle and reorder columns. The working list
 // holds every available column (visible ones first, in their current order,
 // then hidden ones); a checkbox selects visibility and the up/down buttons
-// reorder. The applied visible set is the checked columns in list order.
+// reorder. apply is called with the checked columns in list order.
 func (at *trackTable) showColumnsDialog() {
-	order := make([]string, 0, len(at.opts.availableCols))
+	showTableColumnsDialog(at.win, at.cols, at.opts.availableCols, func(keys []string) {
+		at.setColumns(keys)
+		if at.onColumnsChanged != nil {
+			at.onColumnsChanged(keys)
+		}
+	})
+}
+
+// showTableColumnsDialog is the column toggle/reorder dialog shared by the
+// track table and the browse wall's album table: visible lists the currently
+// shown columns in order, available the full catalog, and apply receives the
+// new visible key set on Apply.
+func showTableColumnsDialog(win fyne.Window, visible, available []albumColumn, apply func(keys []string)) {
+	order := make([]string, 0, len(available))
 	checks := map[string]bool{}
-	for _, c := range at.cols {
+	for _, c := range visible {
 		order = append(order, c.key)
 		checks[c.key] = true
 	}
-	for _, c := range at.opts.availableCols {
+	for _, c := range available {
 		if !checks[c.key] {
 			order = append(order, c.key)
 		}
@@ -670,7 +686,7 @@ func (at *trackTable) showColumnsDialog() {
 		list.RemoveAll()
 		for i, key := range order {
 			key, idx := key, i
-			chk := widget.NewCheck(albumColumnTitle(key), func(b bool) { checks[key] = b })
+			chk := widget.NewCheck(albumColumnTitleIn(key, available), func(b bool) { checks[key] = b })
 			chk.SetChecked(checks[key])
 			up := widget.NewButtonWithIcon("", theme.MoveUpIcon(), func() {
 				if idx > 0 {
@@ -707,14 +723,11 @@ func (at *trackTable) showColumnsDialog() {
 			}
 		}
 		if len(keys) == 0 {
-			dialog.ShowInformation("Columns", "Select at least one column.", at.win)
+			dialog.ShowInformation("Columns", "Select at least one column.", win)
 			return
 		}
-		at.setColumns(keys)
-		if at.onColumnsChanged != nil {
-			at.onColumnsChanged(keys)
-		}
-	}, at.win)
+		apply(keys)
+	}, win)
 	d.Resize(fyne.NewSize(360, 420))
 	d.Show()
 }

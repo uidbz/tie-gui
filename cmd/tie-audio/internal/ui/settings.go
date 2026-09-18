@@ -130,14 +130,17 @@ func (a *App) buildSettingsTab() *container.TabItem {
 			PwplayServer: server.Text,
 			TieConfig:    tieCfg.Text,
 			FileHost:     fileHost.Text,
-			// Preserve the collection selection, column customization and
-			// layout override: the collection is picked via the connection
-			// editor below, columns from the album/queue views, and the layout
-			// from its own select (which applies immediately); rebuilding from
-			// scratch would drop all three.
+			// Preserve the collection selection, column customization, wall view
+			// choice and layout override: the collection is picked via the
+			// connection editor below, columns from the album/queue/wall views, the
+			// wall view from its own toggle, and the layout from its own select
+			// (which applies immediately); rebuilding from scratch would drop all
+			// of them.
 			TieCollection: a.session.Cfg.TieCollection,
 			AlbumColumns:  a.session.Cfg.AlbumColumns,
 			QueueColumns:  a.session.Cfg.QueueColumns,
+			BrowseView:    a.session.Cfg.BrowseView,
+			WallColumns:   a.session.Cfg.WallColumns,
 			Layout:        a.session.Cfg.Layout,
 			StartupPage:   startupPageFor(startup.Selected),
 			StartupTag:    startupTag.Text,

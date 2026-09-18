@@ -49,6 +49,13 @@ type browsePage struct {
 	album     data.Album
 	albumOpen bool
 
+	// albums is the wall's current listing, recorded by every feed so the
+	// table view (walltable.go) renders the same albums as the cover grid.
+	// wallTable is the table rendering, built lazily on first use (eagerly
+	// when the config starts the app in table mode).
+	albums    []data.Album
+	wallTable *wallTable
+
 	// transport is the shared playback controller, used to feed now-playing
 	// labels when albums are played or enqueued. Wired by the App shell.
 	transport *player
@@ -97,7 +104,8 @@ type browsePage struct {
 
 // newBrowsePage builds the cover wall and its sidebar for the given session.
 // The gallery owns the window content; sub-views (album, settings) swap it via
-// window.SetContent and restore the wall with viewer.ChangeGallery.
+// window.SetContent and restore the wall with showWall (which renders the
+// cover grid or the album table per the configured BrowseView).
 func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers *coverStore, compact bool) *browsePage {
 	b := &browsePage{app: app, win: win, session: session, covers: covers, compact: compact}
 
@@ -142,17 +150,32 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 		return []*fyne.MenuItem{
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
 			fyne.NewMenuItem("Reload albums", b.reloadWall),
+			// Swap the cover grid for a sortable table of the same albums;
+			// the table view's own button row carries the way back.
+			fyne.NewMenuItem("Table view", b.toggleWallView),
 		}
 	}
 	b.viewer.ToggleLabels() // album titles under covers, on by default
+
+	// Configured to start in table mode: build the table now so Content can
+	// return it as the initial view.
+	if b.tableMode() {
+		b.wallTable = newWallTable(b)
+	}
 
 	b.viewer.LoadGallery()
 	b.viewer.CreateView()
 	return b
 }
 
-// Content is the gallery's root object, used as the window's initial content.
-func (b *browsePage) Content() fyne.CanvasObject { return b.viewer.Content }
+// Content is the browse page's root object, used as the window's initial
+// content: the gallery's root in cover mode, the album table in table mode.
+func (b *browsePage) Content() fyne.CanvasObject {
+	if b.tableMode() && b.wallTable != nil {
+		return b.wallTableRoot()
+	}
+	return b.viewer.Content
+}
 
 // setCompact switches the sidebar between the split pane and the slide-over
 // drawer, and (in the compact layout) turns on the filter chip row. The caller
@@ -164,6 +187,9 @@ func (b *browsePage) setCompact(compact bool) {
 	b.compact = compact
 	b.viewer.SidebarDrawer = compact
 	b.viewer.CreateView()
+	if b.wallTable != nil {
+		b.wallTable.setCompact(compact)
+	}
 	b.updateFilterChips()
 }
 
@@ -293,9 +319,10 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 			fmt.Println("Error querying albums:", err)
 			return nil
 		}
+		fyne.Do(func() { b.setWallAlbums(albums) })
 		return b.readers(albums)
 	})
-	b.viewer.ChangeGallery()
+	b.showWall()
 }
 
 // refreshLatest feeds the wall with every album in the collection, most
@@ -311,9 +338,10 @@ func (b *browsePage) refreshLatest() {
 			fmt.Println("Error querying latest albums:", err)
 			return nil
 		}
+		fyne.Do(func() { b.setWallAlbums(albums) })
 		return b.readers(albums)
 	})
-	b.viewer.ChangeGallery()
+	b.showWall()
 }
 
 // reloadWall re-runs whatever the browse page is currently showing: an open
@@ -387,6 +415,7 @@ func (b *browsePage) readers(albums []data.Album) []gallery.CustomReader {
 // renders when the user returns via showBrowse.
 func (b *browsePage) clearAlbums() {
 	b.feed = feedNone
+	b.setWallAlbums(nil)
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		return []gallery.CustomReader{}
 	})

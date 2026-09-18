@@ -9,8 +9,6 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/uidbz/tie-gui/gallery"
-
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
@@ -24,10 +22,11 @@ func (b *browsePage) openAlbum(a data.Album) {
 	}()
 }
 
-// showBrowse restores the cover wall as the window content.
+// showBrowse restores the browse wall as the window content, in its
+// configured rendering (cover grid or album table).
 func (b *browsePage) showBrowse() {
 	b.albumOpen = false
-	b.viewer.ChangeGallery()
+	b.showWall()
 }
 
 // showAlbumView replaces the page content with an album header and track list.
@@ -213,14 +212,15 @@ func (b *browsePage) reportPlaybackError(err error) {
 	dialog.ShowError(err, b.win)
 }
 
-// showAlbumMenu pops up Play/Add-to-queue actions over a cover-wall tile so an
-// album can be played without opening its track list first.
-func (b *browsePage) showAlbumMenu(tile *gallery.Tile, a data.Album) {
+// showAlbumMenu pops up Play/Add-to-queue actions over a cover-wall tile or an
+// album-table row (obj positions the popup) so an album can be played without
+// opening its track list first.
+func (b *browsePage) showAlbumMenu(obj fyne.CanvasObject, a data.Album) {
 	menu := fyne.NewMenu("",
 		fyne.NewMenuItem("Play album", func() { b.albumAction(a, true) }),
 		fyne.NewMenuItem("Add to playlist", func() { b.albumAction(a, false) }),
 	)
-	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(tile)
+	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(obj)
 	widget.ShowPopUpMenuAtPosition(menu, b.win.Canvas(), pos)
 }
 
