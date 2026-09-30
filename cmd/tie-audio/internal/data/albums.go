@@ -382,6 +382,14 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 // re-imported later resurfaces at the top. Untagged albums are included: the
 // match runs on tie-type, not on tags.
 func (s *Session) LatestAlbums() ([]Album, error) {
+	return s.LatestAlbumsExcluding(nil)
+}
+
+// LatestAlbumsExcluding is LatestAlbums without the albums carrying any of the
+// exclude tags — the wall for a tag selection that only excludes (there is
+// no include term to query by, so the full listing is filtered client-side
+// from the expanded tag attributes).
+func (s *Session) LatestAlbumsExcluding(exclude []string) ([]Album, error) {
 	var rows []client.Row
 	for _, tieType := range []string{client.TieAudioDir.String(), client.TieAudioArchive.String()} {
 		r, _, err := s.Tie.Query(client.QuerySpec{
@@ -404,11 +412,24 @@ func (s *Session) LatestAlbums() ([]Album, error) {
 	})
 	albums := make([]Album, 0, len(rows))
 	for _, row := range rows {
+		if len(exclude) > 0 && hasAnyTag(row, exclude) {
+			continue
+		}
 		if a, ok := classifyAlbum(row); ok {
 			albums = append(albums, a)
 		}
 	}
 	return albums, nil
+}
+
+// hasAnyTag reports whether the row carries one of the given tags.
+func hasAnyTag(row client.Row, tags []string) bool {
+	for _, t := range client.RowValues(row, "tag") {
+		if slices.Contains(tags, t) {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyAlbum(row client.Row) (Album, bool) {

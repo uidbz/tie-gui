@@ -170,6 +170,9 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 		return []*fyne.MenuItem{
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
 			fyne.NewMenuItem("Reload albums", b.reloadWall),
+			// The full listing from anywhere (a tag wall, a Files directory):
+			// clears the tag selection, which feeds the latest albums.
+			fyne.NewMenuItem("Latest albums", b.showLatest),
 			// Swap the cover grid for a sortable table of the same albums;
 			// the table view's own button row carries the way back.
 			fyne.NewMenuItem(viewLabel, b.toggleWallView),
@@ -302,7 +305,15 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 		// a pick returns the user to the results; the chip row (and the Tags
 		// button) get them back here.
 		b.closeSidebar()
-		b.refreshAlbums(in, ex)
+		if len(in) == 0 {
+			// Nothing narrows the wall any more: show every album (newest
+			// first, minus any excluded tags) instead of an empty wall — a
+			// cleared selection used to leave no way back to the full
+			// listing.
+			b.refreshLatest()
+		} else {
+			b.refreshAlbums(in, ex)
+		}
 		go b.refineTags(in, ex)
 	}
 
@@ -406,14 +417,16 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 }
 
 // refreshLatest feeds the wall with every album in the collection, most
-// recently imported first (the startup "latest" page).
+// recently imported first (the startup "latest" page, and the wall for an
+// empty tag selection). Excluded tags in the current selection still apply.
 func (b *browsePage) refreshLatest() {
+	_, exclude := b.ts.SelectedTags()
 	b.fsTree.mu.Lock()
 	b.fsTree.currentDir = ""
 	b.fsTree.mu.Unlock()
 	b.feed = feedLatest
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		albums, err := b.session.LatestAlbums()
+		albums, err := b.session.LatestAlbumsExcluding(exclude)
 		if err != nil {
 			fmt.Println("Error querying latest albums:", err)
 			return nil
@@ -422,6 +435,16 @@ func (b *browsePage) refreshLatest() {
 		return b.readers(albums)
 	})
 	b.showWall()
+}
+
+// showLatest returns the wall to every album, newest first: the tag selection
+// is cleared (its chips too) and the latest feed runs.
+func (b *browsePage) showLatest() {
+	b.ts.SetSelected(nil)
+	b.updateFilterChips()
+	b.albumOpen = false
+	b.refreshLatest()
+	go b.refineTags(nil, nil)
 }
 
 // reloadWall re-runs whatever the browse page is currently showing: an open

@@ -147,6 +147,24 @@ func TestCompactNavLiveIntegration(t *testing.T) {
 	if a.browse.albumOpen {
 		t.Error("Albums tab did not close the open album")
 	}
+
+	// Clearing the tag selection must not leave an empty wall: it falls back
+	// to the latest albums (every album, newest first).
+	a.browse.ts.RemoveSelected(smokeTag)
+	waitForCond(t, "latest albums after clearing the tags", func() bool {
+		return a.browse.feed == feedLatest && len(a.browse.albums) >= 2
+	})
+	// The ☰ "Latest albums" item gets there from a tag wall too.
+	a.browse.ts.SetSelected([]string{smokeTag})
+	a.browse.refreshAlbums([]string{smokeTag}, nil)
+	waitForCond(t, "tag wall", func() bool { return a.browse.feed == feedTags })
+	a.browse.showLatest()
+	if in, ex := a.browse.ts.SelectedTags(); len(in)+len(ex) != 0 {
+		t.Errorf("showLatest left a selection: %v / %v", in, ex)
+	}
+	waitForCond(t, "latest albums from the menu", func() bool {
+		return a.browse.feed == feedLatest && len(a.browse.albums) >= 2
+	})
 }
 
 // The nav bar highlights exactly one destination (never the ☰ slot), and the

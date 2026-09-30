@@ -906,6 +906,14 @@ pages select their tag in the sidebar via `SetSelected` (no
 `OnSelectedChanged`, and no co-tag refinement — the full tag list stays
 until the user changes the selection).
 
+**Empty selection = latest albums:** a tag selection with no *included*
+tag (cleared, or exclude-only) feeds the wall with the latest albums instead
+of an empty query result (`OnSelectedChanged` → `refreshLatest`, which
+applies the selection's excluded tags client-side via
+`Session.LatestAlbumsExcluding`). The ☰ menu's "Latest albums"
+(`browsePage.showLatest`) clears the selection and gets there from any
+wall, including a Files directory listing.
+
 **Compact vs regular layout:** see "tie-audio compact layout" below — on a
 phone-width window the sidebar becomes a slide-over drawer, the queue an
 album-grouped list, and the transport a mini bar plus a full-screen Now
