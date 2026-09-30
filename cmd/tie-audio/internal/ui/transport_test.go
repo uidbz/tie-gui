@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image"
 	"sync"
 	"testing"
 	"time"
@@ -77,8 +78,8 @@ func TestPlayerApplyDoesNotEchoToBackend(t *testing.T) {
 
 	backend := &fakeBackend{}
 	p := newPlayer(backend, nil)
-	p.AddView(newRegularBar(p))
-	p.AddView(newMiniBar(p, func() {}))
+	p.AddView(newRegularBar(p, nil))
+	p.AddView(newMiniBar(p, func() {}, func() {}))
 	p.AddView(newNowPlayingPage(p, func() {}))
 
 	p.apply(playback.Status{
@@ -105,7 +106,7 @@ func TestPlayerApplySkipsPositionWhileSeeking(t *testing.T) {
 	test.NewApp()
 
 	p := newPlayer(&fakeBackend{}, nil)
-	bar := newRegularBar(p)
+	bar := newRegularBar(p, nil)
 	p.AddView(bar)
 
 	p.apply(playback.Status{CurrentTrack: -1, Position: 10, TrackDuration: 100})
@@ -167,33 +168,60 @@ func TestPlayerSyncCoverRetriesUnknownTrack(t *testing.T) {
 	}
 }
 
-// The mini bar's volume row is hidden by default and shown by
-// setVolumeVisible (the compact playlist view turns it on); the slider tracks
-// the polled volume like every other view.
-func TestMiniBarVolumeRow(t *testing.T) {
+// The mini bar's volume row is always visible, and the slider tracks the
+// polled volume like every other view. The track line appears only while a
+// track is current.
+func TestMiniBarVolumeRowAndTitle(t *testing.T) {
 	test.NewApp()
 
 	p := newPlayer(&fakeBackend{}, nil)
-	bar := newMiniBar(p, func() {})
+	bar := newMiniBar(p, func() {}, func() {})
 	p.AddView(bar)
 
-	if bar.volRow.Visible() {
-		t.Error("volume row visible by default, want hidden")
-	}
-	bar.setVolumeVisible(true)
 	if !bar.volRow.Visible() {
-		t.Error("volume row not shown by setVolumeVisible(true)")
+		t.Error("volume row hidden, want always visible")
 	}
-	bar.setVolumeVisible(false)
-	if bar.volRow.Visible() {
-		t.Error("volume row not hidden by setVolumeVisible(false)")
+	if bar.title.Visible() {
+		t.Error("track line visible with nothing playing")
 	}
 
-	p.apply(playback.Status{Volume: 0.4})
+	p.SetQueue([]string{"http://h/abc"}, []data.Track{{Title: "Song", Artist: "Band"}})
+	p.apply(playback.Status{Volume: 0.4, Playlist: []string{"http://h/abc"}, CurrentTrack: 0, TotalTracks: 1})
 	if got := bar.volume.Value; got != 0.4 {
 		t.Errorf("volume slider = %v, want 0.4 after a poll", got)
 	}
+	if !bar.title.Visible() || bar.title.Text != "Song · Band" {
+		t.Errorf("track line = %q (visible %v), want %q", bar.title.Text, bar.title.Visible(), "Song · Band")
+	}
 }
+
+// transportState carries the queue position and the current track's hash
+// (nav badge, desktop "3 / 42", album-view play marker).
+func TestTransportStateQueueFields(t *testing.T) {
+	test.NewApp()
+	p := newPlayer(&fakeBackend{}, nil)
+	var got transportState
+	p.AddView(recordView{&got})
+	p.apply(playback.Status{Playlist: []string{"http://h/a", "http://h/b"}, CurrentTrack: 1, TotalTracks: 2})
+	if got.queueLen != 2 || got.queueIndex != 1 || got.trackHash != "b" {
+		t.Errorf("state = len %d idx %d hash %q, want 2, 1, %q", got.queueLen, got.queueIndex, got.trackHash, "b")
+	}
+	if s := queuePosition(got); s != "2 / 2" {
+		t.Errorf("queuePosition = %q, want %q", s, "2 / 2")
+	}
+	if s := queuePosition(transportState{queueLen: 5, queueIndex: -1}); s != "5 tracks" {
+		t.Errorf("queuePosition(no current) = %q, want %q", s, "5 tracks")
+	}
+	if s := queuePosition(transportState{queueIndex: -1}); s != "" {
+		t.Errorf("queuePosition(empty) = %q, want empty", s)
+	}
+}
+
+// recordView captures the last applied transportState.
+type recordView struct{ st *transportState }
+
+func (r recordView) apply(st transportState) { *r.st = st }
+func (r recordView) setCover(image.Image)    {}
 
 // closableBackend tracks Stop/Close for the SetBackend swap test.
 type closableBackend struct {
@@ -246,5 +274,27 @@ func TestPlayerSetBackend(t *testing.T) {
 	defer old.mu.Unlock()
 	if old.stops != 1 || old.closes != 1 {
 		t.Errorf("same-backend swap touched the old backend (stops=%d closes=%d)", old.stops, old.closes)
+	}
+}
+
+// The MPRIS model: stopped vs paused, next/previous availability, and no
+// track metadata while nothing is current.
+func TestMPRISState(t *testing.T) {
+	st := transportState{playing: false, hasTrack: true, title: "Song", artist: "Band",
+		trackHash: "h", queueLen: 3, queueIndex: 2, duration: 100, position: 5, volume: 1}
+	ms := mprisState(st, true, "file:///x.png")
+	if ms.Stopped || ms.Playing || !ms.HasTrack || ms.Title != "Song" || ms.ArtURL != "file:///x.png" {
+		t.Errorf("paused state = %+v", ms)
+	}
+	if ms.CanNext || !ms.CanPrev || !ms.RepeatAll {
+		t.Errorf("last track: CanNext %v CanPrev %v RepeatAll %v", ms.CanNext, ms.CanPrev, ms.RepeatAll)
+	}
+	st.stopped = true
+	if !mprisState(st, false, "").Stopped {
+		t.Error("stopped player not reported Stopped")
+	}
+	none := mprisState(transportState{title: "Nothing playing", queueIndex: -1}, false, "file:///x.png")
+	if !none.Stopped || none.Title != "" || none.ArtURL != "" {
+		t.Errorf("no track state = %+v", none)
 	}
 }

@@ -201,3 +201,32 @@ func TestTagFilterChips(t *testing.T) {
 		}
 	}
 }
+
+// A single-page gallery hides its pagination links; the bottom row itself
+// stays while a side button (sidebar toggle, ☰) remains, and disappears when
+// an embedding app hosts both elsewhere.
+func TestBottomRowSinglePage(t *testing.T) {
+	viewer := newDrawerTestGallery(t, true)
+	viewer.LoadGallery()
+	viewer.CreateView()
+	if viewer.bottomBar.Visible() {
+		t.Error("pagination links visible on a single-page gallery")
+	}
+	if !viewer.BottomBarVisible() {
+		t.Error("bottom row hidden although the toggle and ☰ are on it")
+	}
+
+	viewer.HideSidebarToggle = true
+	viewer.HideMenuButton = true
+	viewer.CreateView()
+	if viewer.BottomBarVisible() {
+		t.Error("bottom row visible with no pages and no side buttons")
+	}
+
+	// More than one page brings the links (and the row) back.
+	viewer.maxPages = 3
+	viewer.syncBottomRow()
+	if !viewer.bottomBar.Visible() || !viewer.BottomBarVisible() {
+		t.Error("multi-page gallery hid its pagination links")
+	}
+}

@@ -42,6 +42,9 @@ type queuePage struct {
 	back      func() // restore the album cover wall (compact back button)
 	// compact selects the grouped-list rendering over the table.
 	compact bool
+	// revealPending asks the next status refresh to scroll to the playing
+	// track (revealCurrentSoon).
+	revealPending bool
 
 	table     *trackTable
 	list      *queueList
@@ -141,17 +144,9 @@ func (q *queuePage) applyLayout() {
 	}
 	q.bodyHolder.Refresh()
 
-	// A left-edge rightward swipe returns to the cover wall (mirrors the
-	// gallery's left→right swipe); the strip sits above the content but only
-	// occupies the left edge, leaving the list free to scroll. It exists only
-	// in the compact layout, where the queue is a full-screen view.
-	base := q.object.Objects[0]
-	if q.compact {
-		strip := newEdgeSwipe(q.leave)
-		q.object.Objects = []fyne.CanvasObject{base, container.NewBorder(nil, nil, strip, nil, nil)}
-	} else {
-		q.object.Objects = []fyne.CanvasObject{base}
-	}
+	// The compact layout's edge swipes (back to the wall, on to Settings) are
+	// the App shell's (App.edgeOverlay), shared by every full-screen view.
+	q.object.Objects = []fyne.CanvasObject{q.object.Objects[0]}
 	q.object.Refresh()
 }
 
@@ -218,20 +213,18 @@ func (q *queuePage) playlistGapAt(displayGap int) int {
 
 // buildToolbar builds the top row: shuffle, repeat, save, clear, columns. The
 // compact layout drops the labels (and the Columns button, which configures a
-// table it does not show) and gains a back button, since the queue is a
-// full-screen view there.
+// table it does not show). It has no back button: the persistent nav bar's
+// Albums tab, the system Back key and the left-edge swipe all lead back.
 func (q *queuePage) buildToolbar() fyne.CanvasObject {
 	title := widget.NewLabelWithStyle("Playlist", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 
 	if q.compact {
-		back := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), q.leave)
-		back.Importance = widget.LowImportance
 		shuffle := widget.NewButtonWithIcon("", theme.MediaReplayIcon(), q.shuffle)
 		save := widget.NewButtonWithIcon("", theme.DocumentSaveIcon(), q.saveQueue)
 		clear := widget.NewButtonWithIcon("", theme.DeleteIcon(), q.clearPlaylist)
 		q.repeatBtn = widget.NewButton("", q.toggleRepeat)
 		q.refreshRepeatLabel()
-		row := container.NewBorder(nil, nil, back, container.NewHBox(shuffle, q.repeatBtn, save, clear), title)
+		row := container.NewBorder(nil, nil, nil, container.NewHBox(shuffle, q.repeatBtn, save, clear), title)
 		return container.NewVBox(row, widget.NewSeparator())
 	}
 
@@ -324,6 +317,10 @@ func (q *queuePage) applyStatus(s playback.Status) {
 	q.playlist = append(q.playlist[:0], s.Playlist...)
 	q.current = s.CurrentTrack
 	q.rebuildTracks()
+	if q.revealPending {
+		q.revealPending = false
+		q.revealCurrent()
+	}
 }
 
 // rebuildTracks resolves each playlist URL to its registered track metadata,
@@ -342,6 +339,32 @@ func (q *queuePage) rebuildTracks() {
 	}
 	q.table.setTracks(q.qtracks)
 	q.list.setTracks(q.qtracks, q.current)
+}
+
+// revealCurrentSoon scrolls to the playing track now and again once the
+// next status lands: opening the playlist refreshes it asynchronously, so
+// the row model may still be stale (or empty) at the time of the tap.
+func (q *queuePage) revealCurrentSoon() {
+	q.revealPending = true
+	q.revealCurrent()
+}
+
+// revealCurrent scrolls whichever rendering is live to the playing track —
+// the desktop cover-click and the compact cover-tap into the playlist.
+func (q *queuePage) revealCurrent() {
+	if q.current < 0 {
+		return
+	}
+	if q.compact {
+		q.list.reveal(q.current)
+		return
+	}
+	for i, r := range q.table.rows {
+		if r.kind == queueRowTrack && r.trackIndex == q.current {
+			q.table.table.GetFlexTable().ScrollToRow(i)
+			return
+		}
+	}
 }
 
 // queueLen is the number of entries in the queue, for drag clamping.

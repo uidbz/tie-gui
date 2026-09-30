@@ -3,6 +3,7 @@ package ui
 import (
 	"image"
 	"image/color"
+	"strconv"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -15,7 +16,7 @@ import (
 // Cover sizes, in Fyne device-independent pixels.
 const (
 	regularCoverSize = 44 // thumb in the desktop transport bar
-	miniCoverSize    = 64 // thumb in the compact mini bar
+	miniCoverSize    = 56 // thumb in the compact mini bar
 	queueCoverSize   = 32 // cell in the desktop queue's cover column
 	groupCoverSize   = 56 // album header in the compact grouped playlist
 )
@@ -71,31 +72,43 @@ type regularBar struct {
 	pos    *widget.Label
 	dur    *widget.Label
 	now    *widget.Label
+	// queuePos shows the current track's place in the playlist ("3 / 42").
+	queuePos *widget.Label
 }
 
-func newRegularBar(p *player) *regularBar {
+// newRegularBar builds the desktop bar. onCover, when set, fires on a click
+// on the cover thumb (the App scrolls the playlist pane to the playing
+// track).
+func newRegularBar(p *player, onCover func()) *regularBar {
 	b := &regularBar{
-		cover:  newCoverView(regularCoverSize),
-		seek:   p.newSeekSlider(),
-		volume: p.newVolumeSlider(),
-		pos:    widget.NewLabel("0:00"),
-		dur:    widget.NewLabel("0:00"),
-		now:    widget.NewLabel("Nothing playing"),
+		cover:    newCoverView(regularCoverSize),
+		seek:     p.newSeekSlider(),
+		volume:   p.newVolumeSlider(),
+		pos:      widget.NewLabel("0:00"),
+		dur:      widget.NewLabel("0:00"),
+		now:      widget.NewLabel("Nothing playing"),
+		queuePos: widget.NewLabel(""),
 	}
 	b.now.Truncation = fyne.TextTruncateEllipsis
+	b.queuePos.SizeName = theme.SizeNameCaptionText
 
-	prev := newTransportButton(theme.MediaSkipPreviousIcon(), transportBarButton, false, func() { p.do(p.backend.Previous) })
+	prev := newTransportButton(theme.MediaSkipPreviousIcon(), transportBarButton, false, func() { p.previous() })
 	b.play = newTransportButton(theme.MediaPlayIcon(), transportBarPlay, true, p.togglePlay)
-	next := newTransportButton(theme.MediaSkipNextIcon(), transportBarButton, false, func() { p.do(p.backend.Next) })
-	stop := newTransportButton(theme.MediaStopIcon(), transportBarButton, false, func() { p.do(p.backend.Stop) })
+	next := newTransportButton(theme.MediaSkipNextIcon(), transportBarButton, false, func() { p.next() })
+	stop := newTransportButton(theme.MediaStopIcon(), transportBarButton, false, func() { p.stop() })
 
 	buttons := container.NewHBox(prev, b.play, next, stop)
 	volBox := container.NewCenter(container.NewHBox(
+		b.queuePos,
 		widget.NewIcon(theme.VolumeUpIcon()),
 		container.NewGridWrap(fyne.NewSize(140, 28), b.volume),
 	))
 	progress := container.NewBorder(nil, nil, b.pos, b.dur, b.seek)
-	center := container.NewBorder(nil, nil, b.cover.object, nil,
+	cover := fyne.CanvasObject(b.cover.object)
+	if onCover != nil {
+		cover = container.NewStack(b.cover.object, newTapArea(onCover, nil))
+	}
+	center := container.NewBorder(nil, nil, container.NewCenter(cover), nil,
 		container.NewVBox(b.now, progress))
 
 	b.object = container.NewBorder(widget.NewSeparator(), nil, buttons, volBox, center)
@@ -115,25 +128,50 @@ func (b *regularBar) apply(st transportState) {
 	if st.applyVolume {
 		b.volume.SetValue(st.volume)
 	}
+	b.queuePos.SetText(queuePosition(st))
+}
+
+// queuePosition renders the current track's place in the playlist: "3 / 42",
+// "42 tracks" when none is current, "" for an empty playlist.
+func queuePosition(st transportState) string {
+	switch {
+	case st.queueLen == 0:
+		return ""
+	case st.queueIndex >= 0:
+		return strconv.Itoa(st.queueIndex+1) + " / " + strconv.Itoa(st.queueLen)
+	case st.queueLen == 1:
+		return "1 track"
+	default:
+		return strconv.Itoa(st.queueLen) + " tracks"
+	}
 }
 
 func (b *regularBar) setCover(img image.Image) { b.cover.set(img) }
 
-// miniBar is the compact layout's pinned transport: a cover thumb and, in the
-// same row, the same four big controls as the Now Playing page (prev / play /
-// next / stop at the nowPlaying sizes), so playback is fully steerable without
-// leaving the cover wall. The track's title and artist live on the Now Playing
-// page, which the bar opens when tapped or swiped up — they used to sit in the
-// bar, but a Label with TextTruncateEllipsis reports a MinSize of just "…", so
-// the centered pair rendered as two rows of dots no matter how much room they
-// had. The seek slider is Now-Playing-only too: a phone has no room for a bar
-// wide enough to hold a usable seek slider, and a cramped slider is worse than
-// no slider.
+// Mini bar control sizes: a notch below the Now Playing page's, which buys
+// back the height of the always-visible volume row.
+const (
+	miniBarButton = 48
+	miniBarPlay   = 60
+)
+
+// miniBar is the compact layout's pinned transport, shown on every view but
+// Now Playing (which carries its own full-size controls). Three rows:
 //
-// The volume slider is the exception: it joins the bar (below the controls
-// row) while the playlist view is showing — there is room under the
-// full-screen queue, and reaching Now Playing just to ride the volume was the
-// one gap in the playlist's transport coverage. setVolumeVisible toggles it.
+//   - the cover thumb beside the four transport controls (prev / play / next /
+//     stop), so playback is fully steerable from any view;
+//   - the current track as one "title · artist" line, spanning the full width
+//     (hidden while nothing is playing). It is a plain Label in a VBox, which
+//     hands it the whole row: an ellipsis-truncated Label only collapses to
+//     "…" when a Center/HBox sizes it to its MinSize — the reason the bar once
+//     rendered two rows of dots;
+//   - the volume slider, always visible.
+//
+// The seek slider stays Now-Playing-only: a phone has no room for a bar wide
+// enough to seek accurately, and the hairline progress under the bar covers
+// "how far in". Tapping the cover opens the playlist (onCover; the App routes
+// it to Now Playing when the playlist is already on screen); tapping or
+// swiping up anywhere else on the strip opens Now Playing (onOpen).
 type miniBar struct {
 	object   *fyne.Container
 	cover    *coverView
@@ -141,20 +179,25 @@ type miniBar struct {
 	progress *thinProgress
 	volume   *widget.Slider
 	volRow   *fyne.Container
+	title    *widget.Label
 }
 
-func newMiniBar(p *player, onOpen func()) *miniBar {
+func newMiniBar(p *player, onOpen, onCover func()) *miniBar {
 	b := &miniBar{
 		cover:    newCoverView(miniCoverSize),
 		progress: newThinProgress(),
 		volume:   p.newVolumeSlider(),
+		title:    widget.NewLabel(""),
 	}
+	b.title.Truncation = fyne.TextTruncateEllipsis
+	b.title.Alignment = fyne.TextAlignCenter
+	b.title.SizeName = theme.SizeNameCaptionText
+	b.title.Hide()
 
-	// The same controls, at the same sizes, as the Now Playing page.
-	prev := newTransportButton(theme.MediaSkipPreviousIcon(), nowPlayingButton, false, func() { p.do(p.backend.Previous) })
-	b.play = newTransportButton(theme.MediaPlayIcon(), nowPlayingPlay, true, p.togglePlay)
-	next := newTransportButton(theme.MediaSkipNextIcon(), nowPlayingButton, false, func() { p.do(p.backend.Next) })
-	stop := newTransportButton(theme.MediaStopIcon(), nowPlayingButton, false, func() { p.do(p.backend.Stop) })
+	prev := newTransportButton(theme.MediaSkipPreviousIcon(), miniBarButton, false, func() { p.previous() })
+	b.play = newTransportButton(theme.MediaPlayIcon(), miniBarPlay, true, p.togglePlay)
+	next := newTransportButton(theme.MediaSkipNextIcon(), miniBarButton, false, func() { p.next() })
+	stop := newTransportButton(theme.MediaStopIcon(), miniBarButton, false, func() { p.stop() })
 	controls := container.NewCenter(container.New(
 		layout.NewCustomPaddedHBoxLayout(12),
 		prev,
@@ -163,42 +206,31 @@ func newMiniBar(p *player, onOpen func()) *miniBar {
 		stop,
 	))
 
-	row := container.NewBorder(nil, nil, b.cover.object, nil, controls)
+	// The cover has its own tap target stacked over it (a swipe up there
+	// still opens Now Playing, like the rest of the strip).
+	cover := container.NewStack(b.cover.object, newTapArea(onCover, onOpen))
+	row := container.NewBorder(nil, nil, container.NewCenter(cover), nil, controls)
 
-	// The volume row mirrors the Now Playing page's: icon at the left, the
-	// slider taking the full remaining width. Hidden until the playlist view
-	// asks for it (setVolumeVisible).
 	b.volRow = container.NewBorder(nil, nil,
 		widget.NewIcon(theme.VolumeUpIcon()), nil,
-		container.NewPadded(b.volume),
+		b.volume,
 	)
-	b.volRow.Hide()
 
-	// The tap/swipe catcher sits *below* the rows: the buttons and the volume
-	// slider take their own taps and drags, and everything else (cover,
-	// padding) falls through to it, so the rest of the strip opens Now
-	// Playing without stealing the controls.
+	// The tap/swipe catcher sits *below* the rows: the buttons, the cover and
+	// the volume slider take their own taps and drags, and everything else
+	// (the title line, padding) falls through to it, so the rest of the strip
+	// opens Now Playing without stealing the controls.
 	opener := newTapArea(onOpen, onOpen)
 	b.object = container.NewBorder(
-		widget.NewSeparator(),
+		nil,
 		b.progress,
 		nil, nil,
-		container.NewStack(opener, container.NewVBox(row, b.volRow)),
+		container.NewStack(opener, container.NewVBox(row, b.title, b.volRow)),
 	)
 	return b
 }
 
 func (b *miniBar) Object() fyne.CanvasObject { return b.object }
-
-// setVolumeVisible shows or hides the volume slider row (shown while the
-// compact playlist view is on screen).
-func (b *miniBar) setVolumeVisible(on bool) {
-	if on {
-		b.volRow.Show()
-	} else {
-		b.volRow.Hide()
-	}
-}
 
 func (b *miniBar) apply(st transportState) {
 	applyPlayIcon(b.play, st.playing)
@@ -207,6 +239,19 @@ func (b *miniBar) apply(st transportState) {
 	}
 	if st.applyVolume {
 		b.volume.SetValue(st.volume)
+	}
+	line := ""
+	if st.hasTrack {
+		line = st.title
+		if st.artist != "" {
+			line += " · " + st.artist
+		}
+	}
+	if line == "" {
+		b.title.Hide()
+	} else {
+		b.title.SetText(line)
+		b.title.Show()
 	}
 }
 

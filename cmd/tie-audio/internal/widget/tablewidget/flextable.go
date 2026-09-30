@@ -90,7 +90,7 @@ type FlexTable struct {
 	// vertical travel (in whole row heights) and OnReorder(from, to) fires. It
 	// takes precedence over OnDrop, which stays for cross-widget drops. The
 	// pixel-delta approach is scroll-position independent within a single drag.
-	OnReorder     func(from, to int)
+	OnReorder func(from, to int)
 	// RowSelectable, when set, reports whether a row can be selected, dragged
 	// or double-tapped. Non-selectable rows (e.g. the queue's album header
 	// rows) ignore taps and drags entirely. Nil means every row is.
@@ -274,6 +274,14 @@ func (t *FlexTable) SetData(data *TableData) {
 
 func (t *FlexTable) SetColumnWidth(id int, width float32) {
 	t.table.SetColumnWidth(id, width)
+}
+
+// ScrollToRow scrolls the table so the given display row is visible.
+func (t *FlexTable) ScrollToRow(row int) {
+	if row < 0 {
+		return
+	}
+	t.table.ScrollTo(widget.TableCellID{Row: row, Col: 0})
 }
 
 // SetRowHeight sets one row's height. height <= 0 resets the row to the

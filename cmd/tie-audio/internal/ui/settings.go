@@ -194,19 +194,10 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		dialog.ShowInformation("Connected", "pwplay server reachable.", a.win)
 	})
 
-	// Back returns to the settings view's own tab (when it lives in the
-	// sidebar); elsewhere (the full-screen settings view on mobile) it
-	// returns to the cover wall.
-	back := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), func() {
-		if a.browse.settingsTab != nil {
-			a.browse.showSettingsTab()
-			return
-		}
-		a.browse.showBrowse()
-	})
-
+	// No Back button: in the regular layout the page is a sidebar tab, and in
+	// the compact layout the persistent nav bar (and the system Back key)
+	// lead away from it.
 	header := container.NewVBox(
-		container.NewHBox(back),
 		widget.NewLabelWithStyle("Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		widget.NewSeparator(),
 	)

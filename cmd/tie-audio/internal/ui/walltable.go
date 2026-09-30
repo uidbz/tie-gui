@@ -145,7 +145,12 @@ func newWallTable(page *browsePage) *wallTable {
 	// The button row mirrors the album view's: the view toggle on the left,
 	// the Columns dialog beside it (regular layout only — the compact column
 	// set is fixed, like the album view's).
-	buttons := container.NewHBox(widget.NewButtonWithIcon("Cover view", theme.GridIcon(), page.toggleWallView))
+	// Reload re-runs the wall's feed: the table has no pull-to-refresh
+	// gesture, unlike the cover grid.
+	buttons := container.NewHBox(
+		widget.NewButtonWithIcon("Cover view", theme.GridIcon(), page.toggleWallView),
+		widget.NewButtonWithIcon("Reload", theme.ViewRefreshIcon(), page.reloadWall),
+	)
 	if !page.compact {
 		buttons.Add(widget.NewButtonWithIcon("Columns", theme.MenuIcon(), wt.showColumnsDialog))
 	}

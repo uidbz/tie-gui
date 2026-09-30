@@ -10,7 +10,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/gallery"
@@ -47,6 +46,11 @@ type shellWindow struct {
 	// content is the inner view currently wrapped, kept so a layout-mode
 	// change can re-wrap it without the caller re-navigating.
 	content fyne.CanvasObject
+	// edges, when set, returns the compact layout's edge-swipe strips for the
+	// view being wrapped (nil for none). Evaluated on every wrap, because the
+	// gallery and the album view push their content through SetContent
+	// without telling the App.
+	edges func() fyne.CanvasObject
 }
 
 // SetBottom swaps the pinned bottom bar (compact: the mini bar with or without
@@ -73,7 +77,13 @@ func (w *shellWindow) wrap(o fyne.CanvasObject) fyne.CanvasObject {
 		w.split.Refresh()
 		composed = container.NewBorder(nil, w.bar, nil, nil, w.split)
 	} else {
-		composed = container.NewBorder(nil, w.bar, nil, nil, o)
+		center := o
+		if w.compact && w.edges != nil {
+			if strips := w.edges(); strips != nil {
+				center = container.NewStack(o, strips)
+			}
+		}
+		composed = container.NewBorder(nil, w.bar, nil, nil, center)
 	}
 	if w.watcher == nil {
 		return composed
@@ -140,9 +150,13 @@ type App struct {
 	browse   *browsePage
 	queue    *queuePage
 	media    *mediaBridge
+	mpris    *mprisBridge // nil when MPRIS is off (mobile, no session bus)
 	regular  *regularBar
 	mini     *miniBar
+	nav      *navBar
 	playing  *nowPlayingPage
+	// albumNow marks the playing track in an open album view.
+	albumNow *albumNowPlaying
 	compact  bool
 	view     appView
 	prevView appView
@@ -178,12 +192,20 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	// Every transport view stays registered whether or not it is on screen: a
 	// hidden view costs one widget update per poll, far less than re-syncing
 	// (and re-resolving artwork for) whichever view the user navigates to.
-	a.regular = newRegularBar(a.player)
-	a.mini = newMiniBar(a.player, a.showNowPlaying)
+	a.regular = newRegularBar(a.player, func() { a.queue.revealCurrentSoon() })
+	a.mini = newMiniBar(a.player, a.showNowPlaying, a.onMiniCover)
 	a.playing = newNowPlayingPage(a.player, a.leaveNowPlaying)
+	a.nav = newNavBar(navActions{
+		albums:   a.navAlbums,
+		tags:     a.navTags,
+		playlist: a.showQueueView,
+		settings: a.showSettingsView,
+		menu:     func(anchor fyne.CanvasObject) { a.browse.showMenuAt(anchor) },
+	})
 	a.player.AddView(a.regular)
 	a.player.AddView(a.mini)
 	a.player.AddView(a.playing)
+	a.player.AddView(a.nav)
 
 	// The media bridge feeds the Android media session / foreground service
 	// (a no-op off Android). It is enabled only for local playback: phone
@@ -192,8 +214,22 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.media.SetEnabled(playback.IsLocal(session.Backend))
 	a.player.AddView(a.media)
 
+	// On the desktop the player is also published over MPRIS (D-Bus), so
+	// media keys, playerctl and window-manager bindings control it
+	// system-wide. Inert where there is no session bus.
+	if enableMPRIS && !a.platform.IsMobile() {
+		bridge, err := newMPRISBridge(a.player, win)
+		if err != nil {
+			fmt.Println("tie-audio: MPRIS unavailable:", err)
+		} else {
+			a.mpris = bridge
+			a.player.AddView(bridge)
+		}
+	}
+
 	a.shell = &shellWindow{Window: win, compact: a.compact}
 	a.shell.watcher = newWidthWatcher(a.onWidth)
+	a.shell.edges = a.edgeOverlay
 	a.win = a.shell
 
 	// Build the queue before the browse page: constructing the gallery triggers
@@ -211,6 +247,15 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 
 	a.browse = newBrowsePage(fyne.CurrentApp(), a.shell, session, a.covers, a.compact)
 	a.browse.transport = a.player
+	a.albumNow = &albumNowPlaying{page: a.browse}
+	a.browse.onNowPlayingChip = func() {
+		if a.compact {
+			a.showNowPlaying()
+			return
+		}
+		a.browse.revealPlayingRow()
+	}
+	a.player.AddView(a.albumNow)
 	// Let the browse page reach the queue page regardless of layout, so
 	// play/enqueue actions update the queue view optimistically even in the
 	// compact layout (where enableAlbumDragToQueue is not wired).
@@ -256,13 +301,17 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	// unable to back out of tie-audio at all. Gallery hotkeys are deliberately
 	// not dispatched here: tie-audio never shows a single image, and the
 	// gallery's default bindings include Quit.
-	a.browse.viewer.OnSidebarToggled = func(bool) { a.syncBackHandler() }
+	a.browse.viewer.OnSidebarToggled = func(bool) {
+		a.syncNav()
+		a.syncBackHandler()
+	}
 	a.initHotkeys()
 	a.syncBackHandler()
 
 	win.SetOnClosed(func() {
 		a.player.Stop()
 		a.media.Stop()
+		a.mpris.Close()
 		// The local engine holds a sink and a decoder goroutine; close it.
 		if c, ok := a.player.be().(io.Closer); ok {
 			_ = c.Close()
@@ -271,6 +320,10 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.player.Start()
 	return a
 }
+
+// enableMPRIS gates the desktop MPRIS server; tests turn it off so building
+// an App never claims a name on the developer's session bus.
+var enableMPRIS = true
 
 // canvasWidth reports the window's current canvas width, or 0 before the first
 // layout (or in tests with no canvas).
@@ -393,23 +446,101 @@ func (a *App) setCompact(compact bool) {
 	a.refreshLayoutInfo()
 }
 
-// navBar is the compact layout's bottom bar: Tags opens the sidebar drawer,
-// Playlist and Settings open their full-screen views, and Refresh re-runs
-// whatever the browse page shows (the cover wall's feed, or an open album's
-// track list).
-func (a *App) navBar() fyne.CanvasObject {
-	tags := widget.NewButtonWithIcon("Tags", theme.SearchIcon(), a.browse.openSidebar)
-	tags.Importance = widget.LowImportance
-	playlist := widget.NewButtonWithIcon("Playlist", theme.ListIcon(), a.showQueueView)
-	playlist.Importance = widget.LowImportance
-	settings := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), a.showSettingsView)
-	settings.Importance = widget.LowImportance
-	refresh := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), a.browse.reloadWall)
-	refresh.Importance = widget.LowImportance
-	return container.NewVBox(
-		widget.NewSeparator(),
-		container.NewGridWithColumns(4, tags, playlist, settings, refresh),
-	)
+// navAlbums is the nav bar's Albums tab: back to the wall from any view (an
+// open album closes, as its own "Albums" button does), dismissing the drawer.
+func (a *App) navAlbums() {
+	a.browse.closeSidebar()
+	a.showBrowseView()
+}
+
+// navTags is the nav bar's Tags tab: the tag drawer over the cover wall,
+// opened on its Tags page (the Settings tab may have been left selected), or
+// closed again when it is already open.
+func (a *App) navTags() {
+	if a.browse.sidebarOpen() {
+		a.browse.closeSidebar()
+		return
+	}
+	if a.view != viewBrowse || a.browse.albumOpen {
+		a.showBrowseView()
+	}
+	a.browse.showTagsTab()
+	a.browse.openSidebar()
+}
+
+// onMiniCover handles a tap on the mini bar's cover: the playlist (scrolled to
+// the playing track) from every view, and Now Playing when the playlist is
+// already on screen — the cover is the way "into" the music either way.
+func (a *App) onMiniCover() {
+	if a.view == viewQueue {
+		a.showNowPlaying()
+		return
+	}
+	a.showQueueView()
+	a.queue.revealCurrentSoon()
+}
+
+// currentTab maps the view to the nav bar tab it belongs to.
+func (a *App) currentTab() navTab {
+	switch a.view {
+	case viewQueue:
+		return tabPlaylist
+	case viewSettings:
+		return tabSettings
+	case viewNowPlaying:
+		return tabNone
+	}
+	if a.browse != nil && a.browse.sidebarOpen() {
+		return tabTags
+	}
+	return tabAlbums
+}
+
+// syncNav re-highlights the nav bar for the current view, and enables its ☰
+// slot only where the library menu applies (the albums views).
+func (a *App) syncNav() {
+	a.nav.setActive(a.currentTab())
+	a.nav.setMenuEnabled(a.view == viewBrowse)
+}
+
+// edgeOverlay returns the compact layout's edge-swipe strips for the current
+// view, so a horizontal swipe from a screen edge moves to the neighbouring
+// tab (Albums ← Playlist → Settings) on every full-screen view. The cover
+// grid has none: the gallery's own swipe overlay already pages from there
+// (left → playlist, right → drawer), and a left strip would sit on top of the
+// drawer panel.
+func (a *App) edgeOverlay() fyne.CanvasObject {
+	if a.browse == nil {
+		return nil
+	}
+	var left, right fyne.CanvasObject
+	switch a.view {
+	case viewBrowse:
+		switch {
+		case a.browse.albumOpen:
+			left = newEdgeSwipe(a.showBrowseView)
+		case a.browse.tableMode():
+			// The table view has no gallery swipe overlay; the right edge leads
+			// on to the playlist (closing the drawer first if it is open).
+			right = newEdgeSwipeLeft(func() {
+				if a.browse.sidebarOpen() {
+					a.browse.closeSidebar()
+					return
+				}
+				a.showQueueView()
+			})
+		default:
+			return nil
+		}
+	case viewQueue:
+		left = newEdgeSwipe(a.showBrowseView)
+		right = newEdgeSwipeLeft(a.showSettingsView)
+	case viewSettings:
+		left = newEdgeSwipe(a.showQueueView)
+	default:
+		return nil
+	}
+	return container.NewBorder(nil, nil, left, right, nil)
 }
 
 // showBrowseView restores the cover wall. It is the back target of the queue,
@@ -430,6 +561,7 @@ func (a *App) showQueueView() {
 		a.queue.show()
 		return
 	}
+	a.browse.closeSidebar()
 	a.setView(viewQueue)
 	a.win.SetContent(a.queue.Object())
 	a.queue.show()
@@ -438,6 +570,7 @@ func (a *App) showQueueView() {
 // showSettingsView opens the settings page full-screen (compact), mirroring
 // the sidebar's own tab selection.
 func (a *App) showSettingsView() {
+	a.browse.closeSidebar()
 	a.setView(viewSettings)
 	a.refreshLayoutInfo()
 	a.win.SetContent(a.settingsContent)
@@ -505,26 +638,30 @@ func (a *App) showCurrentView() {
 }
 
 // applyBottomBar pins the bar the current view and layout need: the wide
-// transport bar in the regular layout; in the compact layout the mini bar plus
-// the nav bar on the cover wall, the mini bar alone on the queue and settings
-// views, and nothing on Now Playing (which carries its own full-width
-// controls). The compact playlist view also gets the mini bar's volume row:
-// it is the one view with room for it, and the only compact view besides Now
-// Playing where volume matters.
+// transport bar in the regular layout; in the compact layout one bottom panel
+// on every view — the mini bar (with its always-visible volume row) above the
+// nav bar — except Now Playing, which carries its own full-width controls and
+// keeps only the nav bar. Both sit on one shared background so the stack
+// reads as a single surface.
 func (a *App) applyBottomBar() {
-	a.mini.setVolumeVisible(a.compact && a.view == viewQueue)
 	switch {
 	case !a.compact:
 		a.shell.SetBottom(a.regular.Object())
 	case a.view == viewNowPlaying:
-		a.shell.SetBottom(nil)
-	case a.view == viewBrowse:
-		a.shell.SetBottom(container.NewVBox(a.mini.Object(), a.navBar()))
+		a.shell.SetBottom(bottomPanel(a.nav.Object()))
 	default:
-		a.shell.SetBottom(a.mini.Object())
+		a.shell.SetBottom(bottomPanel(a.mini.Object(), a.nav.Object()))
 	}
+	a.syncNav()
 	a.shell.rewrap()
 	a.syncBackHandler()
+}
+
+// bottomPanel stacks the compact bottom rows on the shared panel background,
+// under a separator from the content.
+func bottomPanel(rows ...fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewStack(newPanelBackground(),
+		container.NewVBox(append([]fyne.CanvasObject{widget.NewSeparator()}, rows...)...))
 }
 
 // syncBackHandler installs the window-level key handler while it has work to

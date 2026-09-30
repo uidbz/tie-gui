@@ -64,6 +64,16 @@ in `ImageView.TouchMoved`) draw the cached texture instead of re-uploading
 the bitmap. Pair this with `*image.RGBA` bitmaps (`toRGBA`): any other pixel
 type costs a full-bitmap `draw.Draw` on the UI thread at upload.
 
+The fork also serialises text shaping: `painter.walkString` holds
+`runBufferMut` for the whole walk, because the package-level
+`HarfbuzzShaper` and the font map's cmap caches are not goroutine-safe.
+Upstream shaped a space probe and resolved faces *before* taking the lock,
+so a measurement from a background goroutine (e.g. widgets built in
+`NewApp` while the mobile driver already renders) could corrupt a concurrent
+render — tie-audio crashed at startup on Android with a harfbuzz "index out
+of range" panic (`internal/painter/font_concurrent_test.go`, run with
+`-race`).
+
 The `Makefile`'s install targets build with `-tags "wayland egl gles gles2"`
 when `$WAYLAND_DISPLAY` is set and `$DISPLAY` is not (a "pure Wayland"
 session without XWayland — Fyne targets X11 by default, so the Wayland
@@ -350,6 +360,13 @@ preventing layout reflow as thumbnails load.
 - `Thumbnailer Thumbnailer` — if non-nil, used instead of the local disk cache for reader-backed items (CustomReader != nil); plain local files always use the local disk cache
 - `OnImageChange func(*ImageInfo)` — called after `ChangeImage`
 - `Platform() *Platform` — accessor for mobile vs desktop behavior (Phase 5)
+- `HideSidebarToggle` / `HideMenuButton` — drop the bottom bar's side buttons
+  for apps that host them elsewhere (tie-audio's compact nav bar);
+  `ShowMenuAt(anchor)` opens the ☰ menu from such a button. A single-page
+  gallery hides its pagination links, and the whole bottom row when no side
+  button remains (`syncBottomRow`, relayout of `mainBorder` only — no
+  container Refresh); `BottomBarVisible()` reports it. `Loaded()` reports
+  whether `LoadGallery` ran (re-show `Content` without reloading).
 
 ### Optional `CustomReader` interfaces (`gallery/gallery.go`)
 | Interface | Method | Purpose |
@@ -846,15 +863,18 @@ Settings** tabs, mirroring tie-view's sidebar.
   page re-queries, a tag wall re-runs the selection's query — and drops the
   decoded-cover cache, so albums (or artwork) imported while tie-audio runs
   (e.g. via tie-fm) appear without an app restart. The same reload is bound
-  to the compact nav bar's Refresh button and to pull-to-refresh on the grid
-  (`gallery.OnPullRefresh`); while an album track list is open it re-fetches
+  to pull-to-refresh on the grid (`gallery.OnPullRefresh`) and the wall
+  table's Reload button; while an album track list is open it re-fetches
   that album in place instead. A collection switch likewise resets the tree
   cache (`fsTree.reset`). Hidden directories (leading `.`) are toggled via
   the gallery ☰ menu (matching tie-view).
 - **Settings** is built by the App shell (`buildSettingsTab`) and appended
-  to the same `AppTabs`; the shell reuses the tab item's content to open the
-  settings view full-screen on mobile, and the page's Back button re-selects
-  its own tab instead of leaving the settings view. The page is a nested
+  to the same `AppTabs` **in the regular layout only** — in the compact layout
+  the nav bar has its own Settings destination, so `browsePage.syncSettingsTab`
+  drops the tab from the drawer (Tags / Files only), which also keeps the
+  content object — reused full-screen by the settings view — to a single
+  on-screen parent. The page has no Back button (sidebar tab / nav bar /
+  system Back cover it). The page is a nested
   border (app form on top, connection editor as the center) — a VBox would
   collapse the scroll-wrapped editor to its small scroll minimum, and border
   sections size to their own MinSize even on narrow mobile windows.
@@ -935,8 +955,9 @@ settings saves like the column sets).
   `Gallery.DrawerObject()` accessor, so `OpenSidebar`/`CloseSidebar`/
   `SidebarOpen` (and the Back-key unwind) work unchanged over the table.
   `gallery.FilterChipRow` is the exported renderer `SetFilterChips` now
-  shares. The table view has no cover→queue drag and no swipe gestures (the
-  compact nav bar covers navigation).
+  shares. The table view has no cover→queue drag and no gallery swipe
+  overlay; its top row carries a Reload button (no pull-to-refresh), and in
+  the compact layout a right-edge strip swipes on to the playlist.
 - Tests: `walltable_test.go` (columns, cell values, sort, offset mapping,
   re-sort on re-feed) and `walltable_smoke_test.go` (live integration against
   the tie test-env — skips when it is down, self-seeds two fixture albums
@@ -956,8 +977,36 @@ in landscape) has room for the split layout:
 | Tags/Files sidebar | `HSplit` pane inside the gallery | slide-over **drawer** over the grid + filter chip row |
 | Playlist | `trackTable` in a permanent right-hand `HSplit` pane, grouped by album headers | full-screen **album-grouped list** (`queueList`) |
 | Album track list | persisted column set + Columns dialog | fixed `compactAlbumColumns` (track no / title / duration) |
-| Transport | `regularBar` (one row, both sliders) | `miniBar` (full-size controls; + volume row on the playlist view) → full-screen `nowPlayingPage` |
-| Bottom nav | — | Tags / Playlist / Settings / Refresh under the mini bar |
+| Transport | `regularBar` (one row, both sliders, "3 / 42" queue position; cover click scrolls the queue pane to the playing track) | `miniBar` (cover + controls, track line, always-visible volume row) → full-screen `nowPlayingPage` |
+| Bottom nav | — | persistent `navBar` (Albums / Tags / Playlist / Settings / ☰) on **every** view |
+
+- **Bottom panel** (`App.applyBottomBar`, `navbar.go`): every compact view
+  pins mini bar + nav bar on one shared `panelBackground`; Now Playing (its
+  own full-size controls) pins the nav bar alone. The `navBar` is a
+  transportView (Playlist badge = queue length) and highlights the view's
+  tab (`App.currentTab`: an open album counts as Albums, the open drawer as
+  Tags, Now Playing as none) with a primary-colored indicator line. Albums →
+  `navAlbums` (closes drawer/album, back to the wall); Tags → `navTags`
+  (drawer on its Tags page, toggles); ☰ → the gallery menu via
+  `Gallery.ShowMenuAt` (enabled only on the albums views; greyed, not hidden,
+  elsewhere so the tabs never shift). The nav replaces the gallery's own
+  drawer button and ☰ (`browsePage.setGalleryChrome` sets
+  `Gallery.HideSidebarToggle`/`HideMenuButton`), so the gallery bar shrinks
+  to its page links and disappears on a single-page wall.
+- **Mini bar cover:** a tap on the cover opens the playlist scrolled to the
+  playing track (`queuePage.revealCurrentSoon`: reveals again after the
+  async status refresh, since the rows may be stale at tap time) — or Now
+  Playing when the playlist is already shown (`App.onMiniCover`). The rest
+  of the strip (tap or swipe up) opens Now Playing.
+- **Returning to the wall keeps its scroll position:** `browsePage.showBrowse`
+  re-shows `viewer.Content` instead of `ChangeGallery` (which reloads every
+  tile and scrolls to the top) unless the contents were swapped behind its
+  back (`wallStale`, set by `clearAlbums`) or the gallery was never loaded.
+  Feeds still call `showWall` directly.
+- **Open album view:** the playing track's row gets a ▶ indicator column and
+  a "Now playing: …" chip under the header (`albumNowPlaying`, a
+  transportView that refreshes only on track change); the chip opens Now
+  Playing (compact) or scrolls to the row (regular).
 
 - `gallery.Platform.CompactLayout(width)` is the width heuristic
   (`width <= 0` counts as compact on mobile: the canvas has not been laid out
@@ -1004,8 +1053,14 @@ in landscape) has room for the split layout:
 - Swipes: left on the wall → playlist, right → open the drawer (compact),
   pull down at the top of the wall → reload its feed
   (`gallery.OnPullRefresh`), swipe up on the mini bar → Now Playing, swipe
-  down over its cover → back, left-edge swipe in the queue → back to the
-  wall (`swipe.go`).
+  down over its cover → back. The other full-screen views get edge strips
+  from the shell (`App.edgeOverlay`, evaluated on every `shellWindow.wrap`
+  because the gallery and album view push content without telling the App):
+  album view left edge → wall; playlist left edge → wall, right edge →
+  settings; settings left edge → playlist; wall table right edge → playlist
+  (`swipe.go`, `newEdgeSwipe`/`newEdgeSwipeLeft`). The cover grid has none —
+  the gallery's own swipe overlay pages from there, and a left strip would
+  cover the drawer panel.
 
 ### Transport: one controller, three views (`transport.go`, `transportview.go`, `nowplaying.go`)
 
@@ -1033,17 +1088,49 @@ pwplay's ring buffer — an echo is audible).
 
 `nowPlayingPage` exists because a phone-width bar cannot hold a usable seek
 slider *and* the metadata: there both sliders span the full window width, with
-the seek times *under* the slider rather than beside it. The `miniBar` is a
-single row — a 64 px cover plus the same four full-size transport buttons as
-the Now Playing page (prev / play / next / stop at the `nowPlayingButton` /
-`nowPlayingPlay` sizes) — so playback is fully steerable from the cover wall;
-the track labels and the two sliders are Now-Playing-only. (The bar once
-carried the labels, but a `Label` with `TextTruncateEllipsis` reports a
-MinSize of just "…", so the centered pair always rendered as two rows of
-dots.) The exception is the volume slider: it joins the mini bar (below the
-controls row, `miniBar.setVolumeVisible`) while the compact **playlist** view
-is on screen — the one compact view with room for it, and the only one
-besides Now Playing where volume matters.
+the seek times *under* the slider rather than beside it. The `miniBar` has
+three rows: a 56 px cover beside prev / play / next / stop (`miniBarButton`
+48 / `miniBarPlay` 60 — a notch below the Now Playing sizes, to pay for the
+volume row), a one-line "title · artist" label (hidden while nothing plays),
+and the volume slider, **always visible**. The track line is a plain Label in
+a VBox, which gets the full row width: an ellipsis-truncated Label only
+collapses to "…" when a Center/HBox sizes it to its MinSize (why the bar once
+showed two rows of dots). The seek slider stays Now-Playing-only.
+
+Player actions shared by views, hotkeys and MPRIS go through `player`
+helpers (`play`/`pause`/`togglePlay`/`stop`/`next`/`previous`/`seekTo`/
+`setVolume`), which read the backend under the lock (`SetBackend` may swap
+it). `transportState` also carries `trackHash`/`albumUID`,
+`queueLen`/`queueIndex` and `stopped`.
+
+### Desktop system-wide control: MPRIS (`internal/mpris`, `ui/mprisbridge.go`)
+
+On the desktop (`!IsMobile()`) tie-audio publishes the player on the D-Bus
+session bus as an MPRIS 2 player, bus name `org.mpris.MediaPlayer2.tie_audio`
+(a second instance takes `….instance<pid>`), so media keys, `playerctl`,
+status bars (waybar `mpris`), KDE Connect and window-manager bindings reach
+it. `mprisBridge` is a transportView feeding `mpris.Server.Update`
+(PropertiesChanged only for changed properties; Position is never signalled,
+a >3 s jump on the same track emits `Seeked`); covers are written to
+`$XDG_RUNTIME_DIR/tie-audio-<pid>-cover-<n>.png` for `mpris:artUrl`. It drives
+whichever backend is active (remote pwplay too). Methods: PlayPause/Play/
+Pause/Stop/Next/Previous/Seek/SetPosition, Volume is writable, Raise/Quit;
+LoopStatus/Shuffle/Rate are read-only. The package is Fyne-free and
+Linux-only (`linux && !android`; `mpris_other.go` stubs return
+`ErrUnsupported`); `mpris_linux_test.go` runs against a private
+`dbus-daemon`. `ui.enableMPRIS` is switched off by the ui tests so building an
+App never claims a name on the developer's bus.
+
+Client mode: `tie-audio -control play-pause|play|pause|stop|next|previous`
+sends the action to the running instance over MPRIS and exits (no window, no
+playerctl needed; exit 1 when none runs). sway:
+
+```
+bindsym XF86AudioPlay  exec tie-audio -control play-pause
+bindsym XF86AudioNext  exec tie-audio -control next
+bindsym XF86AudioPrev  exec tie-audio -control previous
+# or: exec playerctl --player=tie_audio play-pause
+```
 
 ### Album artwork (`covers.go`)
 

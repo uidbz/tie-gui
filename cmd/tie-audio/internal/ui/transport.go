@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"path"
 	"sync"
 	"time"
 
@@ -37,6 +38,19 @@ type transportState struct {
 	// metadata); the media-session bridge tears the service down when it
 	// goes false with playback stopped.
 	hasTrack bool
+	// trackHash is the current track's tie content hash (the queue URL's last
+	// path segment), empty when nothing is current; albumUID its album. The
+	// album view marks the playing row with them.
+	trackHash string
+	albumUID  string
+	// queueLen is the number of queue entries and queueIndex the current
+	// track's position in it (-1 when none) — the nav bar's Playlist badge
+	// and the desktop bar's "3 / 42".
+	queueLen   int
+	queueIndex int
+	// stopped distinguishes a stopped player from a paused one (MPRIS
+	// reports them differently).
+	stopped bool
 	// applyPosition is false while the user drags a seek slider, and
 	// applyVolume while they drag a volume slider: the server's value must not
 	// fight the thumb under the finger.
@@ -321,6 +335,18 @@ func (p *player) togglePlay() {
 	}
 }
 
+// previous, next and stop drive the current backend (read under the lock,
+// since SetBackend may swap it) off the UI goroutine. Shared by every
+// transport view, the hotkeys and the MPRIS bridge.
+func (p *player) previous() { p.do(func() error { return p.be().Previous() }) }
+func (p *player) next()     { p.do(func() error { return p.be().Next() }) }
+func (p *player) stop()     { p.do(func() error { return p.be().Stop() }) }
+
+// play and pause are the explicit (non-toggling) forms, for the MPRIS
+// bridge's Play/Pause methods.
+func (p *player) play()  { p.do(func() error { return p.be().Play() }) }
+func (p *player) pause() { p.do(func() error { return p.be().Pause() }) }
+
 // volumeStep nudges the volume by delta (the sliders' range is 0…2), holding
 // the new value as pending so the next poll doesn't snap the sliders back
 // before the server confirms — the same guard the volume slider uses. Bound
@@ -337,6 +363,30 @@ func (p *player) volumeStep(delta float64) {
 	p.pendVol = &v
 	p.mu.Unlock()
 	go func() { _ = p.be().SetVolume(v) }()
+}
+
+// setVolume sets an absolute volume (0…2), with the same pending-value
+// guard as volumeStep. Used by the MPRIS bridge.
+func (p *player) setVolume(v float64) {
+	p.volumeStep(v - p.currentVolume())
+}
+
+// currentVolume is the last observed volume.
+func (p *player) currentVolume() float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.volume
+}
+
+// seekTo jumps to an absolute position in the current track, holding it as
+// pending like a slider release so the next poll doesn't bounce the thumbs.
+func (p *player) seekTo(sec float64) {
+	p.mu.Lock()
+	v := sec
+	p.pendSeek = &v
+	p.pendSeekTTL = 4
+	p.mu.Unlock()
+	go func() { _ = p.be().Seek(sec) }()
 }
 
 // seekBy jumps relative to the current position; bound to the
@@ -437,8 +487,19 @@ func (p *player) apply(s playback.Status) {
 		artist:        now.artist,
 		album:         now.album,
 		hasTrack:      now.url != "",
+		albumUID:      now.albumUID,
+		queueLen:      len(s.Playlist),
+		queueIndex:    -1,
+		stopped:       s.Stopped,
 		applyPosition: !seeking,
 		applyVolume:   !adjVol && pendVol == nil,
+	}
+
+	if now.url != "" {
+		st.trackHash = path.Base(now.url)
+	}
+	if s.CurrentTrack >= 0 && s.CurrentTrack < len(s.Playlist) {
+		st.queueIndex = s.CurrentTrack
 	}
 
 	// Mark programmatic slider updates so the sliders' OnChangeEnded handlers

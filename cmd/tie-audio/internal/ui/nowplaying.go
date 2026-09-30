@@ -52,10 +52,10 @@ func newNowPlayingPage(p *player, back func()) *nowPlayingPage {
 	header := container.NewBorder(nil, nil, backBtn, nil,
 		widget.NewLabelWithStyle("Now playing", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 
-	prev := newTransportButton(theme.MediaSkipPreviousIcon(), nowPlayingButton, false, func() { p.do(p.backend.Previous) })
+	prev := newTransportButton(theme.MediaSkipPreviousIcon(), nowPlayingButton, false, func() { p.previous() })
 	n.play = newTransportButton(theme.MediaPlayIcon(), nowPlayingPlay, true, p.togglePlay)
-	next := newTransportButton(theme.MediaSkipNextIcon(), nowPlayingButton, false, func() { p.do(p.backend.Next) })
-	stop := newTransportButton(theme.MediaStopIcon(), nowPlayingButton, false, func() { p.do(p.backend.Stop) })
+	next := newTransportButton(theme.MediaSkipNextIcon(), nowPlayingButton, false, func() { p.next() })
+	stop := newTransportButton(theme.MediaStopIcon(), nowPlayingButton, false, func() { p.stop() })
 	controls := container.NewCenter(container.New(
 		layout.NewCustomPaddedHBoxLayout(12),
 		prev,

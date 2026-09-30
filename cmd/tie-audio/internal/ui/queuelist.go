@@ -83,12 +83,20 @@ func buildQueueRows(tracks []data.Track) []queueRow {
 			groupCount: len(group),
 		}
 		rows = append(rows, header)
+		// When every track shares one artist the header already names it,
+		// so repeating it on each track row is noise; only a various-artists
+		// run keeps the per-track artist line.
+		sameArtist := commonArtist(group) != ""
 		for j, t := range group {
+			subtitle := t.Artist
+			if sameArtist {
+				subtitle = ""
+			}
 			rows = append(rows, queueRow{
 				kind:       queueRowTrack,
 				albumUID:   t.AlbumUID,
 				title:      t.Display(),
-				subtitle:   t.Artist,
+				subtitle:   subtitle,
 				trackIndex: i + j,
 				groupStart: i,
 				groupCount: len(group),
@@ -197,6 +205,16 @@ func (q *queueList) setTracks(tracks []data.Track, current int) {
 	}
 }
 
+// reveal scrolls the list to the row of the given playlist index.
+func (q *queueList) reveal(index int) {
+	for i, r := range q.rows {
+		if r.kind == queueRowTrack && r.trackIndex == index {
+			q.list.ScrollTo(i)
+			return
+		}
+	}
+}
+
 // twoLineLayout stacks the title and subtitle labels of a fixed-height list
 // row. A plain VBox gives each label its full padded MinSize (~35 px with the
 // default theme), which is taller than the 48 px track row: the second line
@@ -266,6 +284,7 @@ type queueListRow struct {
 	duration  *widget.Label
 	handle    *queueDragHandle
 	trackBox  *fyne.Container
+	trackText *fyne.Container // title + subtitle (twoLineLayout)
 }
 
 func newQueueListRow(owner *queueList) *queueListRow {
@@ -292,10 +311,11 @@ func newQueueListRow(owner *queueList) *queueListRow {
 	r.subtitle.Truncation = fyne.TextTruncateEllipsis
 	r.duration = widget.NewLabel("")
 	r.handle = newQueueDragHandle(r)
+	r.trackText = container.New(twoLineLayout{}, r.title, r.subtitle)
 	r.trackBox = container.NewBorder(nil, nil,
 		container.NewHBox(r.indicator, r.trackNo),
 		container.NewHBox(r.duration, r.handle),
-		container.New(twoLineLayout{}, r.title, r.subtitle),
+		r.trackText,
 	)
 
 	r.ExtendBaseWidget(r)
@@ -327,6 +347,17 @@ func (r *queueListRow) set(row queueRow, playing bool) {
 	}
 	r.title.SetText(row.title)
 	r.subtitle.SetText(row.subtitle)
+	// An empty subtitle (artist shown on the album header) is hidden so
+	// twoLineLayout centers the title in the row instead of leaving a blank
+	// second line.
+	if hide := row.subtitle == ""; hide == r.subtitle.Visible() {
+		if hide {
+			r.subtitle.Hide()
+		} else {
+			r.subtitle.Show()
+		}
+		r.trackText.Layout.Layout(r.trackText.Objects, r.trackText.Size())
+	}
 	if row.duration > 0 {
 		r.duration.SetText(formatDuration(row.duration))
 	} else {

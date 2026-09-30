@@ -110,6 +110,15 @@ type Gallery struct {
 	// ☰ popup menu. Embedding apps set it to expose their own toggles (e.g.
 	// tie-view's "Show hidden directories").
 	MenuItems func() []*fyne.MenuItem
+	// HideSidebarToggle drops the sidebar toggle from the bottom bar, for
+	// embedding apps whose own navigation already opens the sidebar (e.g.
+	// tie-audio's compact nav bar "Tags" tab). ToggleSidebar / OpenSidebar
+	// keep working. Takes effect on the next CreateView.
+	HideSidebarToggle bool
+	// HideMenuButton drops the ☰ button from the bottom bar, for embedding
+	// apps that host the gallery menu elsewhere (ShowMenuAt). Takes effect
+	// on the next CreateView.
+	HideMenuButton bool
 
 	// ═══════════════════════════════════════════════════════════════════════
 	// Internal Wiring — Do Not Access Directly
@@ -134,8 +143,14 @@ type Gallery struct {
 	galleryLoaded     bool
 	config            Config
 	bottomBar         *fyne.Container
-	sidebarStored     fyne.CanvasObject // saved sidebar when hidden by the toggle
-	sidebarToggle     *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
+	// bottomRow is the bottom bar composed with its side buttons, and
+	// mainBorder the Border giving it its space: a single-page gallery hides
+	// the pagination links, and the whole row when no side buttons remain,
+	// which has to re-layout mainBorder (see syncBottomRow).
+	bottomRow     *fyne.Container
+	mainBorder    *fyne.Container
+	sidebarStored fyne.CanvasObject // saved sidebar when hidden by the toggle
+	sidebarToggle *widget.Button    // ◀/▶ button in the bottom bar; nil when no sidebar
 	// drawer holds the sidebar when SidebarDrawer is set; nil in split mode.
 	// It owns the sidebar object while it exists, so CreateView must drop it
 	// when switching back to the split layout (Fyne objects cannot have two
@@ -495,20 +510,86 @@ func (viewer *Gallery) CreateView() {
 	// (CreateView before LoadGallery): assigning the nil *fyne.Container to the
 	// interface would hand Border a typed nil, which panics in its MinSize.
 	var bottom fyne.CanvasObject
+	viewer.bottomRow = nil
 	if viewer.bottomBar != nil {
 		var left, right fyne.CanvasObject
-		if viewer.sidebarToggle != nil {
+		if viewer.sidebarToggle != nil && !viewer.HideSidebarToggle {
 			left = viewer.sidebarToggle
 		}
-		right = viewer.menuButton
-		bottom = container.NewBorder(nil, nil, left, right, viewer.bottomBar)
+		if !viewer.HideMenuButton {
+			right = viewer.menuButton
+		}
+		viewer.bottomRow = container.NewBorder(nil, nil, left, right, viewer.bottomBar)
+		bottom = viewer.bottomRow
 	}
 
-	viewer.Content.Objects = []fyne.CanvasObject{container.NewBorder(nil, bottom, nil, nil, mainPage)}
+	viewer.mainBorder = container.NewBorder(nil, bottom, nil, nil, mainPage)
+	viewer.Content.Objects = []fyne.CanvasObject{viewer.mainBorder}
+	viewer.syncBottomRow()
+}
+
+// syncBottomRow hides the pagination links when there is only one page (they
+// would read "Prev Next 1-37": nothing to navigate), and the whole bottom row
+// when no side button remains beside them, handing the space back to the grid.
+// Only a visibility change re-lays out the page: a *fyne.Container.Refresh
+// would refresh (and re-upload) every tile.
+func (viewer *Gallery) syncBottomRow() {
+	if viewer.bottomBar == nil || viewer.bottomRow == nil {
+		return
+	}
+	multi := viewer.maxPages > 1
+	changed := viewer.bottomBar.Visible() != multi
+	if multi {
+		viewer.bottomBar.Show()
+	} else {
+		viewer.bottomBar.Hide()
+	}
+	// bottomRow is a Border(nil, nil, left, right, bottomBar): Objects[0] is
+	// bottomBar, the rest are the side buttons.
+	rowVisible := multi || len(viewer.bottomRow.Objects) > 1
+	if viewer.bottomRow.Visible() != rowVisible {
+		changed = true
+		if rowVisible {
+			viewer.bottomRow.Show()
+		} else {
+			viewer.bottomRow.Hide()
+		}
+	}
+	if !changed {
+		return
+	}
+	viewer.bottomRow.Layout.Layout(viewer.bottomRow.Objects, viewer.bottomRow.Size())
+	if viewer.mainBorder != nil {
+		viewer.mainBorder.Layout.Layout(viewer.mainBorder.Objects, viewer.mainBorder.Size())
+		canvas.Refresh(viewer.mainBorder)
+	}
+}
+
+// BottomBarVisible reports whether the gallery's own bottom bar (pagination
+// and side buttons) is currently shown.
+func (viewer *Gallery) BottomBarVisible() bool {
+	return viewer.bottomRow != nil && viewer.bottomRow.Visible()
+}
+
+// ShowMenuAt opens the gallery's ☰ popup menu anchored above anchor's
+// bottom-right corner — for apps that host the menu button themselves
+// (HideMenuButton).
+func (viewer *Gallery) ShowMenuAt(anchor fyne.CanvasObject) {
+	viewer.showGalleryMenuAt(anchor)
 }
 
 // showGalleryMenu displays a popup menu with gallery options.
 func (viewer *Gallery) showGalleryMenu() {
+	// Position the menu near the button that opened it: the floating button
+	// while the image view is on screen, otherwise the bottom-bar button.
+	var anchor fyne.CanvasObject = viewer.menuButton
+	if viewer.imageViewActive() && viewer.imageMenuButton != nil {
+		anchor = viewer.imageMenuButton
+	}
+	viewer.showGalleryMenuAt(anchor)
+}
+
+func (viewer *Gallery) showGalleryMenuAt(anchor fyne.CanvasObject) {
 	// Build menu items
 	var items []*fyne.MenuItem
 
@@ -549,13 +630,7 @@ func (viewer *Gallery) showGalleryMenu() {
 	menu := fyne.NewMenu("", items...)
 	popUpMenu := widget.NewPopUpMenu(menu, viewer.window.Canvas())
 
-	// Position the menu at the bottom-right, near the button that opened it:
-	// the floating button while the image view is on screen, otherwise the
-	// bottom-bar button.
-	anchor := viewer.menuButton
-	if viewer.imageViewActive() && viewer.imageMenuButton != nil {
-		anchor = viewer.imageMenuButton
-	}
+	// Position the menu at the bottom-right of the anchor.
 	buttonPos := fyne.CurrentApp().Driver().AbsolutePositionForObject(anchor)
 	buttonSize := anchor.Size()
 
@@ -597,6 +672,13 @@ func (viewer *Gallery) LoadGallery() {
 	if viewer.scroll != nil {
 		viewer.scroll.ScrollToOffset(fyne.NewPos(0, 0))
 	}
+}
+
+// Loaded reports whether the grid has been laid out at least once
+// (LoadGallery ran), so an embedding app can re-show Content as-is instead
+// of reloading it.
+func (viewer *Gallery) Loaded() bool {
+	return viewer.galleryLoaded
 }
 
 func (viewer *Gallery) CurrentImageInfo() *ImageInfo {

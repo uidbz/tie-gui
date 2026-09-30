@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"image"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -24,9 +25,21 @@ func (b *browsePage) openAlbum(a data.Album) {
 
 // showBrowse restores the browse wall as the window content, in its
 // configured rendering (cover grid or album table).
+//
+// Coming back from another view (the playlist, settings, an album) re-shows
+// the grid as it was — same page, same scroll position — instead of
+// reloading every tile; only a wall whose contents were swapped behind its
+// back (wallStale) is re-rendered.
 func (b *browsePage) showBrowse() {
 	b.albumOpen = false
-	b.showWall()
+	b.albumTable = nil
+	b.albumPlaying = nil
+	if b.wallStale || b.tableMode() || !b.viewer.Loaded() {
+		b.wallStale = false
+		b.showWall()
+		return
+	}
+	b.win.SetContent(b.viewer.Content)
 }
 
 // showAlbumView replaces the page content with an album header and track list.
@@ -64,11 +77,25 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 	}
 	subtitle := widget.NewLabel(subtitleText)
 
+	// "Now playing" chip: shown while one of this album's tracks plays,
+	// naming it; a tap reveals the playing row (and on a phone opens Now
+	// Playing, where the seek slider lives).
+	nowChip := widget.NewButtonWithIcon("", theme.MediaPlayIcon(), func() {
+		if b.onNowPlayingChip != nil {
+			b.onNowPlayingChip()
+		}
+	})
+	nowChip.Importance = widget.LowImportance
+	nowChip.Alignment = widget.ButtonAlignLeading
+	nowChip.Hide()
+	b.albumPlaying = nowChip
+
 	header := container.NewVBox(
 		container.NewHBox(back),
 		title,
 		subtitle,
 		container.NewHBox(playBtn, queueBtn),
+		nowChip,
 		widget.NewSeparator(),
 	)
 
@@ -88,6 +115,14 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 			colKeys = nil
 			opts = trackTableOpts{sortable: true, defaultCols: compactAlbumColumns}
 		}
+		// The leading column marks the playing track, like the playlist's.
+		opts.indicator = func(row int) string {
+			if table != nil && row >= 0 && row < len(table.tracks) &&
+				b.playingHash != "" && table.tracks[row].Hash == b.playingHash {
+				return "▶"
+			}
+			return ""
+		}
 		table = newTrackTable(b.win, tracks, colKeys,
 			// Play from the displayed (possibly re-sorted) order, so a tap starts
 			// playback from that visible row onward.
@@ -98,11 +133,71 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 		body = table.object
 	}
 
+	b.albumTable = table
+	b.syncAlbumNowPlaying()
 	b.win.SetContent(container.NewBorder(header, nil, nil, nil, body))
 	if table != nil {
 		table.show() // size the Title column now that the canvas width is known
 	}
 }
+
+// playingRow is the display row of the playing track in the open album view,
+// or -1.
+func (b *browsePage) playingRow() int {
+	if !b.albumOpen || b.albumTable == nil || b.playingHash == "" {
+		return -1
+	}
+	for i, t := range b.albumTable.tracks {
+		if t.Hash == b.playingHash {
+			return i
+		}
+	}
+	return -1
+}
+
+// syncAlbumNowPlaying updates the open album view's "Now playing" chip for
+// the current track (the row indicator re-renders on the table refresh the
+// caller issues).
+func (b *browsePage) syncAlbumNowPlaying() {
+	if b.albumPlaying == nil {
+		return
+	}
+	row := b.playingRow()
+	if row < 0 {
+		b.albumPlaying.Hide()
+		return
+	}
+	b.albumPlaying.SetText("Now playing: " + b.albumTable.tracks[row].Display())
+	b.albumPlaying.Show()
+}
+
+// revealPlayingRow scrolls the open album view to its playing track.
+func (b *browsePage) revealPlayingRow() {
+	if row := b.playingRow(); row >= 0 {
+		b.albumTable.table.GetFlexTable().ScrollToRow(row)
+	}
+}
+
+// albumNowPlaying is a transportView that tells the browse page which track
+// is playing, so an open album view can mark its row and show the "Now
+// playing" chip. It only touches the widgets when the track changes.
+type albumNowPlaying struct {
+	page *browsePage
+}
+
+func (v *albumNowPlaying) apply(st transportState) {
+	b := v.page
+	if st.trackHash == b.playingHash {
+		return
+	}
+	b.playingHash = st.trackHash
+	if b.albumOpen && b.albumTable != nil {
+		b.albumTable.table.Refresh()
+		b.syncAlbumNowPlaying()
+	}
+}
+
+func (v *albumNowPlaying) setCover(image.Image) {}
 
 // saveAlbumColumns persists the album track-table's visible-column set/order to
 // the app config so it survives across sessions.

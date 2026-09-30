@@ -100,6 +100,21 @@ type browsePage struct {
 	// happen on the UI goroutine (inside fyne.Do), so no mutex is needed.
 	allTags []string
 	starred []string
+
+	// wallStale marks the gallery's contents as swapped without a re-render
+	// (clearAlbums), so the next showBrowse must reload the grid. Otherwise
+	// returning to the wall just re-shows it, keeping the scroll position.
+	wallStale bool
+	// onNowPlayingChip handles a tap on an open album's "Now playing" chip
+	// (set by the App shell).
+	onNowPlayingChip func()
+
+	// playingHash is the tie hash of the track now playing (albumNowPlaying
+	// feeds it); an open album view marks that row. albumTable and
+	// albumPlaying are the open album view's table and "Now playing" chip.
+	playingHash  string
+	albumTable   *trackTable
+	albumPlaying *widget.Button
 }
 
 // newBrowsePage builds the cover wall and its sidebar for the given session.
@@ -135,7 +150,7 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 	}
 	b.fsTree = newTieFSTree(b)
 	b.viewer.Sidebar = b.buildSidebar()
-	b.viewer.SidebarDrawer = compact
+	b.setGalleryChrome(compact)
 	b.viewer.Init()
 	// The file-browser tab shows hidden directories only on demand, toggled
 	// from the gallery ☰ menu (matching tie-view). "Reload albums" re-runs
@@ -147,12 +162,17 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 		if b.fsTree.showHidden {
 			label = "Hide hidden directories"
 		}
+		// The compact nav bar's ☰ opens this menu over the table view too.
+		viewLabel := "Table view"
+		if b.tableMode() {
+			viewLabel = "Cover view"
+		}
 		return []*fyne.MenuItem{
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
 			fyne.NewMenuItem("Reload albums", b.reloadWall),
 			// Swap the cover grid for a sortable table of the same albums;
 			// the table view's own button row carries the way back.
-			fyne.NewMenuItem("Table view", b.toggleWallView),
+			fyne.NewMenuItem(viewLabel, b.toggleWallView),
 		}
 	}
 	b.viewer.ToggleLabels() // album titles under covers, on by default
@@ -185,12 +205,38 @@ func (b *browsePage) setCompact(compact bool) {
 		return
 	}
 	b.compact = compact
-	b.viewer.SidebarDrawer = compact
+	b.setGalleryChrome(compact)
+	b.syncSettingsTab()
 	b.viewer.CreateView()
 	if b.wallTable != nil {
 		b.wallTable.setCompact(compact)
 	}
 	b.updateFilterChips()
+}
+
+// setGalleryChrome configures the gallery for the layout mode. In the compact
+// layout the sidebar is a drawer, and the gallery's bottom-bar side buttons
+// are dropped: the App's persistent nav bar carries both the drawer (Tags)
+// and the ☰ menu, so the gallery's bar shrinks to its page links — and
+// vanishes on a single-page wall.
+func (b *browsePage) setGalleryChrome(compact bool) {
+	b.viewer.SidebarDrawer = compact
+	b.viewer.HideSidebarToggle = compact
+	b.viewer.HideMenuButton = compact
+}
+
+// showMenuAt opens the library's ☰ menu (the gallery menu plus the page's own
+// items) anchored at anchor — the compact nav bar's Menu slot.
+func (b *browsePage) showMenuAt(anchor fyne.CanvasObject) {
+	b.viewer.ShowMenuAt(anchor)
+}
+
+// showTagsTab switches the sidebar to its Tags tab (the nav bar's Tags
+// destination; the Settings tab may have been left selected).
+func (b *browsePage) showTagsTab() {
+	if b.tabs != nil && len(b.tabs.Items) > 0 {
+		b.tabs.SelectIndex(0)
+	}
 }
 
 // openSidebar shows the tag/files sidebar: opening the drawer in the compact
@@ -200,7 +246,9 @@ func (b *browsePage) openSidebar() {
 		return
 	}
 	// The cover wall must be the current view for the drawer to be visible.
-	b.showBrowse()
+	if b.albumOpen {
+		b.showBrowse()
+	}
 	b.viewer.OpenSidebar()
 }
 
@@ -292,16 +340,48 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 
 // setSettingsTab installs the Settings tab (created by the App shell, which
 // owns the settings page) as the sidebar's last tab, so the sidebar shows
-// Tags / Files / Settings like tie-view's.
+// Tags / Files / Settings like tie-view's — in the regular layout. In the
+// compact layout the persistent nav bar has its own Settings destination,
+// so the drawer keeps just Tags / Files (syncSettingsTab).
 func (b *browsePage) setSettingsTab(tab *container.TabItem) {
 	b.settingsTab = tab
-	b.tabs.Append(tab)
+	b.syncSettingsTab()
 }
 
-// showSettingsTab switches the sidebar to the Settings tab.
+// syncSettingsTab adds the Settings tab to the sidebar in the regular layout
+// and removes it in the compact one: two tab bars both offering Settings,
+// stacked above each other while the drawer is open, is one too many — and
+// the full-screen settings view reuses the tab's content object, which must
+// not have two on-screen parents.
+func (b *browsePage) syncSettingsTab() {
+	if b.settingsTab == nil || b.tabs == nil {
+		return
+	}
+	present := false
+	for _, it := range b.tabs.Items {
+		if it == b.settingsTab {
+			present = true
+		}
+	}
+	switch {
+	case b.compact && present:
+		b.tabs.Remove(b.settingsTab)
+	case !b.compact && !present:
+		b.tabs.Append(b.settingsTab)
+	}
+}
+
+// showSettingsTab switches the sidebar to the Settings tab (regular layout;
+// a no-op while the tab is not in the sidebar).
 func (b *browsePage) showSettingsTab() {
-	if b.settingsTab != nil {
-		b.tabs.Select(b.settingsTab)
+	if b.settingsTab == nil {
+		return
+	}
+	for _, it := range b.tabs.Items {
+		if it == b.settingsTab {
+			b.tabs.Select(b.settingsTab)
+			return
+		}
 	}
 }
 
@@ -415,6 +495,7 @@ func (b *browsePage) readers(albums []data.Album) []gallery.CustomReader {
 // renders when the user returns via showBrowse.
 func (b *browsePage) clearAlbums() {
 	b.feed = feedNone
+	b.wallStale = true
 	b.setWallAlbums(nil)
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		return []gallery.CustomReader{}

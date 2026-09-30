@@ -121,9 +121,13 @@ func TestWallTableLiveIntegration(t *testing.T) {
 	cfg.StartupTag = smokeTag
 	session := data.NewSession(cfg)
 	ensureSmokeAlbums(t, session)
+	// No live playback polls (see TestCompactNavLiveIntegration): the test
+	// driver runs fyne.Do inline, so they would race this goroutine.
+	session.Backend = &statusErrBackend{}
 
 	win := test.NewWindow(nil)
 	a := NewApp(win, session)
+	a.player.Stop()
 	win.SetContent(a.Root())
 	win.Resize(fyne.NewSize(1200, 800))
 

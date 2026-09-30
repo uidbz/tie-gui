@@ -89,6 +89,23 @@ func TestBuildQueueRowsHeaderLabels(t *testing.T) {
 	}
 }
 
+// A single-artist album names the artist once, on its header; a
+// various-artists album keeps the artist on every track row.
+func TestBuildQueueRowsTrackArtist(t *testing.T) {
+	rows := buildQueueRows([]data.Track{
+		{Title: "One", AlbumUID: "A", Album: "First", Artist: "X"},
+		{Title: "Two", AlbumUID: "A", Album: "First", Artist: "X"},
+		{Title: "Three", AlbumUID: "B", Album: "Comp", Artist: "Y"},
+		{Title: "Four", AlbumUID: "B", Album: "Comp", Artist: "Z"},
+	})
+	want := []string{"X · 2 tracks", "", "", "2 tracks", "Y", "Z"}
+	for i, w := range want {
+		if rows[i].subtitle != w {
+			t.Errorf("rows[%d].subtitle = %q, want %q", i, rows[i].subtitle, w)
+		}
+	}
+}
+
 // Tracks tie knows no album UID for still have to group, or a queue of loose
 // files would render one header per row.
 func TestBuildQueueRowsFallbackGrouping(t *testing.T) {

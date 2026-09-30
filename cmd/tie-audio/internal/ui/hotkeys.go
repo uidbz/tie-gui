@@ -22,9 +22,9 @@ func (a *App) initHotkeys() {
 	p := a.player
 	actions := map[string]func(){
 		config.HotkeyPlayPause:    p.togglePlay,
-		config.HotkeyStop:         func() { p.do(p.backend.Stop) },
-		config.HotkeyNext:         func() { p.do(p.backend.Next) },
-		config.HotkeyPrevious:     func() { p.do(p.backend.Previous) },
+		config.HotkeyStop:         func() { p.stop() },
+		config.HotkeyNext:         func() { p.next() },
+		config.HotkeyPrevious:     func() { p.previous() },
 		config.HotkeySeekForward:  func() { p.seekBy(10) },
 		config.HotkeySeekBackward: func() { p.seekBy(-10) },
 		config.HotkeyVolumeUp:     func() { p.volumeStep(0.1) },

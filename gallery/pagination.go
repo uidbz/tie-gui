@@ -131,6 +131,7 @@ func (viewer *Gallery) buildPagination() {
 		viewer.bottomBar.Add(page)
 	}
 	viewer.bottomBar.Refresh()
+	viewer.syncBottomRow()
 }
 
 // sizeWatcher is a transparent widget stacked behind the gallery grid whose
