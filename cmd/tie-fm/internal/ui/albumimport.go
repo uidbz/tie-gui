@@ -16,15 +16,25 @@ import (
 	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
+	"github.com/uidbz/tie-gui/tagselection"
 )
 
-// importAsAlbums starts a bulk album import of a local directory into tie: the
-// directory is scanned and clustered into albums (client.PlanAlbumImport), the
-// user reviews the plan (destinations, track counts, warnings), and the
-// confirmed groups import through the ops engine, each landing at its rendered
-// destination verbatim (Operations.ImportAlbum).
-func (fm *FileManager) importAsAlbums(e fs.Entry) {
+// importAsAlbums starts a bulk album import of one or more local directories
+// into tie: each directory is scanned and clustered into albums
+// (client.PlanAlbumImport), the user reviews the combined plan (destinations,
+// track counts, warnings), and the confirmed groups import through the ops
+// engine, each landing at its rendered destination verbatim
+// (Operations.ImportAlbum).
+func (fm *FileManager) importAsAlbums(entries []fs.Entry) {
 	fm.markActive()
+	entries = albumImportRoots(entries)
+	if len(entries) == 0 {
+		return
+	}
+	title := "Import as albums: " + entries[0].Name
+	if len(entries) > 1 {
+		title = fmt.Sprintf("Import as albums: %d directories", len(entries))
+	}
 	backend := fm.registry.For("tie:/")
 	if _, ok := backend.(fs.Importer); !ok {
 		return
@@ -45,8 +55,7 @@ func (fm *FileManager) importAsAlbums(e fs.Entry) {
 	typeSel.SetSelected("audio-dir")
 	custom := widget.NewEntry()
 	custom.PlaceHolder = "custom type (optional)"
-	tagsEntry := widget.NewEntry()
-	tagsEntry.PlaceHolder = "comma-separated tags (optional)"
+	tagSel := fm.newAlbumTagSelector(backend)
 
 	// The destination template renders each album's virtual path from its
 	// aggregated tags; the plan review dialog shows the rendered result per
@@ -85,13 +94,14 @@ func (fm *FileManager) importAsAlbums(e fs.Entry) {
 	custom.OnChanged = func(string) { fillTemplate() }
 	fillTemplate()
 
-	dialog.ShowForm("Import as albums: "+e.Name, "Scan", "Cancel",
+	var form *dialog.FormDialog
+	form = dialog.NewForm(title, "Scan", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("Directory type", typeSel),
 			widget.NewFormItem("Custom", custom),
 			widget.NewFormItem("Destination", tmplEntry),
 			widget.NewFormItem("", remember),
-			widget.NewFormItem("Tags", tagsEntry),
+			widget.NewFormItem("Tags", tagSel),
 		}, func(ok bool) {
 			if !ok {
 				return
@@ -108,8 +118,36 @@ func (fm *FileManager) importAsAlbums(e fs.Entry) {
 			if remember.Checked {
 				fm.saveAlbumTemplate(tc, dirType, tmpl)
 			}
-			fm.scanAlbumPlan(e, tc.Config, dirType, tmpl, splitTags(tagsEntry.Text))
+			tags, _ := tagSel.SelectedTags()
+			fm.scanAlbumPlan(entries, tc.Config, dirType, tmpl, tags)
 		}, fm.win)
+	// The dialog sizes itself once from its MinSize; grow/shrink it as the
+	// tag search dropdown opens and closes and the chip row appears.
+	tagSel.OnMinSizeChanged = func() { form.Resize(fyne.NewSize(0, 0)) }
+	form.Show()
+}
+
+// newAlbumTagSelector builds the album import form's tag picker: a search
+// entry over every known tag (loaded off the UI goroutine from the tie
+// backend) with the picked tags shown as removable chips in a row below it.
+// Enter on text matching no highlighted result creates a new tag.
+func (fm *FileManager) newAlbumTagSelector(backend fs.FileSystem) *tagselection.TagSelection {
+	ts := tagselection.NewTagChipSelection(fm.win)
+	ts.OnNewTag = func(tag string) { ts.AddSelected(tagselection.NewTagItemData(tag)) }
+	if store, ok := backend.(fs.TagStore); ok {
+		go func() {
+			tags, err := store.ListAllTags()
+			if err != nil {
+				return // free-form tags still work
+			}
+			fyne.Do(func() {
+				for _, t := range tags {
+					ts.AddTag(t)
+				}
+			})
+		}()
+	}
+	return ts
 }
 
 // defaultAlbumTemplate is the destination template suggested when the tie
@@ -140,50 +178,94 @@ func (fm *FileManager) saveAlbumTemplate(tc *client.TieClient, dirType, tmpl str
 	}
 }
 
-// splitTags parses a comma-separated tag list, trimming spaces and dropping
-// empties.
-func splitTags(s string) []string {
-	var tags []string
-	for tag := range strings.SplitSeq(s, ",") {
-		if tag = strings.TrimSpace(tag); tag != "" {
-			tags = append(tags, tag)
+// albumImportRoots filters entries down to the local directories an album
+// import can scan, dropping duplicates and directories nested inside another
+// selected one (their albums are already found by the outer scan, and would
+// otherwise be planned — and imported — twice).
+func albumImportRoots(entries []fs.Entry) []fs.Entry {
+	root := func(e fs.Entry) string {
+		return filepath.Clean(strings.TrimPrefix(e.Path, "file:"))
+	}
+	var dirs []fs.Entry
+	for _, e := range entries {
+		if e.IsDir && fs.IsLocal(e.Path) {
+			dirs = append(dirs, e)
 		}
 	}
-	return tags
+	var out []fs.Entry
+	for i, e := range dirs {
+		p := root(e)
+		covered := false
+		for j, o := range dirs {
+			if i == j {
+				continue
+			}
+			op := root(o)
+			if (op == p && j < i) || strings.HasPrefix(p, op+string(filepath.Separator)) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // scanAlbumPlan runs the album planner off the UI goroutine — probing a large
-// or network-mounted library can take minutes, so progress is shown. The
-// finished plan (or the scan error) returns to the UI goroutine via fyne.Do.
-// template overrides the tie config's ImportDest entry for dirType (an empty
-// string falls back to the config, then to source-path placement).
-func (fm *FileManager) scanAlbumPlan(e fs.Entry, cfg client.Config, dirType, template string, tags []string) {
-	root := strings.TrimPrefix(e.Path, "file:")
-	status := widget.NewLabel("Scanning " + root + " …")
+// or network-mounted library can take minutes, so progress is shown. Each
+// selected directory is scanned in turn and the groups are concatenated into
+// one plan; a directory that fails to scan is reported without discarding
+// the others' albums. The finished plan (or the scan errors) returns to the
+// UI goroutine via fyne.Do. template overrides the tie config's ImportDest
+// entry for dirType (an empty string falls back to the config, then to
+// source-path placement).
+func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirType, template string, tags []string) {
+	roots := make([]string, len(entries))
+	for i, e := range entries {
+		roots[i] = strings.TrimPrefix(e.Path, "file:")
+	}
+	status := widget.NewLabel("Scanning " + roots[0] + " …")
 	bar := widget.NewProgressBarInfinite()
 	scan := dialog.NewCustomWithoutButtons("Import as albums",
 		container.NewVBox(status, bar), fm.win)
 	scan.Show()
 	go func() {
-		plan, err := client.PlanAlbumImport(cfg, root, client.AlbumPlanOptions{
-			DirType:  dirType,
-			Template: template,
-			ScanProgress: func(scanned, total int) {
-				fyne.Do(func() {
-					status.SetText(fmt.Sprintf("Scanning %s — %d / %d files probed", root, scanned, total))
-				})
-			},
-		})
+		var plan []client.AlbumGroup
+		var errs []string
+		for i, root := range roots {
+			prefix := root
+			if len(roots) > 1 {
+				prefix = fmt.Sprintf("(%d/%d) %s", i+1, len(roots), root)
+			}
+			fyne.Do(func() { status.SetText("Scanning " + prefix + " …") })
+			groups, err := client.PlanAlbumImport(cfg, root, client.AlbumPlanOptions{
+				DirType:  dirType,
+				Template: template,
+				ScanProgress: func(scanned, total int) {
+					fyne.Do(func() {
+						status.SetText(fmt.Sprintf("Scanning %s — %d / %d files probed", prefix, scanned, total))
+					})
+				},
+			})
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", root, err))
+				continue
+			}
+			plan = append(plan, groups...)
+		}
 		fyne.Do(func() {
 			bar.Stop()
 			scan.Hide()
-			if err != nil {
-				dialog.ShowError(err, fm.win)
-				return
+			if len(errs) > 0 {
+				dialog.ShowError(errors.New(strings.Join(errs, "\n")), fm.win)
 			}
 			if len(plan) == 0 {
-				dialog.ShowInformation("Import as albums",
-					"No audio files or audio archives found in\n"+root, fm.win)
+				if len(errs) < len(roots) {
+					dialog.ShowInformation("Import as albums",
+						"No audio files or audio archives found in\n"+strings.Join(roots, "\n"), fm.win)
+				}
 				return
 			}
 			fm.showAlbumPlan(plan, dirType, tags)

@@ -5,7 +5,13 @@ One pass scans a directory tree, clusters the audio files into albums, lets
 you review where every album will land, and imports the checked albums one
 by one with progress and per-album error reporting.
 
-Invoke it from a **local directory's context menu → "Import as albums…"**.
+Invoke it from a **local directory's context menu → "Import as albums…"**
+(or the same item in the drag-drop menu). With several rows selected,
+right-clicking one of them imports **every selected local directory**: each
+is scanned in turn and their albums are reviewed together in one plan
+(non-directories are ignored, and a directory nested inside another selected
+one is skipped so its albums aren't planned twice). A directory that fails
+to scan is reported without discarding the others' albums.
 The import always targets the tie virtual filesystem; the current pane
 location is ignored — destinations come from the template (below).
 
@@ -32,7 +38,7 @@ location is ignored — destinations come from the template (below).
 | **Directory type** | The dir-type label stamped on each imported album root (`audio-dir` makes tie-audio see it as an album) and the key used to look up the destination template. Built-ins plus a free-form **Custom** entry. |
 | **Destination** | The template rendering each album's virtual path (see below). Pre-filled from the tie config's `[ImportDest]` entry for the picked type, falling back to `/{albumartist}/{year} - {album}`. Switching the type re-fills it unless you edited the field. Empty = keep the on-disk source paths (the legacy behavior). |
 | **Remember as default for this type** | Writes the template into the tie config's `[ImportDest]` section for the picked dir-type, so future imports **and the `tie` CLI** render the same layout. |
-| **Tags** | Comma-separated; applied to every imported track *and* to the album root, so the albums match tag queries (e.g. tie-audio's tag-driven cover wall). |
+| **Tags** | A tag picker: type to search the collection's existing tags (↑/↓ + Enter/Space or click to pick), or press Enter on text no result is highlighted for to create a new tag. Picked tags appear as chips in a row below the search box; a chip's ✕ removes it. Applied to every imported track *and* to the album root, so the albums match tag queries (e.g. tie-audio's tag-driven cover wall). |
 
 The template is validated when you click **Scan** — an unknown or
 unterminated `{variable}` is rejected before the (potentially long) scan

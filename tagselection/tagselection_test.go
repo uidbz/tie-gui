@@ -79,3 +79,39 @@ func TestRemoveSelected(t *testing.T) {
 		t.Errorf("a no-op removal fired the callback (%d times total)", fired)
 	}
 }
+
+// Chip mode renders the selection as one chip per tag below the search
+// entry, grows its MinSize with the first chip, and reports size changes.
+func TestChipSelection(t *testing.T) {
+	test.NewApp()
+	w := test.NewWindow(nil)
+	ts := NewTagChipSelection(w)
+	w.SetContent(ts)
+
+	sizeEvents := 0
+	ts.OnMinSizeChanged = func() { sizeEvents++ }
+	empty := ts.MinSize().Height
+
+	ts.AddSelected(NewTagItemData("rock"))
+	ts.AddSelected(NewTagItemData("jazz"))
+	ts.AddSelected(NewTagItemData("rock")) // duplicate: ignored
+	if got := len(ts.chipBox.Objects); got != 2 {
+		t.Fatalf("chips = %d, want 2", got)
+	}
+	if ts.MinSize().Height <= empty {
+		t.Fatalf("MinSize height %v did not grow past empty %v", ts.MinSize().Height, empty)
+	}
+	if sizeEvents == 0 {
+		t.Fatalf("OnMinSizeChanged never fired")
+	}
+
+	ts.RemoveSelected("rock")
+	included, _ := ts.SelectedTags()
+	if len(included) != 1 || included[0] != "jazz" || len(ts.chipBox.Objects) != 1 {
+		t.Fatalf("after remove: tags %v, chips %d", included, len(ts.chipBox.Objects))
+	}
+	ts.ClearSelected()
+	if len(ts.chipBox.Objects) != 0 || ts.MinSize().Height != empty {
+		t.Fatalf("after clear: chips %d, height %v", len(ts.chipBox.Objects), ts.MinSize().Height)
+	}
+}

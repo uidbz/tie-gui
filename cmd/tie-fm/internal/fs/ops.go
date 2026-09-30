@@ -21,6 +21,7 @@ type OpType int
 const (
 	OpCopy OpType = iota
 	OpMove
+	OpExtract // unpack archive A into directory B (Operations.Extract)
 )
 
 type Status int
@@ -255,6 +256,7 @@ type Op struct {
 
 	importer Importer   // non-nil when the destination is a remote backend (tie, mtp)
 	srcFS    FileSystem // non-nil when the source is a remote backend (export)
+	destFS   FileSystem // extraction: lists the destination for name collisions
 	// materializedPath, when set, is the local path copyFile reads from instead
 	// of op.A.Path — used when a remote source has been downloaded to a temp file.
 	materializedPath string
@@ -344,6 +346,8 @@ func (op *Op) Do() error {
 		return op.doCopy()
 	case OpMove:
 		return op.doMove()
+	case OpExtract:
+		return op.doExtract()
 	}
 	return nil
 }

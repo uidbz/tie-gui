@@ -10,7 +10,7 @@ Fyne fork — hence the monorepo.
 |------|------|
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tie-view/` | tie-network image viewer entry point (also opens local directories/images/archives like imgview) |
-| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider) |
+| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction") |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
@@ -588,10 +588,18 @@ stamps and edits them:
   TieType collapses multi-valued tie-types and never surfaces labels).
 - **Import as albums…** (local directory context menu,
   `ui/albumimport.go`; full user docs: `docs/TIE-FM-ALBUM-IMPORT.md`)
-  bulk-imports a local library as albums: a form picks the dir-type
+  bulk-imports a local library as albums — every selected local directory
+  when the right-clicked row is part of a multi-selection (`menuSet`; the
+  drag-drop menu offers it when the drag holds only local directories),
+  filtered by `albumImportRoots` (drops non-dirs, duplicates, and dirs nested
+  in another selected one) and scanned one root at a time into one combined
+  plan (per-root scan errors reported, other roots' albums kept): a form picks the dir-type
   (built-ins + custom, default `audio-dir` — it selects the label stamped on
-  each album root), a **destination template**, and optional comma-separated
-  **tags**, then `client.PlanAlbumImport` runs off the UI goroutine with a
+  each album root), a **destination template**, and optional
+  **tags** (a `tagselection.NewTagChipSelection` picker seeded from
+  `TagStore.ListAllTags`; picked/created tags render as removable chips in a
+  row below the search entry, and `OnMinSizeChanged` resizes the form dialog
+  as the dropdown/chip row appear), then `client.PlanAlbumImport` runs off the UI goroutine with a
   ScanProgress dialog (network-mounted libraries take minutes to probe), and
   a plan dialog lists one checkbox row per album (title, rendered
   destination, tracks, size, warnings; dest-less groups are fixed
@@ -631,6 +639,36 @@ stamps and edits them:
   (`Op.AlbumArtist`/`AlbumTitle`/`AlbumYear`). Archive groups tag only the
   blob — the destination directory stays unlabeled, untagged and without
   aggregates.
+
+---
+
+## tie-fm archive extraction (`cmd/tie-fm/internal/fs/extract.go`)
+
+The context menu's **Extract archive to here** (`extractMenuItem`,
+`ui/filemanager.go`) appears on archive rows — detected by name
+(`fs.IsArchiveName`: zip/cbz/rar/cbr/7z/cb7/tar and compressed tarballs; a
+bare `.gz` is not an archive), since tie/mtp entries can't be sniffed
+without a download. It covers every archive of the selection when the
+clicked row is part of it (`menuSet`; "Extract N archives to here"), and is
+withheld from tag-query listings (rows from anywhere — no single "here")
+and from remote locations without an `Importer`. Each archive becomes one
+`Operations.Extract` op (`OpExtract`) into the pane's current directory:
+
+- A remote archive (tie, mtp) is materialized first; a remote destination
+  receives each member staged to a temp file and imported via
+  `op.importFile` (so tie extraction gets the normal import triples and
+  versioning). Remote→remote works because of the materialize step.
+- Two passes over `archives.Extractor` (mholt, streaming — not the
+  `fs.FS` view, which re-scans solid tarballs per member): headers only
+  (placement + `TotalSize`), then the write.
+- Placement (`extractPlan`): a single top-level entry extracts as-is;
+  several are wrapped in a folder named after the archive (`archiveStem`
+  strips `.tar.gz` etc.). The top-level name is made unique against the
+  destination's listing (`uniqueName`: `x (2)`, `a (2).txt`), so nothing is
+  overwritten.
+- Member paths are sanitized (`cleanMemberPath`: absolute and `..` escapes
+  dropped — zip slip); symlinks/devices are skipped. Local extraction is
+  pausable and counts bytes written; a remote one counts upload bytes.
 
 ---
 
@@ -1196,6 +1234,8 @@ default points at the user's real server via their config file.
 | `SetSelectedMaxRows(n)` | Cap visible rows in the selected-tag list (0 = uncapped) |
 | `SetStarred([]string)` | Replace the starred-tag set and refresh the quick-pick list |
 | `OnSelectedChanged func()` | Callback fired on any selection change |
+| `NewTagChipSelection(window)` | Compact variant for forms/dialogs: search entry with the selected tags as a horizontal row of removable chips below it (dropdown overlays the chips); no quick-pick list, `KeepSearchFocus` on |
+| `OnMinSizeChanged func()` | Fired when MinSize may have changed (dropdown open/close, chip row changes) — for parents that don't re-measure children themselves, e.g. a dialog (`FormDialog.Resize(fyne.NewSize(0, 0))`) |
 | `OnNewTag func(tag string)` | Called when user presses Enter with typed text but no row highlighted; nil in sidebar, set by image tagger |
 | `OnStar func(tag string, starred bool)` | Called when user clicks ☆/★ on a quick-pick item; set by the tie-view/tie-audio sidebars and the image tagger |
 | `ShowStars bool` | When true, quick-pick items show a ☆/★ toggle button; must be set before first render; used by the tie-view/tie-audio sidebars and the image tagger |

@@ -460,6 +460,65 @@ type TagSelection struct {
 	search             *SearchItem
 	window             fyne.Window
 	caseMap            map[string]string // lowercase tag -> original case
+
+	// OnMinSizeChanged, when non-nil, is called on the UI goroutine whenever
+	// the widget's MinSize may have changed (search dropdown opened/closed,
+	// chip row gained/lost its first chip). Containers that do not re-measure
+	// their children on their own — e.g. a dialog — use it to resize.
+	OnMinSizeChanged func()
+
+	chipMode bool            // selected tags render as a horizontal chip row
+	chipBox  *fyne.Container // HBox of chips (chip mode only)
+}
+
+// searchClosedHeight is the SearchItem height with its dropdown hidden.
+const searchClosedHeight = 35
+
+// NewTagChipSelection returns a compact TagSelection for forms and dialogs:
+// the search entry on top, and the selected tags as a horizontal row of
+// removable chips directly below it. There is no quick-pick list and no
+// include/exclude toggle; the search dropdown overlays the chip row. Picking
+// a search result (or pressing Enter on free text, when OnNewTag is set)
+// appends a chip; a chip's ✕ removes its tag.
+func NewTagChipSelection(window fyne.Window) *TagSelection {
+	ts := NewTagSelection(window)
+	ts.chipMode = true
+	ts.KeepSearchFocus = true
+	ts.chipBox = container.NewHBox()
+	ts.content = container.NewHScroll(ts.chipBox)
+	return ts
+}
+
+// newChip renders one selected tag as a rounded chip with a remove button.
+func (ts *TagSelection) newChip(tid *TagItemData) fyne.CanvasObject {
+	fill := color.Color(color.RGBA{85, 170, 127, 255})
+	text := tid.text
+	if !tid.include {
+		fill = theme.ErrorColor()
+		text = "−" + text
+	}
+	bg := canvas.NewRectangle(fill)
+	bg.CornerRadius = 5
+	tag := tid.text
+	remove := widget.NewButtonWithIcon("", theme.CancelIcon(), func() { ts.RemoveSelected(tag) })
+	remove.Importance = widget.LowImportance
+	return container.NewStack(bg, container.NewHBox(widget.NewLabel(text), remove))
+}
+
+// selectionChanged re-renders the chip row (chip mode) after the selected
+// list changed and reports the possible MinSize change.
+func (ts *TagSelection) selectionChanged() {
+	if !ts.chipMode {
+		return
+	}
+	chips := make([]fyne.CanvasObject, 0, len(ts.selected))
+	for _, tid := range ts.selected {
+		chips = append(chips, ts.newChip(tid))
+	}
+	ts.chipBox.Objects = chips
+	ts.chipBox.Refresh()
+	ts.content.Refresh()
+	ts.relayout()
 }
 
 type AutoExpandingList struct {
@@ -537,6 +596,7 @@ func NewTagSelection(window fyne.Window) *TagSelection {
 
 	ts.selectedList.OnSelected = func(i int) {
 		ts.selected = slices.Delete(ts.selected, i, i+1)
+		ts.selectionChanged()
 		if ts.OnSelectedChanged != nil {
 			ts.OnSelectedChanged()
 		}
@@ -567,6 +627,15 @@ func (ts *TagSelection) SelectedTags() (included []string, excluded []string) {
 
 func (ts *TagSelection) MinSize() fyne.Size {
 	searchHeight := ts.search.MinSize().Height
+	if ts.chipMode {
+		// The dropdown overlays the chip row, so the widget is as tall as
+		// whichever of the two reaches further down.
+		h := float32(searchClosedHeight)
+		if len(ts.selected) > 0 {
+			h += theme.Padding() + ts.content.MinSize().Height
+		}
+		return fyne.NewSize(200, fyne.Max(h, searchHeight))
+	}
 	return fyne.NewSize(200, searchHeight+theme.Padding()+ts.content.MinSize().Height)
 }
 
@@ -579,6 +648,9 @@ func (ts *TagSelection) Refresh() {
 func (ts *TagSelection) relayout() {
 	ts.Resize(ts.MinSize())
 	canvas.Refresh(ts)
+	if ts.OnMinSizeChanged != nil {
+		ts.OnMinSizeChanged()
+	}
 }
 
 // AddTag inserts a tag into the search trie (lowercased for case-insensitive
@@ -626,6 +698,7 @@ func (ts *TagSelection) SetFavorites(tags []string) {
 func (ts *TagSelection) ClearSelected() {
 	ts.selected = ts.selected[:0]
 	ts.selectedList.Refresh()
+	ts.selectionChanged()
 }
 
 // SetListLabel changes the bold label above the quick-pick tag list
@@ -714,6 +787,7 @@ func (ts *TagSelection) AddSelected(tid *TagItemData) {
 		}
 	}
 	ts.selected = append(ts.selected, tid)
+	ts.selectionChanged()
 	if ts.OnSelectedChanged != nil {
 		ts.OnSelectedChanged()
 	}
@@ -731,6 +805,7 @@ func (ts *TagSelection) SetSelected(tags []string) {
 		ts.selected = append(ts.selected, NewTagItemData(tag))
 	}
 	ts.selectedList.Refresh()
+	ts.selectionChanged()
 }
 
 // RemoveSelected drops tag from the selected list — included or excluded —
@@ -749,6 +824,7 @@ func (ts *TagSelection) RemoveSelected(tag string) bool {
 		}
 		ts.selected = append(ts.selected[:i], ts.selected[i+1:]...)
 		ts.selectedList.Refresh()
+		ts.selectionChanged()
 		if ts.OnSelectedChanged != nil {
 			ts.OnSelectedChanged()
 		}
@@ -790,6 +866,16 @@ func (tsr *TagSelectionRenderer) MinSize() fyne.Size {
 
 func (tsr *TagSelectionRenderer) Layout(s fyne.Size) {
 	searchHeight := tsr.ts.search.MinSize().Height
+	if tsr.ts.chipMode {
+		// Chips sit right below the entry; the search widget (rendered
+		// after content, so on top for both painting and hit-testing) lets
+		// its dropdown overlay them.
+		contentPosY := float32(searchClosedHeight) + theme.Padding()
+		tsr.ts.content.Move(fyne.NewPos(0, contentPosY))
+		tsr.ts.content.Resize(fyne.NewSize(s.Width, tsr.ts.content.MinSize().Height))
+		tsr.ts.search.Resize(fyne.NewSize(s.Width, searchHeight))
+		return
+	}
 	contentPosY := searchHeight + theme.Padding()
 	tsr.ts.search.Resize(fyne.NewSize(s.Width, searchHeight))
 	tsr.ts.content.Move(fyne.NewPos(0, contentPosY))

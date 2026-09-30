@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -163,16 +164,100 @@ func TestDropMenuOffersAlbumImport(t *testing.T) {
 	if !hasItem(items, "Import as albums…") {
 		t.Errorf("drop menu = %v, want Import as albums…", items)
 	}
-	// A multi-entry drag or a non-directory keeps the menu transfer-only.
+	// A non-directory (alone or mixed in) keeps the menu transfer-only.
 	set = []fs.Entry{{Name: "song.flac", Path: "/tmp/song.flac"}}
 	if hasItem(src.dropMenuItems(set, dst), "Import as albums…") {
 		t.Errorf("file drag unexpectedly offers Import as albums…")
 	}
 	set = []fs.Entry{
 		{Name: "a", Path: "/tmp/a", IsDir: true},
-		{Name: "b", Path: "/tmp/b", IsDir: true},
+		{Name: "song.flac", Path: "/tmp/song.flac"},
 	}
 	if hasItem(src.dropMenuItems(set, dst), "Import as albums…") {
-		t.Errorf("multi-dir drag unexpectedly offers Import as albums…")
+		t.Errorf("mixed drag unexpectedly offers Import as albums…")
+	}
+	// Several local directories import together.
+	set = []fs.Entry{
+		{Name: "a", Path: "/tmp/a", IsDir: true},
+		{Name: "b", Path: "/tmp/b", IsDir: true},
+	}
+	if !hasItem(src.dropMenuItems(set, dst), "Import as albums…") {
+		t.Errorf("multi-dir drag should offer Import as albums…")
+	}
+}
+
+// TestContextMenuSetUsesSelection checks a right-click on a selected row acts
+// on the whole selection, and on an unselected row only on that row.
+func TestContextMenuSetUsesSelection(t *testing.T) {
+	a := fs.Entry{Name: "a", Path: "/tmp/a", IsDir: true}
+	b := fs.Entry{Name: "b", Path: "/tmp/b", IsDir: true}
+	c := fs.Entry{Name: "c", Path: "/tmp/c", IsDir: true}
+	fm := &FileManager{selectedEntries: []fs.Entry{a, b}}
+	if got := fm.menuSet(b); len(got) != 2 {
+		t.Errorf("menuSet(selected) = %v, want both selected entries", got)
+	}
+	if got := fm.menuSet(c); len(got) != 1 || got[0].Path != c.Path {
+		t.Errorf("menuSet(unselected) = %v, want [c]", got)
+	}
+}
+
+// TestAlbumImportRoots checks the multi-directory filter: non-local and
+// non-directory entries drop out, as do duplicates and nested directories.
+func TestAlbumImportRoots(t *testing.T) {
+	got := albumImportRoots([]fs.Entry{
+		{Name: "music", Path: "/tmp/music", IsDir: true},
+		{Name: "sub", Path: "/tmp/music/sub", IsDir: true},
+		{Name: "other", Path: "/tmp/other", IsDir: true},
+		{Name: "dup", Path: "/tmp/other", IsDir: true},
+		{Name: "musicx", Path: "/tmp/musicx", IsDir: true},
+		{Name: "song.flac", Path: "/tmp/song.flac"},
+		{Name: "tie", Path: "tie:/music", IsDir: true},
+	})
+	var paths []string
+	for _, e := range got {
+		paths = append(paths, e.Path)
+	}
+	want := []string{"/tmp/music", "/tmp/other", "/tmp/musicx"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Errorf("albumImportRoots = %v, want %v", paths, want)
+	}
+}
+
+// TestContextMenuExtractItem checks "Extract archive to here" appears for
+// archives only, covers every selected archive, and is withheld from tag-query
+// listings (no single "here").
+func TestContextMenuExtractItem(t *testing.T) {
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := &FileManager{ops: fs.NewOperations(reg), registry: reg, currentPath: binding.NewString()}
+	fm.currentPath.Set("/tmp")
+
+	label := func(e fs.Entry) string {
+		for _, item := range fm.contextMenuItems(e, 0) {
+			if strings.HasPrefix(item.Label, "Extract") {
+				return item.Label
+			}
+		}
+		return ""
+	}
+	zip := fs.Entry{Name: "a.zip", Path: "/tmp/a.zip"}
+	tgz := fs.Entry{Name: "b.tar.gz", Path: "/tmp/b.tar.gz"}
+	txt := fs.Entry{Name: "c.txt", Path: "/tmp/c.txt"}
+
+	if got := label(zip); got != "Extract archive to here" {
+		t.Errorf("archive: label = %q", got)
+	}
+	if got := label(txt); got != "" {
+		t.Errorf("plain file: unexpected %q", got)
+	}
+	fm.selectedEntries = []fs.Entry{zip, tgz, txt}
+	if got := label(tgz); got != "Extract 2 archives to here" {
+		t.Errorf("multi-selection: label = %q", got)
+	}
+	fm.selectedEntries = nil
+
+	fm.currentPath.Set("tie:/")
+	fm.queryInclude = []string{"x"}
+	if got := label(fs.Entry{Name: "a.zip", Path: "tie:/a.zip", Hash: "h"}); got != "" {
+		t.Errorf("tag query: unexpected %q", got)
 	}
 }

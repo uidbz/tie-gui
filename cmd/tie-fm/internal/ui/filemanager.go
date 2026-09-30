@@ -649,12 +649,17 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 	if fm.other != nil {
 		items = append(items, fm.transferItems([]fs.Entry{e}, fm.other, fs.IsTie(e.Path))...)
 	}
-	// Bulk album import scans a local directory and imports the discovered
-	// albums into tie at their rendered destinations.
+	// Bulk album import scans local directories and imports the discovered
+	// albums into tie at their rendered destinations. Right-clicking a row of
+	// a multi-selection imports every selected local directory.
 	if e.IsDir && fs.IsLocal(e.Path) {
 		if _, ok := fm.registry.For("tie:/").(fs.Importer); ok {
-			items = append(items, fyne.NewMenuItem("Import as albums…", func() { fm.importAsAlbums(e) }))
+			set := fm.menuSet(e)
+			items = append(items, fyne.NewMenuItem("Import as albums…", func() { fm.importAsAlbums(set) }))
 		}
+	}
+	if item := fm.extractMenuItem(e); item != nil {
+		items = append(items, item)
 	}
 	if !fs.IsTie(e.Path) {
 		items = append(items,
@@ -994,14 +999,88 @@ func (fm *FileManager) onDrop(row int, absPos fyne.Position) {
 	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("Transfer", items...), canvas, absPos)
 }
 
+// extractMenuItem returns the "Extract archive to here" item when e is an
+// archive, covering every archive of the selection when e is part of it (the
+// non-archive rows of a mixed selection are ignored). "Here" is the pane's
+// current directory, so the item is withheld from tag-query listings (their
+// rows come from anywhere in the collection) and from locations whose backend
+// cannot receive files.
+func (fm *FileManager) extractMenuItem(e fs.Entry) *fyne.MenuItem {
+	if e.IsDir || !fs.IsArchiveName(e.Name) || fm.queryActive() {
+		return nil
+	}
+	here := fm.destEntry()
+	if !fs.IsLocal(here.Path) {
+		if _, ok := fm.registry.For(here.Path).(fs.Importer); !ok {
+			return nil
+		}
+	}
+	var archives []fs.Entry
+	for _, s := range fm.menuSet(e) {
+		if !s.IsDir && fs.IsArchiveName(s.Name) {
+			archives = append(archives, s)
+		}
+	}
+	label := "Extract archive to here"
+	if len(archives) > 1 {
+		label = fmt.Sprintf("Extract %d archives to here", len(archives))
+	}
+	return fyne.NewMenuItem(label, func() { fm.extractArchives(archives, here) })
+}
+
+// extractArchives enqueues one extraction op per archive into dest. Each
+// finished op reloads the pane (and the sibling pane when it shows the same
+// directory); failures are reported per archive.
+func (fm *FileManager) extractArchives(archives []fs.Entry, dest fs.Entry) {
+	fm.markActive()
+	destPath := fm.pathValue()
+	done := func(op *fs.Op) {
+		fyne.Do(func() {
+			if op.Err != nil {
+				dialog.ShowError(fmt.Errorf("extracting %s: %w", op.A.Name, op.Err), fm.win)
+			}
+			if fm.pathValue() == destPath {
+				fm.reload()
+			}
+			if fm.other != nil && fm.other.pathValue() == destPath {
+				fm.other.reload()
+			}
+		})
+	}
+	// The ops queue is small and feeding it blocks; enqueue off the UI goroutine.
+	go func() {
+		for _, a := range archives {
+			fm.ops.Extract(a, dest, done)
+		}
+	}()
+}
+
+// menuSet is the entry set a context-menu action on e applies to: the whole
+// selection when e is part of it, else just e.
+func (fm *FileManager) menuSet(e fs.Entry) []fs.Entry {
+	for _, s := range fm.selectedEntries {
+		if s.Path == e.Path {
+			return append([]fs.Entry(nil), fm.selectedEntries...)
+		}
+	}
+	return []fs.Entry{e}
+}
+
 // dropMenuItems builds the drag-drop menu: the plain copy/move transfer items,
-// plus "Import as albums…" when the drag carries exactly one local directory
+// plus "Import as albums…" when the drag carries only local directories
 // (the bulk-scan flow, like the context menu's item).
 func (fm *FileManager) dropMenuItems(set []fs.Entry, target *FileManager) []*fyne.MenuItem {
 	items := fm.transferItems(set, target, fs.IsTie(set[0].Path))
-	if len(set) == 1 && set[0].IsDir && fs.IsLocal(set[0].Path) {
-		e := set[0]
-		items = append(items, fyne.NewMenuItem("Import as albums…", func() { fm.importAsAlbums(e) }))
+	allLocalDirs := true
+	for _, e := range set {
+		if !e.IsDir || !fs.IsLocal(e.Path) {
+			allLocalDirs = false
+			break
+		}
+	}
+	if allLocalDirs {
+		set := append([]fs.Entry(nil), set...)
+		items = append(items, fyne.NewMenuItem("Import as albums…", func() { fm.importAsAlbums(set) }))
 	}
 	return items
 }
