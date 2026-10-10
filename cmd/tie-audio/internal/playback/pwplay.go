@@ -120,13 +120,27 @@ func (r *pwplayRemote) Remove(index int) error {
 	return r.c.RemoveTrack(index)
 }
 
-// PlayAlbum replaces the queue then plays. pwplay has no clear-playlist call
-// and processes add/remove asynchronously, so the order matters: we APPEND the
-// new tracks first, then trim exactly the old tracks off the front (index 0),
-// then Play. Because the new tracks stay at the back, the queue is never
-// transiently empty — which would flip the player to a stopped state and race
-// against Play — and trimming the recorded old count removes exactly the old
-// tracks regardless of how the async add/remove messages interleave.
+// PlayAlbum replaces the queue then plays. The server applies every playlist
+// mutation asynchronously in its decoder loop, so Play must not fire until the
+// replace has actually landed: a Play racing the mutations is swallowed (the
+// stale EOF decoder re-sets the stopped flag) and nothing plays until a second
+// Play. It also must not trim the old queue one track at a time while playing:
+// removing the *current* track makes the loop reload whatever now occupies the
+// current index — a full download of each old track in turn — before the next
+// removal lands, so the player churns through the whole old queue before
+// reaching the new album.
+//
+// Servers with /clear (ClearTracks) get the clean path: one atomic clear, wait
+// for the empty queue, add the new tracks, wait for exactly them, then Play.
+// The clear is only sent when the queue is actually non-empty: the settle wait
+// polls the applied playlist, and an already-empty queue matches instantly —
+// the queued clear could still land *after* the adds and wipe the new album.
+// Older servers (or an empty queue, where there is nothing to clear) fall back
+// to append-then-trim (never transiently empty mid-replace, which would flip
+// the player to stopped and race Play), but still wait for the queue to
+// *equal* the new tracks — the final length alone matches transiently
+// mid-mutation (old + adds − removes can hit len(urls) early), which is what
+// let the old implementation Play into a half-replaced queue.
 func (r *pwplayRemote) PlayAlbum(urls []string) error {
 	if len(urls) == 0 {
 		return nil
@@ -136,6 +150,20 @@ func (r *pwplayRemote) PlayAlbum(urls []string) error {
 		return err
 	}
 	oldCount := s.TotalTracks
+	if oldCount > 0 {
+		if err := r.c.ClearTracks(); err == nil {
+			if err := r.waitPlaylist(nil); err != nil { // wait for the empty queue
+				return err
+			}
+			if err := r.c.AddTracks(urls...); err != nil {
+				return err
+			}
+			if err := r.waitPlaylist(urls); err != nil {
+				return err
+			}
+			return r.c.Play()
+		}
+	}
 	if err := r.c.AddTracks(urls...); err != nil {
 		return err
 	}
@@ -146,22 +174,43 @@ func (r *pwplayRemote) PlayAlbum(urls []string) error {
 	}
 	// AddTracks/RemoveTrack are applied asynchronously by pwplay's decoder loop
 	// (buffered command channels), so Play() must not fire until the queue has
-	// actually settled to just the new tracks. Otherwise Play races the removal
-	// of the old current track (e.g. the startup placeholder) and its currentTrack
-	// reindex, and playback silently fails to start until a second Play. Poll the
-	// applied playlist length (TotalTracks reflects the loop-applied state) until
-	// it matches, with a bounded wait so a lost/extra track can't hang us.
-	for i := 0; i < 40; i++ {
+	// actually settled to just the new tracks. Poll until the applied playlist
+	// equals urls (content, not just length — see the doc comment), with a
+	// bounded wait so a lost/extra track can't hang us.
+	if err := r.waitPlaylist(urls); err != nil {
+		return err
+	}
+	return r.c.Play()
+}
+
+// waitPlaylist polls (bounded) until the applied playlist is exactly want —
+// i.e. every queued mutation has been applied by the decoder loop. Matching
+// the content, not just the length, makes the wait unambiguous mid-mutation.
+// want == nil waits for the empty queue.
+func (r *pwplayRemote) waitPlaylist(want []string) error {
+	for i := 0; i < 400; i++ {
 		st, err := r.c.Status()
 		if err != nil {
 			return err
 		}
-		if st.TotalTracks == len(urls) {
-			break
+		if playlistEquals(st.Playlist, want) {
+			return nil
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	return r.c.Play()
+	return nil // best effort: the caller's Play is still the right last resort
+}
+
+func playlistEquals(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *pwplayRemote) Play() error                  { return r.c.Play() }

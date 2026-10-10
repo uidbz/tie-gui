@@ -801,10 +801,14 @@ transport, seek/volume, `Status()` polling at 500 ms). Two backends:
   so the UI's URL-keyed metadata registry, resolver and playlist saving are
   unchanged. Queue mutations settle synchronously (bounded in-process polls
   of the engine's playlist length) so the UI's optimistic-update contract
-  holds; `PlayAlbum` mirrors the remote's append-trim-settle-play dance
-  (never a transient empty queue — the engine's `select` drains its command
-  channels in random order). `localBackend.Close()` (io.Closer) shuts the
-  engine down; `player.SetBackend` swaps backends live on settings Save.
+  holds; `PlayAlbum` is clear (only when the queue is non-empty — an empty one
+  matches the settle wait instantly, so a queued clear could land after the
+  adds and wipe them) → settle-to-empty → add → settle-to-exactly-the
+  new-urls → Play (settling between phases is what makes the clear safe; the
+  old append-then-trim-front dance made the engine reload — full download —
+  every old track whose removal displaced the current index). `localBackend.Close()`
+  (io.Closer) shuts the engine down; `player.SetBackend` swaps backends live on
+  settings Save.
 
 Selection: `AppConfig.Backend` = `pwplay` | `local` (Settings → "playback"
 select); empty = platform default — **local on Android, pwplay elsewhere**

@@ -121,23 +121,28 @@ func (b *localBackend) Remove(index int) error {
 	return nil
 }
 
-// PlayAlbum replaces the queue then plays. Like pwplayRemote, it appends the
-// new tracks first and then trims the old ones off the front — never a clear —
-// because engine queue mutations are drained asynchronously by its decoder
-// loop: a clear interleaving with the adds could empty the queue after them,
-// and Play firing into an empty queue leaves the engine stopped. Each settle
-// wait is monotonic, so it cannot observe a transient intermediate length.
+// PlayAlbum replaces the queue then plays: clear (one decoder-loop step that
+// also silences the ring immediately), wait for the empty queue, add the new
+// tracks, wait for exactly them, then Play. Settling between phases is what
+// makes the clear safe — a clear still queued when the adds land would empty
+// the queue after them, and Play firing into that empty queue leaves the
+// engine stopped. The clear is therefore only sent when the queue is actually
+// non-empty: an already-empty queue matches the settle wait instantly, so a
+// queued clear could still land after the adds and wipe the new album.
+// Trimming the old queue one track at a time instead (the old approach) makes
+// the loop reload — a full download of — each old track whose removal
+// displaced the current index, churning through the old queue before the new
+// album starts.
 func (b *localBackend) PlayAlbum(urls []string) error {
 	if len(urls) == 0 {
 		return nil
 	}
-	old := len(b.p.Playlist())
+	if len(b.p.Playlist()) > 0 {
+		b.p.ClearTracks()
+		b.waitTotal(0)
+	}
 	for _, u := range urls {
 		b.p.AddTrack(u)
-	}
-	b.waitTotal(old + len(urls))
-	for i := 0; i < old; i++ {
-		b.p.RemoveTrack(0)
 	}
 	b.waitTotal(len(urls))
 	b.p.Play()

@@ -4,9 +4,10 @@
 # on top of the tie stack (triplestore :2161 + filehost :2162) that lives in the tie
 # repo's own test-env, so audio playback can be driven end-to-end.
 
-# Absolute path to this directory and the tie-audio repo root.
+# Absolute path to this directory and the tie-audio repo root (this dir lives
+# under cmd/tie-audio/ since the fold-in into the monorepo).
 export TAP_ENV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export TAP_SRC="$(cd "$TAP_ENV/.." && pwd)"
+export TAP_SRC="$(cd "$TAP_ENV/../../.." && pwd)"
 
 # The tie stack test-env (triplestore + filehost + seeded audio albums). Override
 # TIE_TEST_ENV to point at a different checkout.
@@ -26,4 +27,4 @@ export TAP_LOGS="${TAP_ENV}/logs"
 export PWPLAY_BIN="${TAP_LOGS}/pwplay-server"
 export PWPLAY_PID="${TAP_LOGS}/pwplay-server.pid"
 export PWPLAY_LOG="${TAP_LOGS}/pwplay-server.log"
-export PWPLAY_SEED="${TAP_LOGS}/placeholder.mp3"
+export PWPLAY_SEED="${TAP_LOGS}/placeholder.wav"
