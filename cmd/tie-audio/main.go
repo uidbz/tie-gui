@@ -4,7 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -31,6 +34,8 @@ func main() {
 		return
 	}
 
+	forceExitOnSignal(3 * time.Second)
+
 	cfg, _ := config.Load()
 	session := data.NewSession(cfg)
 
@@ -43,4 +48,24 @@ func main() {
 		dialog.ShowError(fmt.Errorf("local playback unavailable, using pwplay remote: %w", session.BackendErr), w)
 	}
 	w.ShowAndRun()
+}
+
+// forceExitOnSignal makes SIGINT/SIGTERM (Ctrl+C, kill) always end the
+// process. Fyne handles those signals by queueing a Quit onto the UI
+// goroutine, so if that goroutine is ever blocked the signal does nothing and
+// only SIGKILL helps (tie-audio once hung like this in the playback engine's
+// Close). This handler runs alongside Fyne's: it gives the normal shutdown
+// grace to finish, then exits; a second signal exits immediately.
+func forceExitOnSignal(grace time.Duration) {
+	ch := make(chan os.Signal, 2)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-ch
+		select {
+		case <-ch:
+		case <-time.After(grace):
+			fmt.Fprintln(os.Stderr, "tie-audio: shutdown did not finish, forcing exit")
+		}
+		os.Exit(130)
+	}()
 }

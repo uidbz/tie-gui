@@ -5,7 +5,9 @@ package ui
 import (
 	"fmt"
 	"io"
+	"log"
 	"path"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -311,14 +313,40 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	win.SetOnClosed(func() {
 		a.player.Stop()
 		a.media.Stop()
-		a.mpris.Close()
-		// The local engine holds a sink and a decoder goroutine; close it.
+		// The MPRIS name and the local engine (a sink and a decoder goroutine)
+		// are released on the way out, but never at the cost of a hang: this
+		// runs on the UI goroutine, and a wedged Close here froze the window
+		// and made the process unkillable by Ctrl+C (Fyne's SIGINT handler
+		// queues its Quit onto this same goroutine). If cleanup overruns, the
+		// app exits anyway — the OS reclaims the sink and the bus name.
+		closeWithin(shutdownTimeout, "MPRIS", a.mpris.Close)
 		if c, ok := a.player.be().(io.Closer); ok {
-			_ = c.Close()
+			closeWithin(shutdownTimeout, "playback backend", func() { _ = c.Close() })
 		}
 	})
 	a.player.Start()
 	return a
+}
+
+// shutdownTimeout bounds each cleanup step on window close.
+const shutdownTimeout = 2 * time.Second
+
+// closeWithin runs fn and waits at most d for it to return. On timeout it
+// logs and returns, leaving fn running; used for cleanup on the way out,
+// where finishing exit matters more than finishing the cleanup.
+func closeWithin(d time.Duration, what string, fn func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		log.Printf("tie-audio: closing %s timed out after %v; exiting anyway", what, d)
+		return false
+	}
 }
 
 // enableMPRIS gates the desktop MPRIS server; tests turn it off so building

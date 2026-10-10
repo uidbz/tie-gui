@@ -791,7 +791,7 @@ transport, seek/volume, `Status()` polling at 500 ms). Two backends:
 - **pwplay remote** (`pwplay.go`) — drives a pwplay-server over HTTP.
 - **local** (`local.go`) — pwplay's own `player` engine
   (`github.com/uidbz/pwplay/player`, the same code pwplay-server runs:
-  gapless queue, boundary-accurate position, volume 0–2, pure-Go
+  gapless queue, boundary-accurate position, linear gain 0–2, pure-Go
   FLAC/MP3/WAV/OGG/Opus decoders) running in-process, outputting through the
   engine's platform sink: PipeWire on Linux, OpenSL ES on Android
   (`player/sink_opensl.go` in the pwplay repo; the sink abstraction is
@@ -809,6 +809,25 @@ transport, seek/volume, `Status()` polling at 500 ms). Two backends:
   every old track whose removal displaced the current index). `localBackend.Close()`
   (io.Closer) shuts the engine down; `player.SetBackend` swaps backends live on
   settings Save.
+
+**Volume is a level, not gain:** the backends (and pwplay's REST API) take
+linear gain 0–2, but every UI control — the sliders (`newVolumeSlider`,
+range 0…1), the `VolumeUp`/`VolumeDown` hotkeys (±0.1 level), MPRIS
+`Volume` — works in a perceptual *level* 0…1 on PipeWire/pavucontrol's
+cubic curve (gain = level³, `volumeLevel`/`volumeGain` in `transport.go`,
+backed by `pwplay/client.GainToLevel`/`LevelToGain`), capped at unity gain.
+`player.volume`, `pendVol` and `transportState.volume` are levels;
+conversion happens only at the backend boundary. The old linear 0–2 slider
+put unity gain at its middle, so 10–20 % on it sounded like ~80 % elsewhere,
+and its upper half clipped. The Android duck (×0.35) still scales raw gain.
+
+**Shutdown never blocks:** the window's `SetOnClosed` runs on the UI
+goroutine and bounds the MPRIS and backend `Close` calls with `closeWithin`
+(2 s each, then exit anyway), and `main.forceExitOnSignal` exits 3 s after
+SIGINT/SIGTERM (immediately on a second one). Fyne's own handler only
+queues `Quit` onto the UI goroutine, so a blocked UI goroutine used to make
+Ctrl+C a no-op — tie-audio hung like that when the engine's `Close` waited
+on a decoder spinning on its full ring while paused (fixed in pwplay).
 
 Selection: `AppConfig.Backend` = `pwplay` | `local` (Settings → "playback"
 select); empty = platform default — **local on Android, pwplay elsewhere**
@@ -831,9 +850,14 @@ active. The Java side (`PlaybackService` in the fork's dex), the JNI glue
 and tie-audio's custom `AndroidManifest.xml` are documented in
 docs/ANDROID.md ("tie-audio local playback").
 
-**Engine limitations inherited from pwplay-server:** the sink format is
-fixed by the first track loaded (a later different-rate track plays at the
-wrong speed), and formats are FLAC/MP3/WAV/OGG/Opus only (no AAC/M4A/ALAC).
+**Engine notes (pwplay `player`):** the sink always runs at the current
+track's native rate and channel count — it is reopened at each format change
+(after the previous track's buffered tail drains on a gapless advance, so a
+short gap only there; immediately on next/prev/goto), and position/duration
+use each track's own rate. Formats are FLAC/MP3/WAV/OGG/Opus only (no
+AAC/M4A/ALAC). The decoder loop never blocks on a full ring (it keeps the
+leftover samples for its next pass), so `Close` and every queue command are
+served promptly while paused.
 
 ---
 
@@ -1054,7 +1078,7 @@ in landscape) has room for the split layout:
 - **Desktop hotkeys** (`ui/hotkeys.go`): the app config's `[Hotkeys]` table
   binds playback actions to Fyne key names — `PlayPause`, `Stop`, `Next`,
   `Previous`, `SeekForward`/`SeekBackward` (±10 s), `VolumeUp`/`VolumeDown`
-  (±10 %). Defaults: Space, X, N, P, Right, Left, `=`, `-`. The table merges
+  (±10 % volume level, see "Volume is a level"). Defaults: Space, X, N, P, Right, Left, `=`, `-`. The table merges
   over the defaults per action (`config.ResolveHotkeys`): an unmentioned
   action keeps its default, an empty list unbinds it, unknown actions are
   ignored. Desktop only (`initHotkeys` returns early on mobile); the
