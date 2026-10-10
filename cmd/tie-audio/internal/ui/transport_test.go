@@ -2,6 +2,7 @@ package ui
 
 import (
 	"image"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -186,9 +187,10 @@ func TestMiniBarVolumeRowAndTitle(t *testing.T) {
 	}
 
 	p.SetQueue([]string{"http://h/abc"}, []data.Track{{Title: "Song", Artist: "Band"}})
-	p.apply(playback.Status{Volume: 0.4, Playlist: []string{"http://h/abc"}, CurrentTrack: 0, TotalTracks: 1})
-	if got := bar.volume.Value; got != 0.4 {
-		t.Errorf("volume slider = %v, want 0.4 after a poll", got)
+	// Gain 0.125 is level 0.5 on the cubic volume curve.
+	p.apply(playback.Status{Volume: 0.125, Playlist: []string{"http://h/abc"}, CurrentTrack: 0, TotalTracks: 1})
+	if got := bar.volume.Value; math.Abs(got-0.5) > 1e-9 {
+		t.Errorf("volume slider = %v, want 0.5 after a poll", got)
 	}
 	if !bar.title.Visible() || bar.title.Text != "Song · Band" {
 		t.Errorf("track line = %q (visible %v), want %q", bar.title.Text, bar.title.Visible(), "Song · Band")
@@ -296,5 +298,62 @@ func TestMPRISState(t *testing.T) {
 	none := mprisState(transportState{title: "Nothing playing", queueIndex: -1}, false, "file:///x.png")
 	if !none.Stopped || none.Title != "" || none.ArtURL != "" {
 		t.Errorf("no track state = %+v", none)
+	}
+}
+
+// The volume controls work in perceptual levels (0…1, cubic like PipeWire)
+// and send linear gain to the backend, never above unity: the old linear
+// 0…2 gain slider was far too loud over most of its range.
+func TestVolumeLevelsMapToCubicGain(t *testing.T) {
+	test.NewApp()
+
+	fb := &fakeBackend{}
+	p := newPlayer(fb, nil)
+	s := p.newVolumeSlider()
+	if s.Min != 0 || s.Max != 1 {
+		t.Fatalf("volume slider range = %v…%v, want 0…1", s.Min, s.Max)
+	}
+
+	s.OnChangeEnded(0.5)
+	waitVolumes(t, fb, 1)
+	if got := fb.lastVolume(); math.Abs(got-0.125) > 1e-9 {
+		t.Errorf("slider at 50%% sent gain %v, want 0.125", got)
+	}
+
+	// A poll at unity gain shows 100 %; stepping up stays at unity.
+	p.apply(playback.Status{Volume: 1})
+	p.volumeStep(0.1)
+	waitVolumes(t, fb, 2)
+	if got := fb.lastVolume(); got != 1 {
+		t.Errorf("volume step above 100%% sent gain %v, want 1", got)
+	}
+
+	// A boosted gain (set by another client) reads as 100 %, and a step down
+	// lands at level 0.9.
+	p.apply(playback.Status{Volume: 2})
+	if got := p.currentVolume(); got != 1 {
+		t.Errorf("level for gain 2 = %v, want 1", got)
+	}
+	p.volumeStep(-0.1)
+	waitVolumes(t, fb, 3)
+	if got := fb.lastVolume(); math.Abs(got-0.729) > 1e-9 {
+		t.Errorf("step down from 100%% sent gain %v, want 0.729", got)
+	}
+}
+
+func (f *fakeBackend) lastVolume() float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.volumes[len(f.volumes)-1]
+}
+
+func waitVolumes(t *testing.T, f *fakeBackend, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.volumeCount() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("got %d SetVolume calls, want %d", f.volumeCount(), n)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

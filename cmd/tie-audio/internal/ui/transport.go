@@ -11,6 +11,8 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/widget"
 
+	pwclient "github.com/uidbz/pwplay/client"
+
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
@@ -28,7 +30,9 @@ type transportState struct {
 	subtitle string // artist · album, empty when unknown
 	position float64
 	duration float64
-	volume   float64
+	// volume is the user-facing volume level 0…1 (see volumeLevel), not the
+	// backend's linear gain.
+	volume float64
 	// artist and album are the structured fields of the current track's tie
 	// metadata (empty when unknown); views render the combined subtitle, the
 	// Android media-session bridge needs them separately.
@@ -90,17 +94,17 @@ type player struct {
 	// listener, when set, receives every status snapshot on the UI goroutine.
 	// The queue view subscribes to stay live off the same poll as the player.
 	listener func(playback.Status)
-	playing  bool // last observed play state, for the play/pause toggle
-	volume   float64
-	seeking  bool // true while the user drags a seek slider
-	adjVol   bool // true while the user drags a volume slider
+	playing  bool    // last observed play state, for the play/pause toggle
+	volume   float64 // last observed volume level 0…1 (not gain; see volumeLevel)
+	seeking  bool    // true while the user drags a seek slider
+	adjVol   bool    // true while the user drags a volume slider
 	// applying is true while apply() is pushing server state into the views'
 	// sliders. Fyne's Slider.SetValue fires OnChangeEnded, so without this
 	// guard every poll's SetValue would echo back a Seek/SetVolume to the
 	// server — and each Seek clears pwplay's ring buffer, chopping the audio
 	// twice a second.
 	applying bool
-	pendVol  *float64 // volume just set locally, awaiting server confirmation
+	pendVol  *float64 // volume level just set locally, awaiting server confirmation
 	// pendSeek holds a just-released seek target awaiting server confirmation.
 	// Like pendVol, this prevents a poll that lands before the Seek propagates
 	// from snapping the thumb back to the stale position and then forward again.
@@ -212,9 +216,12 @@ func (p *player) newSeekSlider() *widget.Slider {
 }
 
 // newVolumeSlider builds a volume slider wired to this player (see
-// newSeekSlider for why construction lives here).
+// newSeekSlider for why construction lives here). The slider is a volume
+// *level* 0…1 on the cubic curve PipeWire/pavucontrol use (gain = level³),
+// capped at unity gain: a linear 0…2 gain slider was far too loud over most
+// of its range and clipped above the middle.
 func (p *player) newVolumeSlider() *widget.Slider {
-	s := widget.NewSlider(0, 2)
+	s := widget.NewSlider(0, 1)
 	s.Step = 0.01
 	s.SetValue(1)
 	s.OnChanged = func(float64) {
@@ -239,10 +246,18 @@ func (p *player) newVolumeSlider() *widget.Slider {
 		if applying {
 			return
 		}
-		go func() { _ = p.be().SetVolume(v) }()
+		go func() { _ = p.be().SetVolume(volumeGain(v)) }()
 	}
 	return s
 }
+
+// volumeLevel converts the backend's linear gain (Status.Volume: 0 silent,
+// 1 unity, up to 2) to the 0…1 level the sliders, hotkeys and MPRIS use;
+// volumeGain is the inverse. Loudness is perceived logarithmically, so the
+// level follows the same cubic curve as PipeWire and pavucontrol — 50 % here
+// sounds like 50 % in any other app. Gains above unity show as 100 %.
+func volumeLevel(gain float64) float64 { return pwclient.GainToLevel(gain) }
+func volumeGain(level float64) float64 { return pwclient.LevelToGain(level) }
 
 // SetQueue replaces the track registry; call it when the queue is replaced
 // (PlayAlbum). Keying by stream URL (not by index) means the mapping survives
@@ -347,7 +362,7 @@ func (p *player) stop()     { p.do(func() error { return p.be().Stop() }) }
 func (p *player) play()  { p.do(func() error { return p.be().Play() }) }
 func (p *player) pause() { p.do(func() error { return p.be().Pause() }) }
 
-// volumeStep nudges the volume by delta (the sliders' range is 0…2), holding
+// volumeStep nudges the volume level by delta (the sliders' range is 0…1), holding
 // the new value as pending so the next poll doesn't snap the sliders back
 // before the server confirms — the same guard the volume slider uses. Bound
 // to the VolumeUp/VolumeDown hotkeys.
@@ -357,21 +372,21 @@ func (p *player) volumeStep(delta float64) {
 	if v < 0 {
 		v = 0
 	}
-	if v > 2 {
-		v = 2
+	if v > 1 {
+		v = 1
 	}
 	p.pendVol = &v
 	p.mu.Unlock()
-	go func() { _ = p.be().SetVolume(v) }()
+	go func() { _ = p.be().SetVolume(volumeGain(v)) }()
 }
 
-// setVolume sets an absolute volume (0…2), with the same pending-value
+// setVolume sets an absolute volume level (0…1), with the same pending-value
 // guard as volumeStep. Used by the MPRIS bridge.
 func (p *player) setVolume(v float64) {
 	p.volumeStep(v - p.currentVolume())
 }
 
-// currentVolume is the last observed volume.
+// currentVolume is the last observed volume level (0…1).
 func (p *player) currentVolume() float64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -428,11 +443,12 @@ func (p *player) Stop() {
 // apply renders a status snapshot into every view. It runs on the UI goroutine.
 func (p *player) apply(s playback.Status) {
 	p.mu.Lock()
+	level := volumeLevel(s.Volume)
 	p.playing = s.Playing
-	p.volume = s.Volume
+	p.volume = level
 	seeking, adjVol := p.seeking, p.adjVol
 	pendVol := p.pendVol
-	if pendVol != nil && absDiff(s.Volume, *pendVol) < 0.02 {
+	if pendVol != nil && absDiff(level, *pendVol) < 0.02 {
 		// Server now reflects our local change; stop holding.
 		p.pendVol = nil
 		pendVol = nil
@@ -483,7 +499,7 @@ func (p *player) apply(s playback.Status) {
 		subtitle:      now.subtitle,
 		position:      pos,
 		duration:      s.TrackDuration,
-		volume:        s.Volume,
+		volume:        level,
 		artist:        now.artist,
 		album:         now.album,
 		hasTrack:      now.url != "",
