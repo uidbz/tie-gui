@@ -18,6 +18,14 @@ tie-fm browses two kinds of location side by side:
   sidebar (bookmarks).
 - Local file operations: copy, move, and delete (local-to-local), with a
   progress view.
+- Copy/move destination conflicts prompt with a Dolphin-style dialog (Skip /
+  Rename / Overwrite / Cancel, with "Apply to All" on multi-item transfers);
+  a skipped move keeps its source. Applies to local copies and tie imports
+  alike.
+- Context menu extras: "New file…" creates an empty file (local), and "Open
+  in terminal" starts a terminal at the directory (the command is configurable
+  under Menu → "Terminal…", falling back to `$TERMINAL` or the first known
+  terminal emulator in PATH; `%d` is replaced by the directory).
 - tie browsing with a tag panel that swaps between two modes:
   - **Filter by tags** when nothing is selected — pick include/exclude tags to
     query the listing. The quick-pick list shows your **favorite tags**, and

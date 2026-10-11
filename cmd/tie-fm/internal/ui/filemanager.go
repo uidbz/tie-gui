@@ -259,6 +259,9 @@ func (b *tappableBackground) CreateRenderer() fyne.WidgetRenderer {
 func (fm *FileManager) NavigateTo(p string) { fm.navigateTo(p) }
 
 func (fm *FileManager) pathValue() string {
+	if fm.currentPath == nil {
+		return ""
+	}
 	v, _ := fm.currentPath.Get()
 	return v
 }
@@ -644,6 +647,17 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 	}
 	if !e.IsDir {
 		items = append(items, fyne.NewMenuItem("Open with…", func() { fm.openWith(e) }))
+	}
+	// New file and Open in terminal act on the pane's current directory (the
+	// row is only where the menu was opened), so they are offered whenever
+	// the location's backend supports them.
+	if _, ok := fm.registry.For(fm.pathValue()).(fs.FileMaker); ok {
+		items = append(items, fyne.NewMenuItem("New file…", func() { fm.newFile() }))
+	}
+	// Open in terminal: a local directory opens itself, a local file opens its
+	// containing directory (like Dolphin's "Open Terminal" on a file).
+	if fs.IsLocal(e.Path) {
+		items = append(items, fyne.NewMenuItem("Open in terminal", func() { fm.openInTerminal(e) }))
 	}
 	// Transfers target the other panel's current directory.
 	if fm.other != nil {
@@ -1111,6 +1125,48 @@ func (fm *FileManager) newDir() {
 			}
 			fm.reload()
 		}, fm.win)
+}
+
+// newFile prompts for a name and creates an empty file in the current
+// location, then reloads. It is a no-op for backends that can't create files.
+func (fm *FileManager) newFile() {
+	fm.markActive()
+	maker, ok := fm.registry.For(fm.pathValue()).(fs.FileMaker)
+	if !ok {
+		return
+	}
+	entry := widget.NewEntry()
+	entry.PlaceHolder = "File name"
+	dialog.ShowForm("New file", "Create", "Cancel",
+		[]*widget.FormItem{widget.NewFormItem("Name", entry)},
+		func(confirmed bool) {
+			if !confirmed {
+				return
+			}
+			name := strings.TrimSpace(entry.Text)
+			if name == "" {
+				return
+			}
+			if err := maker.CreateFile(fm.pathValue(), name); err != nil {
+				dialog.ShowError(err, fm.win)
+				return
+			}
+			fm.reload()
+		}, fm.win)
+}
+
+// openInTerminal opens the configured terminal with its working directory at
+// the entry's location: the directory itself for a folder, its containing
+// directory for a file.
+func (fm *FileManager) openInTerminal(e fs.Entry) {
+	fm.markActive()
+	dir := fs.LocalPath(e.Path)
+	if !e.IsDir {
+		dir = path.Dir(dir)
+	}
+	if err := launchTerminal(fm.cfg, dir); err != nil {
+		dialog.ShowError(err, fm.win)
+	}
 }
 
 func (fm *FileManager) confirmDelete(e fs.Entry) {

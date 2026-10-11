@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/data/binding"
@@ -220,6 +223,79 @@ func TestAlbumImportRoots(t *testing.T) {
 	want := []string{"/tmp/music", "/tmp/other", "/tmp/musicx"}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Errorf("albumImportRoots = %v, want %v", paths, want)
+	}
+}
+
+// TestContextMenuNewFileAndTerminal checks the location actions: "New file…"
+// appears wherever the backend can create files (local, not tie), and "Open
+// in terminal" appears for local entries only.
+func TestContextMenuNewFileAndTerminal(t *testing.T) {
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := &FileManager{ops: fs.NewOperations(reg), registry: reg, currentPath: binding.NewString()}
+	fm.currentPath.Set("/tmp")
+
+	hasItem := func(items []*fyne.MenuItem, label string) bool {
+		for _, item := range items {
+			if item.Label == label {
+				return true
+			}
+		}
+		return false
+	}
+
+	local := fm.contextMenuItems(fs.Entry{Name: "a.txt", Path: "/tmp/a.txt"}, 0)
+	if !hasItem(local, "New file…") {
+		t.Error("local menu lacks New file…")
+	}
+	if !hasItem(local, "Open in terminal") {
+		t.Error("local menu lacks Open in terminal")
+	}
+
+	fm.currentPath.Set("tie:/music")
+	tie := fm.contextMenuItems(fs.Entry{Name: "a.txt", Path: "tie:/music/a.txt", Hash: "h"}, 0)
+	if hasItem(tie, "New file…") {
+		t.Error("tie menu unexpectedly offers New file…")
+	}
+	if hasItem(tie, "Open in terminal") {
+		t.Error("tie menu unexpectedly offers Open in terminal")
+	}
+}
+
+// TestNewFileCreatesFile runs the New file flow against the local backend.
+func TestNewFileCreatesFile(t *testing.T) {
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	maker, ok := reg.For("/tmp").(fs.FileMaker)
+	if !ok {
+		t.Fatal("LocalFS must implement fs.FileMaker")
+	}
+	dir := t.TempDir()
+	if err := maker.CreateFile(dir, "notes.txt"); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "notes.txt")); err != nil {
+		t.Fatalf("file missing: %v", err)
+	}
+	// An existing name must fail rather than clobber.
+	if err := maker.CreateFile(dir, "notes.txt"); err == nil {
+		t.Fatal("CreateFile over an existing file must fail")
+	}
+}
+
+// TestConflictVerdict checks the comparison line of the conflict dialog.
+func TestConflictVerdict(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-time.Hour)
+	if got := conflictVerdict(fs.Entry{ModTime: now, Size: 10}, fs.Entry{ModTime: old, Size: 5}); got != "The source is more recent." {
+		t.Errorf("verdict = %q, want more recent", got)
+	}
+	if got := conflictVerdict(fs.Entry{ModTime: old, Size: 10}, fs.Entry{ModTime: now, Size: 5}); got != "The source is older." {
+		t.Errorf("verdict = %q, want older", got)
+	}
+	if got := conflictVerdict(fs.Entry{ModTime: now, Size: 4}, fs.Entry{ModTime: now, Size: 10}); got != "The source is smaller by 6 B." {
+		t.Errorf("verdict = %q, want smaller by 6 B", got)
+	}
+	if got := conflictVerdict(fs.Entry{ModTime: now, Size: 10}, fs.Entry{ModTime: now, Size: 10}); got != "The files seem identical." {
+		t.Errorf("verdict = %q, want identical", got)
 	}
 }
 

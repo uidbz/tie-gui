@@ -169,8 +169,8 @@ func TestUniqueName(t *testing.T) {
 	for in, want := range map[string]string{
 		"a": "a (3)", "b.txt": "b (2).txt", "new": "new", ".cfg": ".cfg (2)",
 	} {
-		if got := uniqueName(in, existing); got != want {
-			t.Errorf("uniqueName(%q) = %q, want %q", in, got, want)
+		if got := UniqueName(in, existing); got != want {
+			t.Errorf("UniqueName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

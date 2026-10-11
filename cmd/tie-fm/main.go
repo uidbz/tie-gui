@@ -54,6 +54,9 @@ func main() {
 	devMgr := devices.NewManager(mtpMgr)
 
 	ops := fs.NewOperations(registry)
+	// Copy/move destination conflicts prompt with a Dolphin-style dialog; the
+	// resolver blocks the ops goroutine until the user answers.
+	ops.ConflictResolver = ui.NewConflictResolver(mainWin)
 
 	// The file-operations list lives at the bottom of the main window. A
 	// transparent spacer fixes its height (a bare List reports a tiny MinSize),
@@ -339,6 +342,9 @@ func main() {
 		hiddenItem,
 		fyne.NewMenuItem("File associations…", func() {
 			ui.ShowFileAssociations(mainWin, &appCfg)
+		}),
+		fyne.NewMenuItem("Terminal…", func() {
+			ui.ShowTerminalSettings(mainWin, &appCfg)
 		}),
 	)
 

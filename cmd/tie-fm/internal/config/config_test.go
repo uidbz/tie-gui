@@ -145,6 +145,46 @@ func TestDefaultTieConfigLocal(t *testing.T) {
 	}
 }
 
+func TestTerminalRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Terminal != "" {
+		t.Errorf("default Terminal = %q, want empty (auto-detect)", c.Terminal)
+	}
+	c.Terminal = "konsole --workingdirectory %d"
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	c2, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if c2.Terminal != "konsole --workingdirectory %d" {
+		t.Errorf("reloaded Terminal = %q", c2.Terminal)
+	}
+}
+
+func TestTerminalCommandPrecedence(t *testing.T) {
+	c := Config{Terminal: "konsole"}
+	t.Setenv("TERMINAL", "kitty")
+	if got := c.TerminalCommand(); got != "konsole" {
+		t.Errorf("configured Terminal loses to $TERMINAL: %q", got)
+	}
+	c.Terminal = ""
+	if got := c.TerminalCommand(); got != "kitty" {
+		t.Errorf("$TERMINAL not honored: %q", got)
+	}
+	c.Terminal = "  alacritty  " // trimmed
+	if got := c.TerminalCommand(); got != "alacritty" {
+		t.Errorf("whitespace not trimmed: %q", got)
+	}
+}
+
 func TestLoadTieConfigEmptyIsDefault(t *testing.T) {
 	c, err := LoadTieConfig("")
 	if err != nil {

@@ -6,6 +6,7 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -67,8 +68,38 @@ type Config struct {
 	// ShowHidden makes dot-files (names with a leading ".") visible in the
 	// listing; hidden (false) by default, toggled from the app menu.
 	ShowHidden bool
+	// Terminal is the command line used by "Open in terminal". A "%d" token in
+	// any argument is replaced by the directory; without one the directory is
+	// appended as the final argument. Empty falls back to $TERMINAL, then the
+	// first known terminal emulator found in PATH.
+	Terminal string
 
 	path string // where this config was loaded from / will be saved back to
+}
+
+// terminalCandidates are tried (in order) when neither Config.Terminal nor
+// $TERMINAL names a terminal.
+var terminalCandidates = []string{
+	"x-terminal-emulator", "konsole", "gnome-terminal", "xfce4-terminal",
+	"mate-terminal", "lxterminal", "alacritty", "kitty", "xterm",
+}
+
+// TerminalCommand resolves the terminal command line to use: the configured
+// Terminal, else $TERMINAL, else the first terminalCandidates entry found in
+// PATH. Returns "" when nothing is available.
+func (c Config) TerminalCommand() string {
+	if s := strings.TrimSpace(c.Terminal); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(os.Getenv("TERMINAL")); s != "" {
+		return s
+	}
+	for _, cand := range terminalCandidates {
+		if _, err := exec.LookPath(cand); err == nil {
+			return cand
+		}
+	}
+	return ""
 }
 
 // Path reports the file this config was loaded from (or will be written to).

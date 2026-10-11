@@ -108,7 +108,7 @@ func extractPlan(archiveName string, members []archiveMember, existing map[strin
 		for t := range tops {
 			top = t
 		}
-		unique := uniqueName(top, existing)
+		unique := UniqueName(top, existing)
 		return func(name string) string {
 			_, rest, found := strings.Cut(name, "/")
 			if !found {
@@ -121,13 +121,13 @@ func extractPlan(archiveName string, members []archiveMember, existing map[strin
 	if stem == "" {
 		stem = "extracted"
 	}
-	wrap := uniqueName(stem, existing)
+	wrap := UniqueName(stem, existing)
 	return func(name string) string { return wrap + "/" + name }
 }
 
-// uniqueName returns name, or "name (N)" (before the extension for files:
+// UniqueName returns name, or "name (N)" (before the extension for files:
 // "a (2).txt") with the smallest N ≥ 2 not in existing.
-func uniqueName(name string, existing map[string]bool) string {
+func UniqueName(name string, existing map[string]bool) string {
 	if !existing[name] {
 		return name
 	}

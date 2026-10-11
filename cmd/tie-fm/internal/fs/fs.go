@@ -151,6 +151,13 @@ type DirMaker interface {
 	Mkdir(parent, name string) error
 }
 
+// FileMaker is implemented by backends that can create an empty file. parent is
+// the containing directory's URI in this backend; name is the new file's name.
+// An existing name is an error — the UI prompts for a unique name.
+type FileMaker interface {
+	CreateFile(parent, name string) error
+}
+
 const (
 	tieScheme = "tie:"
 	mtpScheme = "mtp:"
@@ -176,6 +183,15 @@ func IsTie(path string) bool { return SchemeOf(path) == "tie" }
 // non-local path is served by a remote backend (tie, mtp) that must materialize
 // content before it can be read as a real file.
 func IsLocal(path string) bool { return SchemeOf(path) == "file" }
+
+// LocalPath strips an optional "file:" scheme prefix to a real filesystem
+// path. Non-local paths are returned unchanged.
+func LocalPath(path string) string {
+	if !IsLocal(path) {
+		return path
+	}
+	return osPath(path)
+}
 
 // Registry resolves a path to the FileSystem that serves its scheme.
 type Registry struct {

@@ -40,6 +40,12 @@ type Operations struct {
 	active        []*Op
 	reg           *Registry
 	ActiveChanged func()
+	// ConflictResolver, when non-nil, is consulted whenever a copy/move finds
+	// the destination name already occupied. It runs on the ops goroutine and
+	// must block until the user answers (the UI marshals the dialog to the UI
+	// goroutine via fyne.Do and waits on a channel). A nil resolver keeps the
+	// historic behaviour: silently overwrite.
+	ConflictResolver func(Conflict) ConflictResult
 }
 
 func NewOperations(reg *Registry) *Operations {
@@ -51,6 +57,39 @@ func NewOperations(reg *Registry) *Operations {
 	go o.run()
 	return o
 }
+
+// ConflictAction is the user's answer to a destination-conflict prompt,
+// mirroring the options of KDE Dolphin's (KIO RenameDialog) conflict dialog.
+type ConflictAction int
+
+const (
+	ConflictCancel       ConflictAction = iota // abort the operation
+	ConflictSkip                               // skip this item
+	ConflictSkipAll                            // skip this and all further conflicts of the op
+	ConflictOverwrite                          // replace the existing item
+	ConflictOverwriteAll                       // replace this and all further conflicts of the op
+	ConflictRename                             // transfer under ConflictResult.NewName instead
+)
+
+// Conflict describes a copy/move destination name that is already occupied.
+type Conflict struct {
+	Source   Entry // the item being transferred
+	Existing Entry // the item already at the destination
+	DestDir  string
+	// Multiple is true for multi-item transfers (directories, file lists):
+	// the dialog offers "Apply to All".
+	Multiple bool
+}
+
+// ConflictResult is the user's decision about a Conflict.
+type ConflictResult struct {
+	Action  ConflictAction
+	NewName string // for ConflictRename
+}
+
+// errConflictCancelled aborts an op when the user answers Cancel to a
+// conflict prompt.
+var errConflictCancelled = errors.New("cancelled")
 
 func (o *Operations) run() {
 	var opID int
@@ -183,9 +222,14 @@ func (o *Operations) newOp(source, dest Entry, t OpType, done func(*Op)) *Op {
 		A: source, B: dest, OpType: t,
 		importer:   o.importerFor(dest.Path),
 		srcFS:      o.exporterFor(source.Path),
+		resolver:   o.ConflictResolver,
+		multiple:   source.IsDir,
 		OnComplete: done,
 		ctx:        ctx,
 		cancel:     cancel,
+	}
+	if o.reg != nil {
+		op.destFS = o.reg.For(dest.Path)
 	}
 	op.cond = sync.NewCond(&op.mu)
 	return op
@@ -256,7 +300,26 @@ type Op struct {
 
 	importer Importer   // non-nil when the destination is a remote backend (tie, mtp)
 	srcFS    FileSystem // non-nil when the source is a remote backend (export)
-	destFS   FileSystem // extraction: lists the destination for name collisions
+	destFS   FileSystem // lists the destination for name collisions (extraction, conflicts)
+	// resolver, when non-nil, is consulted when the destination name is
+	// already occupied (copy/move conflicts); see Operations.ConflictResolver.
+	resolver func(Conflict) ConflictResult
+	// multiple marks a multi-item transfer (directory, file list): conflict
+	// prompts offer "Apply to All".
+	multiple bool
+	// sticky, once set, is the conflict answer applied to all further
+	// conflicts of this op without prompting again (SkipAll / OverwriteAll).
+	sticky ConflictAction
+	// stickySet distinguishes "no sticky answer" from ConflictCancel (0).
+	stickySet bool
+	// skipped records that at least one item was skipped; a move then keeps
+	// its source instead of deleting it.
+	skipped bool
+	// renameTo, when non-empty, overrides the destination name (the
+	// conflict dialog's Rename choice).
+	renameTo string
+	// listCache memoizes destination listings for remote conflict detection.
+	listCache map[string][]Entry
 	// materializedPath, when set, is the local path copyFile reads from instead
 	// of op.A.Path — used when a remote source has been downloaded to a temp file.
 	materializedPath string
@@ -365,6 +428,14 @@ func (op *Op) doCopy() error {
 	if op.srcFS != nil {
 		return op.doExport()
 	}
+	proceed, err := op.resolveTopConflict()
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		op.Status = StatusCompleted
+		return nil
+	}
 	if op.A.IsDir {
 		return copyDir(op)
 	}
@@ -373,6 +444,29 @@ func (op *Op) doCopy() error {
 	}
 	op.Status = StatusCompleted
 	return nil
+}
+
+// resolveTopConflict checks whether the transfer's top-level destination name
+// is occupied and, if so, asks the user what to do (see resolveConflict). The
+// rename choice is recorded in op.renameTo. proceed=false means skip.
+func (op *Op) resolveTopConflict() (bool, error) {
+	destDir, name := op.B.Path, op.A.Name
+	if !op.B.IsDir {
+		destDir, name = filepath.Dir(op.B.Path), filepath.Base(op.B.Path)
+	}
+	var resolved string
+	var proceed bool
+	var err error
+	if IsLocal(destDir) {
+		resolved, proceed, err = op.checkLocalConflict(destDir, name, op.A)
+	} else {
+		resolved, proceed, err = op.checkRemoteConflict(destDir, name, op.A)
+	}
+	if err != nil || !proceed {
+		return proceed, err
+	}
+	op.renameTo = resolved
+	return true, nil
 }
 
 // doImport copies a local file (or tree) into the tie filesystem via the
@@ -385,8 +479,16 @@ func (op *Op) doImport() error {
 	if op.A.IsDir {
 		return op.importDir()
 	}
+	proceed, err := op.resolveTopConflict()
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		op.Status = StatusCompleted
+		return nil
+	}
 	op.TotalSize = op.A.Size
-	if err := op.importFile(op.B.Path, op.A.Path, op.A.Name); err != nil {
+	if err := op.importFile(op.B.Path, op.A.Path, op.destName()); err != nil {
 		return err
 	}
 	// A file transfer labels the destination directory itself.
@@ -457,7 +559,17 @@ func (op *Op) importFile(destDir, srcPath, name string) error {
 // under B.Path/<dirname>/<relative-subdirs>, mirroring copyDir's placement.
 // An ExactDest op (album import) places the tree at B.Path itself.
 func (op *Op) importDir() error {
-	base := op.B.Path + "/" + op.A.Name
+	if !op.ExactDest {
+		proceed, err := op.resolveTopConflict()
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			op.Status = StatusCompleted
+			return nil
+		}
+	}
+	base := op.B.Path + "/" + op.destName()
 	if op.ExactDest {
 		base = op.B.Path
 	}
@@ -491,7 +603,15 @@ func (op *Op) importDir() error {
 		if sub := filepath.ToSlash(filepath.Dir(rel)); sub != "." {
 			destDir += "/" + sub
 		}
-		return op.importFile(destDir, srcPath, filepath.Base(srcPath))
+		srcEntry, _ := statEntry(srcPath)
+		name, proceed, err := op.checkRemoteConflict(destDir, filepath.Base(srcPath), srcEntry)
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			return nil
+		}
+		return op.importFile(destDir, srcPath, name)
 	}
 	if err := filepath.WalkDir(op.A.Path, walk); err != nil {
 		return err
@@ -534,7 +654,15 @@ func (op *Op) importFileList() error {
 			}
 			name = filepath.Base(f)
 		}
-		if err := op.importFile(destDir, f, name); err != nil {
+		srcEntry, _ := statEntry(f)
+		resolved, proceed, err := op.checkRemoteConflict(destDir, name, srcEntry)
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			continue
+		}
+		if err := op.importFile(destDir, f, resolved); err != nil {
 			return err
 		}
 	}
@@ -551,6 +679,14 @@ func (op *Op) doExport() error {
 	if op.A.IsDir {
 		return op.exportDir()
 	}
+	proceed, err := op.resolveTopConflict()
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		op.Status = StatusCompleted
+		return nil
+	}
 	local, err := op.srcFS.Materialize(op.A)
 	if err != nil {
 		return err
@@ -566,7 +702,15 @@ func (op *Op) doExport() error {
 // exportDir walks a tie directory (via the source FileSystem's List) and exports
 // each file under B.Path/<dirname>/<relative-subdirs>, mirroring copyDir.
 func (op *Op) exportDir() error {
-	base := filepath.Join(op.B.Path, op.A.Name)
+	proceed, err := op.resolveTopConflict()
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		op.Status = StatusCompleted
+		return nil
+	}
+	base := filepath.Join(op.B.Path, op.destName())
 	var walk func(dir Entry, relDir string) error
 	walk = func(dir Entry, relDir string) error {
 		entries, err := op.srcFS.List(dir.Path)
@@ -584,6 +728,13 @@ func (op *Op) exportDir() error {
 				}
 				continue
 			}
+			name, proceed, err := op.checkLocalConflict(destDir, child.Name, child)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				continue
+			}
 			local, err := op.srcFS.Materialize(child)
 			if err != nil {
 				return err
@@ -593,6 +744,7 @@ func (op *Op) exportDir() error {
 				B:                Entry{Path: destDir, IsDir: true},
 				OpType:           OpCopy,
 				materializedPath: local,
+				renameTo:         name,
 			}
 			op.TotalSize += child.Size
 			if err := copyFile(sub, op); err != nil {
@@ -619,7 +771,19 @@ func (op *Op) doMove() error {
 		if err := op.doImport(); err != nil {
 			return err
 		}
+		// A move must not delete what the user skipped in a conflict prompt.
+		if op.skipped {
+			return nil
+		}
 		return os.RemoveAll(op.A.Path)
+	}
+	proceed, err := op.resolveTopConflict()
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		op.Status = StatusCompleted
+		return nil
 	}
 	dest := op.destPath()
 	// Fast path: a same-filesystem rename moves without copying bytes.
@@ -637,6 +801,9 @@ func (op *Op) doMove() error {
 	} else if err := copyFile(op, nil); err != nil {
 		return err
 	}
+	if op.skipped {
+		return nil
+	}
 	if err := os.RemoveAll(op.A.Path); err != nil {
 		return err
 	}
@@ -648,9 +815,106 @@ func (op *Op) doMove() error {
 // directory to place A into, or an explicit target path).
 func (op *Op) destPath() string {
 	if op.B.IsDir {
-		return filepath.Join(op.B.Path, op.A.Name)
+		return filepath.Join(op.B.Path, op.destName())
+	}
+	if op.renameTo != "" {
+		return filepath.Join(filepath.Dir(op.B.Path), op.renameTo)
 	}
 	return op.B.Path
+}
+
+// destName is the name the transfer lands under at the destination: A.Name,
+// or the conflict dialog's rename choice.
+func (op *Op) destName() string {
+	if op.renameTo != "" {
+		return op.renameTo
+	}
+	return op.A.Name
+}
+
+// resolveConflict asks the user what to do about an occupied destination
+// name. It returns the name to transfer under and whether to proceed at all.
+// A sticky SkipAll/OverwriteAll answer applies without prompting again; a nil
+// resolver keeps the historic behaviour (overwrite). Cancel aborts the op.
+func (op *Op) resolveConflict(destDir string, src, existing Entry) (string, bool, error) {
+	if op.stickySet {
+		switch op.sticky {
+		case ConflictSkipAll:
+			op.skipped = true
+			return "", false, nil
+		case ConflictOverwriteAll:
+			return existing.Name, true, nil
+		}
+	}
+	if op.resolver == nil {
+		return existing.Name, true, nil
+	}
+	res := op.resolver(Conflict{
+		Source:   src,
+		Existing: existing,
+		DestDir:  destDir,
+		Multiple: op.multiple,
+	})
+	switch res.Action {
+	case ConflictSkip:
+		op.skipped = true
+		return "", false, nil
+	case ConflictSkipAll:
+		op.sticky, op.stickySet = ConflictSkipAll, true
+		op.skipped = true
+		return "", false, nil
+	case ConflictOverwrite:
+		return existing.Name, true, nil
+	case ConflictOverwriteAll:
+		op.sticky, op.stickySet = ConflictOverwriteAll, true
+		return existing.Name, true, nil
+	case ConflictRename:
+		if res.NewName != "" && res.NewName != existing.Name {
+			return res.NewName, true, nil
+		}
+		return existing.Name, true, nil
+	default:
+		return "", false, errConflictCancelled
+	}
+}
+
+// checkLocalConflict reports whether destDir/name is occupied on the local
+// disk and resolves the conflict if so.
+func (op *Op) checkLocalConflict(destDir, name string, src Entry) (string, bool, error) {
+	p := filepath.Join(osPath(destDir), name)
+	info, err := os.Stat(p)
+	if err != nil {
+		return name, true, nil // absent or unreadable: proceed
+	}
+	existing := Entry{Name: name, Path: p, IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}
+	return op.resolveConflict(destDir, src, existing)
+}
+
+// checkRemoteConflict reports whether destDir/name is occupied in the remote
+// destination backend and resolves the conflict if so. Listings are memoized
+// per op so a directory import lists each destination directory once.
+func (op *Op) checkRemoteConflict(destDir, name string, src Entry) (string, bool, error) {
+	if op.destFS == nil || IsLocal(destDir) {
+		return op.checkLocalConflict(destDir, name, src)
+	}
+	if op.listCache == nil {
+		op.listCache = map[string][]Entry{}
+	}
+	entries, ok := op.listCache[destDir]
+	if !ok {
+		var err error
+		entries, err = op.destFS.List(destDir)
+		if err != nil {
+			return name, true, nil // cannot list: proceed (historic behaviour)
+		}
+		op.listCache[destDir] = entries
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			return op.resolveConflict(destDir, src, e)
+		}
+	}
+	return name, true, nil
 }
 
 type readerCtx struct {
@@ -715,7 +979,7 @@ func copyDir(dirOp *Op) error {
 		if err != nil {
 			return err
 		}
-		destDir := filepath.Join(dirOp.B.Path, dirOp.A.Name, filepath.Dir(rel))
+		destDir := filepath.Join(dirOp.B.Path, dirOp.destName(), filepath.Dir(rel))
 		if err := os.MkdirAll(destDir, 0755); err != nil {
 			return err
 		}
@@ -735,6 +999,14 @@ func copyDir(dirOp *Op) error {
 		return err
 	}
 	for _, op := range ops {
+		name, proceed, err := dirOp.checkLocalConflict(op.B.Path, op.A.Name, op.A)
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			continue
+		}
+		op.renameTo = name
 		if err := copyFile(op, dirOp); err != nil {
 			return err
 		}

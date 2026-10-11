@@ -39,6 +39,57 @@ func TestBuildCommand(t *testing.T) {
 	}
 }
 
+func TestBuildTerminalCommand(t *testing.T) {
+	cases := []struct {
+		cmdline string
+		dir     string
+		want    []string // program + args, nil = nil cmd
+	}{
+		{"xterm", "/home/x", []string{"xterm", "/home/x"}}, // dir appended
+		{"konsole --workingdirectory %d", "/home/x", []string{"konsole", "--workingdirectory", "/home/x"}},
+		{"wezterm start --cwd %d", "/w", []string{"wezterm", "start", "--cwd", "/w"}},
+		{"", "/x", nil},
+	}
+	for _, c := range cases {
+		cmd := buildTerminalCommand(c.cmdline, c.dir)
+		if c.want == nil {
+			if cmd != nil {
+				t.Errorf("buildTerminalCommand(%q) = %v, want nil", c.cmdline, cmd.Args)
+			}
+			continue
+		}
+		if cmd == nil {
+			t.Errorf("buildTerminalCommand(%q) = nil, want %v", c.cmdline, c.want)
+			continue
+		}
+		if !reflect.DeepEqual(cmd.Args, c.want) {
+			t.Errorf("buildTerminalCommand(%q) args = %v, want %v", c.cmdline, cmd.Args, c.want)
+		}
+	}
+}
+
+// TestOpenTerminal checks the launch seam: the configured command's directory
+// placeholder (or append rule) receives the directory; without a terminal the
+// call errors instead of spawning nothing.
+func TestOpenTerminal(t *testing.T) {
+	var got []string
+	old := launchTerminal
+	launchTerminal = func(cfg *config.Config, dir string) error {
+		got = append(got, cfg.TerminalCommand()+"|"+dir)
+		return nil
+	}
+	t.Cleanup(func() { launchTerminal = old })
+
+	cfg := config.Default()
+	cfg.Terminal = "konsole --workingdirectory %d"
+	if err := launchTerminal(&cfg, "/home/x/music"); err != nil {
+		t.Fatalf("launchTerminal: %v", err)
+	}
+	if len(got) != 1 || got[0] != "konsole --workingdirectory %d|/home/x/music" {
+		t.Fatalf("launched %v", got)
+	}
+}
+
 // stubTieFS is a tie backend that never touches the network: Materialize
 // reports a fixed path and remembers it was called.
 type stubTieFS struct {

@@ -57,6 +57,19 @@ func openLocal(cfg *config.Config, target, name string) error {
 // appended as the final argument. Arguments are split on whitespace (no shell,
 // so quoted arguments containing spaces are not supported).
 func buildCommand(cmdline, file string) *exec.Cmd {
+	return buildPlaceholderCommand(cmdline, file, "%f")
+}
+
+// buildTerminalCommand splits a stored terminal command line into an
+// *exec.Cmd for opening dir. A "%d" token in any argument is replaced with the
+// directory; otherwise the directory is appended as the final argument.
+func buildTerminalCommand(cmdline, dir string) *exec.Cmd {
+	return buildPlaceholderCommand(cmdline, dir, "%d")
+}
+
+// buildPlaceholderCommand is buildCommand generalized over the placeholder
+// token ("%f" for files, "%d" for directories).
+func buildPlaceholderCommand(cmdline, value, token string) *exec.Cmd {
 	fields := strings.Fields(cmdline)
 	if len(fields) == 0 {
 		return nil
@@ -64,16 +77,61 @@ func buildCommand(cmdline, file string) *exec.Cmd {
 	replaced := false
 	args := make([]string, 0, len(fields))
 	for _, f := range fields[1:] {
-		if strings.Contains(f, "%f") {
-			f = strings.ReplaceAll(f, "%f", file)
+		if strings.Contains(f, token) {
+			f = strings.ReplaceAll(f, token, value)
 			replaced = true
 		}
 		args = append(args, f)
 	}
 	if !replaced {
-		args = append(args, file)
+		args = append(args, value)
 	}
 	return exec.Command(fields[0], args...)
+}
+
+// launchTerminal is the hook FileManager.openInTerminal uses to start the
+// terminal; a variable so tests can capture the handed-over directory instead
+// of spawning a terminal.
+var launchTerminal = openTerminal
+
+// openTerminal starts the configured terminal with its working directory at
+// dir: a "%d" token in the command is replaced by the directory, otherwise the
+// directory is appended as the final argument.
+func openTerminal(cfg *config.Config, dir string) error {
+	cmdline := ""
+	if cfg != nil {
+		cmdline = cfg.TerminalCommand()
+	}
+	if cmdline == "" {
+		return fmt.Errorf("no terminal configured (Menu → Terminal…)")
+	}
+	cmd := buildTerminalCommand(cmdline, dir)
+	if cmd == nil {
+		return fmt.Errorf("invalid terminal command %q", cmdline)
+	}
+	return cmd.Start()
+}
+
+// ShowTerminalSettings prompts for the terminal command used by "Open in
+// terminal" and persists it.
+func ShowTerminalSettings(win fyne.Window, cfg *config.Config) {
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder("e.g. konsole --workingdirectory %d  or  xterm")
+	entry.SetText(cfg.Terminal)
+	dialog.ShowForm("Terminal", "Save", "Cancel",
+		[]*widget.FormItem{
+			widget.NewFormItem("Command", entry),
+			widget.NewFormItem("", widget.NewLabel("%d is replaced by the directory (else appended).\nEmpty uses $TERMINAL or the first terminal found in PATH.")),
+		},
+		func(ok bool) {
+			if !ok {
+				return
+			}
+			cfg.Terminal = strings.TrimSpace(entry.Text)
+			if err := cfg.Save(); err != nil {
+				dialog.ShowError(err, win)
+			}
+		}, win)
 }
 
 // promptOpenWith asks for a command to open files of name's type, stores it as

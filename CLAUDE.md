@@ -10,7 +10,7 @@ Fyne fork — hence the monorepo.
 |------|------|
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tie-view/` | tie-network image viewer entry point (also opens local directories/images/archives like imgview) |
-| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction") |
+| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction"); copy/move destination conflicts prompt with a Dolphin-style dialog (see "tie-fm copy/move conflicts"); the context menu also offers "New file…" (backends implementing `fs.FileMaker`, local) and "Open in terminal" (local entries; terminal from `Config.Terminal`, `$TERMINAL`, or the first known emulator in PATH, set in Menu → "Terminal…") |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
@@ -658,6 +658,23 @@ stamps and edits them:
   aggregates.
 
 ---
+
+## tie-fm copy/move conflicts (`cmd/tie-fm/internal/fs/ops.go`, `ui/conflictdialog.go`)
+
+When a copy/move destination name is already occupied, the ops engine consults
+`Operations.ConflictResolver` (wired in main to `ui.NewConflictResolver`), which
+blocks the ops goroutine while showing a **Dolphin-style conflict dialog** (the
+layout/options of KIO's RenameDialog): the sentence + question, a
+Source/Destination comparison (name, size, date) with a verdict line ("The
+source is more recent." / size delta / "The files seem identical."), a
+"Rename:" row with "Suggest New Name" (`fs.UniqueName`), an "Apply to All"
+checkbox on multi-item transfers (directories, file lists), and Skip / Rename /
+Overwrite (Write Into for directory merges) / Cancel. Answers map to
+`fs.ConflictAction`; SkipAll/OverwriteAll are sticky for the rest of the op,
+Rename retargets the transfer (`op.renameTo`), Cancel aborts with
+`errConflictCancelled`, and a skipped move keeps its source. A nil resolver
+keeps the historic silent-overwrite behaviour. Local destinations are checked
+with `os.Stat`, remote ones via a memoized destination listing.
 
 ## tie-fm archive extraction (`cmd/tie-fm/internal/fs/extract.go`)
 

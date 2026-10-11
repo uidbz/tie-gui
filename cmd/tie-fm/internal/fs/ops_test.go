@@ -59,6 +59,241 @@ func TestCopyFile(t *testing.T) {
 	}
 }
 
+// --- copy/move conflict resolution (the Dolphin-style prompt) ---
+
+// conflictSetup builds a source file and a destination directory that already
+// contains a file of the same name, returning both paths.
+func conflictSetup(t *testing.T, srcContent, dstContent string) (srcPath, destDir string) {
+	t.Helper()
+	dir := t.TempDir()
+	srcPath = filepath.Join(dir, "src.txt")
+	if err := os.WriteFile(srcPath, []byte(srcContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	destDir = filepath.Join(dir, "dest")
+	if err := os.Mkdir(destDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destDir, "src.txt"), []byte(dstContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return srcPath, destDir
+}
+
+// TestCopyConflictNilResolverOverwrites keeps the historic default: without a
+// resolver an existing destination is silently replaced.
+func TestCopyConflictNilResolverOverwrites(t *testing.T) {
+	srcPath, destDir := conflictSetup(t, "new content", "old content")
+
+	ops := NewOperations(nil)
+	src, _ := statEntry(srcPath)
+	dst, _ := statEntry(destDir)
+	op := ops.Copy(src, dst, nil)
+	waitDone(t, op)
+
+	got, _ := os.ReadFile(filepath.Join(destDir, "src.txt"))
+	if string(got) != "new content" {
+		t.Fatalf("dest = %q, want overwritten %q", got, "new content")
+	}
+}
+
+// TestCopyConflictSkip checks Skip leaves the destination untouched and the
+// op completes.
+func TestCopyConflictSkip(t *testing.T) {
+	srcPath, destDir := conflictSetup(t, "new content", "old content")
+
+	ops := NewOperations(nil)
+	asked := 0
+	ops.ConflictResolver = func(c Conflict) ConflictResult {
+		asked++
+		if c.Source.Name != "src.txt" || c.Existing.Name != "src.txt" {
+			t.Errorf("conflict = %v over %v, want src.txt over src.txt", c.Source.Name, c.Existing.Name)
+		}
+		if c.Multiple {
+			t.Error("single-file copy must not offer Apply to All")
+		}
+		return ConflictResult{Action: ConflictSkip}
+	}
+	src, _ := statEntry(srcPath)
+	dst, _ := statEntry(destDir)
+	op := ops.Copy(src, dst, nil)
+	waitDone(t, op)
+
+	if asked != 1 {
+		t.Fatalf("resolver called %d times, want 1", asked)
+	}
+	got, _ := os.ReadFile(filepath.Join(destDir, "src.txt"))
+	if string(got) != "old content" {
+		t.Fatalf("dest = %q, want untouched %q", got, "old content")
+	}
+}
+
+// TestCopyConflictRename checks Rename transfers under the chosen name and
+// leaves the existing file alone.
+func TestCopyConflictRename(t *testing.T) {
+	srcPath, destDir := conflictSetup(t, "new content", "old content")
+
+	ops := NewOperations(nil)
+	ops.ConflictResolver = func(Conflict) ConflictResult {
+		return ConflictResult{Action: ConflictRename, NewName: "src (2).txt"}
+	}
+	src, _ := statEntry(srcPath)
+	dst, _ := statEntry(destDir)
+	op := ops.Copy(src, dst, nil)
+	waitDone(t, op)
+
+	got, err := os.ReadFile(filepath.Join(destDir, "src (2).txt"))
+	if err != nil || string(got) != "new content" {
+		t.Fatalf("renamed copy = %q, %v", got, err)
+	}
+	got, _ = os.ReadFile(filepath.Join(destDir, "src.txt"))
+	if string(got) != "old content" {
+		t.Fatalf("dest = %q, want untouched %q", got, "old content")
+	}
+}
+
+// TestCopyConflictCancel checks Cancel aborts the op with an error and writes
+// nothing.
+func TestCopyConflictCancel(t *testing.T) {
+	srcPath, destDir := conflictSetup(t, "new content", "old content")
+
+	ops := NewOperations(nil)
+	ops.ConflictResolver = func(Conflict) ConflictResult {
+		return ConflictResult{Action: ConflictCancel}
+	}
+	src, _ := statEntry(srcPath)
+	dst, _ := statEntry(destDir)
+	op := ops.Copy(src, dst, nil)
+	waitSettled(t, op)
+
+	if op.Status != StatusError || op.Err != errConflictCancelled {
+		t.Fatalf("Status = %v, Err = %v; want StatusError with errConflictCancelled", op.Status, op.Err)
+	}
+	got, _ := os.ReadFile(filepath.Join(destDir, "src.txt"))
+	if string(got) != "old content" {
+		t.Fatalf("dest = %q, want untouched %q", got, "old content")
+	}
+}
+
+// TestCopyDirConflictApplyAll checks the sticky answer: a directory transfer
+// prompts once and applies the choice to every further conflict.
+func TestCopyDirConflictApplyAll(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "tree")
+	if err := os.Mkdir(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte("new "+name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destDir := filepath.Join(dir, "dest")
+	if err := os.MkdirAll(filepath.Join(destDir, "tree"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// a.txt and b.txt conflict; c.txt is free.
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(destDir, "tree", name), []byte("old "+name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ops := NewOperations(nil)
+	asked := 0
+	ops.ConflictResolver = func(c Conflict) ConflictResult {
+		asked++
+		if !c.Multiple {
+			t.Error("directory transfer must offer Apply to All")
+		}
+		if c.Source.IsDir {
+			// The top-level directory exists: "Write Into" merges it.
+			return ConflictResult{Action: ConflictOverwrite}
+		}
+		return ConflictResult{Action: ConflictSkipAll}
+	}
+	src, _ := statEntry(srcDir)
+	dst, _ := statEntry(destDir)
+	op := ops.Copy(src, dst, nil)
+	waitDone(t, op)
+
+	if asked != 2 {
+		t.Fatalf("resolver called %d times, want 2 (top-level dir + first file conflict; SkipAll is sticky)", asked)
+	}
+	got, _ := os.ReadFile(filepath.Join(destDir, "tree", "a.txt"))
+	if string(got) != "old a.txt" {
+		t.Fatalf("a.txt = %q, want skipped", got)
+	}
+	got, _ = os.ReadFile(filepath.Join(destDir, "tree", "c.txt"))
+	if string(got) != "new c.txt" {
+		t.Fatalf("c.txt = %q, want transferred", got)
+	}
+}
+
+// TestMoveConflictSkipKeepsSource checks a skipped move keeps its source.
+func TestMoveConflictSkipKeepsSource(t *testing.T) {
+	srcPath, destDir := conflictSetup(t, "new content", "old content")
+
+	ops := NewOperations(nil)
+	ops.ConflictResolver = func(Conflict) ConflictResult {
+		return ConflictResult{Action: ConflictSkip}
+	}
+	src, _ := statEntry(srcPath)
+	dst, _ := statEntry(destDir)
+	op := ops.Move(src, dst, nil)
+	waitDone(t, op)
+
+	if _, err := os.Stat(srcPath); err != nil {
+		t.Fatalf("source deleted after skipped move: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(destDir, "src.txt"))
+	if string(got) != "old content" {
+		t.Fatalf("dest = %q, want untouched %q", got, "old content")
+	}
+}
+
+// TestImportConflict checks remote conflict handling: a same-named tie entry
+// prompts, Skip records no import, and Overwrite imports as before (the tie
+// backend versions the predecessor).
+func TestImportConflict(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "song.flac")
+	if err := os.WriteFile(srcPath, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeImportFS{listing: []Entry{{Name: "song.flac", Path: "tie:/music/song.flac", Size: 4}}}
+	ops := NewOperations(NewRegistry(nil, fake))
+	asked := 0
+	ops.ConflictResolver = func(c Conflict) ConflictResult {
+		asked++
+		if c.Existing.Name != "song.flac" {
+			t.Errorf("conflict existing = %q, want song.flac", c.Existing.Name)
+		}
+		return ConflictResult{Action: ConflictSkip}
+	}
+	src, _ := statEntry(srcPath)
+	op := ops.Copy(src, Entry{Path: "tie:/music", IsDir: true}, nil)
+	waitDone(t, op)
+
+	if asked != 1 {
+		t.Fatalf("resolver called %d times, want 1", asked)
+	}
+	if len(fake.imports) != 0 {
+		t.Fatalf("imports = %v, want none after Skip", fake.imports)
+	}
+
+	fake.imports = nil
+	ops.ConflictResolver = func(Conflict) ConflictResult {
+		return ConflictResult{Action: ConflictOverwrite}
+	}
+	op = ops.Copy(src, Entry{Path: "tie:/music", IsDir: true}, nil)
+	waitDone(t, op)
+	if len(fake.imports) != 1 || fake.imports[0] != "tie:/music|song.flac" {
+		t.Fatalf("imports = %v, want [tie:/music|song.flac] after Overwrite", fake.imports)
+	}
+}
+
 func TestMoveFile(t *testing.T) {
 	dir := t.TempDir()
 	srcPath := filepath.Join(dir, "src.txt")
@@ -92,10 +327,13 @@ type fakeImportFS struct {
 	imports []string   // "destDir|name" per imported file
 	tags    [][]string // tags per ImportTagged call (parallel to imports when tagged)
 	labels  map[string][]DirLabel
+	listing []Entry // returned by List, for conflict detection
 }
 
-func (f *fakeImportFS) Scheme() string                    { return "tie" }
-func (f *fakeImportFS) List(string) ([]Entry, error)      { return nil, nil }
+func (f *fakeImportFS) Scheme() string { return "tie" }
+func (f *fakeImportFS) List(string) ([]Entry, error) {
+	return f.listing, nil
+}
 func (f *fakeImportFS) Materialize(Entry) (string, error) { return "", errors.New("not supported") }
 
 func (f *fakeImportFS) Import(destDir, srcPath, name string) error {

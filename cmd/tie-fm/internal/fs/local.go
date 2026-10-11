@@ -53,6 +53,16 @@ func (l *LocalFS) Mkdir(parent, name string) error {
 	return os.Mkdir(filepath.Join(osPath(parent), name), 0755)
 }
 
+// CreateFile creates a new empty file named name inside parent. Implements
+// FileMaker. An existing name is an error (the UI prompts for a unique name).
+func (l *LocalFS) CreateFile(parent, name string) error {
+	f, err := os.OpenFile(filepath.Join(osPath(parent), name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 // Stat returns an Entry for a single local path.
 func (l *LocalFS) Stat(path string) (Entry, error) {
 	p := osPath(path)
