@@ -162,6 +162,25 @@ exactly as it does for regular tracks. Later plays skip the upload; the same
 archive on another machine reuses the blobs the first one uploaded. A cover
 image found inside the archive becomes the album's artwork.
 
+**Media keys (Linux desktop):** tie-audio registers as an MPRIS 2 player
+(`org.mpris.MediaPlayer2.tie_audio`) on the session bus, so KDE/GNOME media
+keys, status-bar widgets and `playerctl` control it with no setup. Window
+managers that don't route media keys (sway, plain X11) can bind them to
+tie-audio's control mode, which drives the running instance and exits:
+
+```sh
+# sway
+bindsym XF86AudioPlay  exec tie-audio -control play-pause
+bindsym XF86AudioNext  exec tie-audio -control next
+bindsym XF86AudioPrev  exec tie-audio -control previous
+
+# X11 via xbindkeys (~/.xbindkeysrc)
+"tie-audio -control play-pause" XF86AudioPlay
+```
+
+Actions: `play-pause`, `play`, `pause`, `stop`, `next`, `previous`
+(equivalently `playerctl --player=tie_audio play-pause`).
+
 ---
 
 ## Configuration

@@ -128,6 +128,11 @@ phones appear under removable devices (Linux).
 tie-audio    # browse and play the collection's audio by tag
 ```
 
+On Linux it registers as an MPRIS 2 player, so media keys, status bars and
+`playerctl` control it; `tie-audio -control play-pause` drives a running
+instance for window-manager key bindings — see the
+[Quick Start](docs/QUICKSTART.md).
+
 ## Configuration
 
 - **imgview / tie-view:** `~/.config/imgview/config.toml` (Linux),
