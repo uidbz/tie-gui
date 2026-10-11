@@ -111,7 +111,7 @@ func TestWallTableLiveIntegration(t *testing.T) {
 	requireSmokeEnv(t)
 	// Keep config.Save (view toggle) inside a temp dir, never the real HOME.
 	t.Setenv("FILESDIR", t.TempDir())
-	test.NewApp()
+	newTestApp(t)
 
 	cfg := config.Default()
 	cfg.TieConfig = smokeTieConfig(t)

@@ -1685,7 +1685,21 @@ Config file locations: `~/.config/imgview/config.toml` (Linux),
   production races with test-goroutine widget access. Tests therefore swap
   in synchronous seams (`Gallery.infoMetadataFn` for the info overlay's
   EXIF load) and wait on `placement` + `currentlyLoading` + the tile
-  updater's trailing debounce before asserting.
+  updater's trailing debounce before asserting. (The `gallery` package's
+  tests still report races under `-race`; tie-audio's ui tests do not.)
+- tie-audio's ui tests instead model the UI thread: `newTestApp(t)`
+  (`internal/ui/uithread_test.go`, use it instead of `test.NewApp()`)
+  installs a driver wrapper under which `fyne.Do` from the test goroutine
+  runs inline and `fyne.Do` from any other goroutine is **queued** until the
+  test goroutine pumps it (`waitForCond`, `sleepUI`, `pumpUI`). Use those,
+  never a bare `time.Sleep`/poll loop, or queued UI work never runs. This
+  keeps `go test -race ./cmd/tie-audio/internal/ui` clean: every async feed
+  (tags, wall, Home, covers, queue polls) reports through `fyne.Do`.
+- `LoadGallery` snapshots `layout.offset` (with `imageFiles`) on the UI
+  goroutine for the background `placeTiles`; `ChangeGallery`/`ChangePage`
+  rewrite it there. tie-audio's `loadTags` drops a fetch superseded by a
+  later call (`tagGen`), so a collection switch mid-fetch can't land the
+  previous collection's tags.
 
 ---
 

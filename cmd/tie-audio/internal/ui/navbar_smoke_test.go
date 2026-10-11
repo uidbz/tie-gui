@@ -28,7 +28,7 @@ func (*statusErrBackend) Status() (playback.Status, error) {
 func TestCompactNavLiveIntegration(t *testing.T) {
 	requireSmokeEnv(t)
 	t.Setenv("FILESDIR", t.TempDir())
-	test.NewApp()
+	newTestApp(t)
 
 	cfg := config.Default()
 	cfg.TieConfig = smokeTieConfig(t)
@@ -170,7 +170,7 @@ func TestCompactNavLiveIntegration(t *testing.T) {
 // The nav bar highlights exactly one destination (never the ☰ slot), and the
 // Playlist badge follows the polled queue length.
 func TestNavBarActiveAndBadge(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	n := newNavBar(navActions{})
 	n.setActive(tabPlaylist)
 	for i, b := range n.buttons {

@@ -5,7 +5,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -143,7 +142,7 @@ func TestBuildQueueRowsEmpty(t *testing.T) {
 // the default theme): with a VBox the artist line was pushed below the row
 // and overlapped the next track. Both text lines must land inside the row.
 func TestTwoLineLayoutFitsRowHeight(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	for _, height := range []float32{queueTrackRowHeight, queueAlbumRowHeight} {
 		title := widget.NewLabel("Track title")
@@ -173,7 +172,7 @@ func TestTwoLineLayoutFitsRowHeight(t *testing.T) {
 // The layout above only helps if the rows actually use it: the compact list's
 // track row and album header, and the desktop table's header cell.
 func TestQueueRowsUseTwoLineLayout(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	usesTwoLine := func(box *fyne.Container) bool {
 		for _, o := range box.Objects {

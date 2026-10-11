@@ -6,14 +6,13 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
 )
 
 // The primary style is a filled disc in the theme primary color; the flat
 // style has no disc until hovered or pressed.
 func TestTransportButtonDiscColors(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	primary := newTransportButton(theme.MediaPlayIcon(), transportBarPlay, true, nil)
 	pr := primary.CreateRenderer().(*transportButtonRenderer)
@@ -32,7 +31,7 @@ func TestTransportButtonDiscColors(t *testing.T) {
 // The icon is tinted to contrast with the disc on the primary style, and
 // follows the foreground color on the flat style.
 func TestTransportButtonIconTint(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	primary := newTransportButton(theme.MediaPlayIcon(), transportBarPlay, true, nil)
 	pr := primary.CreateRenderer().(*transportButtonRenderer)
@@ -53,7 +52,7 @@ func TestTransportButtonIconTint(t *testing.T) {
 // leaves. Each check renders a fresh renderer (CreateRenderer ends in a
 // Refresh), so what is asserted is the color the widget state produces.
 func TestTransportButtonHover(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	b := newTransportButton(theme.MediaSkipNextIcon(), transportBarButton, false, nil)
 
@@ -71,7 +70,7 @@ func TestTransportButtonHover(t *testing.T) {
 
 // A tap fires the action.
 func TestTransportButtonTap(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	tapped := 0
 	b := newTransportButton(theme.MediaPlayIcon(), transportBarPlay, true, func() { tapped++ })
@@ -83,7 +82,7 @@ func TestTransportButtonTap(t *testing.T) {
 
 // SetIcon swaps the rendered icon (the play/pause flip).
 func TestTransportButtonSetIcon(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	b := newTransportButton(theme.MediaPlayIcon(), transportBarPlay, true, nil)
 	b.SetIcon(theme.MediaPauseIcon())
@@ -94,7 +93,7 @@ func TestTransportButtonSetIcon(t *testing.T) {
 
 // MinSize is the configured square.
 func TestTransportButtonMinSize(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	b := newTransportButton(theme.MediaPlayIcon(), transportBarPlay, true, nil)
 	if s := b.MinSize(); s.Width != transportBarPlay || s.Height != transportBarPlay {

@@ -4,8 +4,6 @@ import (
 	"slices"
 	"testing"
 
-	"fyne.io/fyne/v2/test"
-
 	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
@@ -158,7 +156,7 @@ func TestIsAudioFile(t *testing.T) {
 // starts expanded so the tab never looks empty, and the failed root read
 // yields no children rather than a panic.
 func TestNewTieFSTreeRoot(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	cfg := client.DefaultConfig()
 	cfg.TripleStoreURL = "http://127.0.0.1:1"
 	tree := newTieFSTree(&browsePage{session: &data.Session{Tie: client.NewTieClient(cfg)}}).tree

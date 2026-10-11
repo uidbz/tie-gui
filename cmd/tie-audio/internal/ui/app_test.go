@@ -48,7 +48,7 @@ func contains(o, want fyne.CanvasObject) bool {
 }
 
 func TestShellWrapRegularLayoutPinsQueuePane(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	win := test.NewWindow(nil)
 
 	bar := widget.NewLabel("transport")
@@ -80,7 +80,7 @@ func TestShellWrapRegularLayoutPinsQueuePane(t *testing.T) {
 }
 
 func TestShellWrapCompactLayoutHasNoQueuePane(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	win := test.NewWindow(nil)
 
 	bar := widget.NewLabel("mini")
@@ -98,7 +98,7 @@ func TestShellWrapCompactLayoutHasNoQueuePane(t *testing.T) {
 
 // Going compact and back must not reset the divider the user dragged.
 func TestShellRemembersSplitOffset(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	win := test.NewWindow(nil)
 
 	shell := &shellWindow{Window: win, bar: widget.NewLabel("bar"), queuePanel: widget.NewLabel("queue")}
@@ -126,7 +126,7 @@ func TestShellRemembersSplitOffset(t *testing.T) {
 // the window crossed the compact threshold. Forgetting it would freeze the
 // layout mode chosen at startup.
 func TestShellWrapIncludesWidthWatcher(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	win := test.NewWindow(nil)
 
 	watcher := newWidthWatcher(func(float32) {})

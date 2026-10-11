@@ -107,6 +107,11 @@ type browsePage struct {
 	// happen on the UI goroutine (inside fyne.Do), so no mutex is needed.
 	allTags []string
 	starred []string
+	// tagGen numbers loadTags calls (UI goroutine only): a fetch whose
+	// generation is no longer current — a collection switch started another
+	// one while it was in flight — is dropped instead of landing the old
+	// collection's tags in the sidebar.
+	tagGen int
 
 	// wallStale marks the gallery's contents as swapped without a re-render
 	// (clearAlbums), so the next showBrowse must reload the grid. Otherwise
@@ -557,7 +562,8 @@ func (b *browsePage) clearAlbums() {
 // loadTags fetches the tag lists (all tags + starred favorites) and populates
 // the sidebar. It clears the selection and tag state first, so it also serves
 // as the reload after a collection switch (matching tie-view's reloadTags);
-// the network fetch runs in a goroutine.
+// the network fetch runs in a goroutine. Only the latest call's result is
+// applied.
 func (b *browsePage) loadTags() {
 	b.ts.ClearSelected()
 	b.ts.ClearAllTags()
@@ -566,9 +572,14 @@ func (b *browsePage) loadTags() {
 	b.allTags = nil
 	b.starred = nil
 	b.ts.SetListLabel("Loading…")
+	b.tagGen++
+	gen, session := b.tagGen, b.session
 	go func() {
-		all, favorites, err := b.session.TagSets()
+		all, favorites, err := session.TagSets()
 		fyne.Do(func() {
+			if gen != b.tagGen {
+				return // superseded by a later loadTags
+			}
 			if err != nil {
 				b.ts.SetListLabel("Error loading tags")
 				fmt.Println("Error loading tags:", err)

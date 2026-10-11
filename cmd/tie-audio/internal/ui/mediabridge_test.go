@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	mobiledriver "fyne.io/fyne/v2/driver/mobile"
-	"fyne.io/fyne/v2/test"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
@@ -114,7 +113,7 @@ func (b *bridgeBackend) Status() (playback.Status, error) {
 
 func newTestBridge(t *testing.T, be *bridgeBackend) (*mediaBridge, *fakeMediaDriver) {
 	t.Helper()
-	test.NewApp()
+	newTestApp(t)
 	p := newPlayer(be, nil)
 	b := newMediaBridge(p)
 	d := &fakeMediaDriver{}

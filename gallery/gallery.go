@@ -655,14 +655,15 @@ func (viewer *Gallery) ToggleLabels() {
 
 func (viewer *Gallery) LoadGallery() {
 	viewer.loading.Wait()
-	// Snapshot the slice header on the calling (UI) goroutine: a later tag
-	// query swaps viewer.imageFiles from its own goroutine, and reading the
-	// header inside the spawned goroutine would race with that swap.
-	imageFiles := viewer.imageFiles
+	// Snapshot the slice header and page offset on the calling (UI)
+	// goroutine: a later tag query swaps viewer.imageFiles from its own
+	// goroutine and ChangeGallery/ChangePage rewrite layout.offset, so
+	// reading either inside the spawned goroutine would race with them.
+	imageFiles, offset := viewer.imageFiles, viewer.layout.offset
 	viewer.layout.placement.Add(1)
 	go func() {
 		defer viewer.layout.placement.Done()
-		viewer.layout.PlaceTiles(imageFiles)
+		viewer.layout.placeTiles(imageFiles, offset)
 	}()
 	viewer.buildPagination()
 	viewer.galleryLoaded = true

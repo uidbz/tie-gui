@@ -25,7 +25,7 @@ import (
 func TestHomeLiveIntegration(t *testing.T) {
 	requireSmokeEnv(t)
 	t.Setenv("FILESDIR", t.TempDir())
-	test.NewApp()
+	newTestApp(t)
 
 	cfg := config.Default()
 	cfg.TieConfig = smokeTieConfig(t)

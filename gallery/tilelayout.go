@@ -174,6 +174,14 @@ func (layout *TileLayout) Clear() {
 }
 
 func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
+	layout.placeTiles(imageFiles, layout.offset)
+}
+
+// placeTiles places the page starting at offset. Background callers pass an
+// offset snapshotted on the UI goroutine: layout.offset is written there
+// (ChangeGallery, ChangePage), so reading it here would race a newer
+// placement.
+func (layout *TileLayout) placeTiles(imageFiles []*ImageInfo, offset int) {
 	// Serialize overlapping placements (rapid page taps, re-sorts): the
 	// last placement's install is queued last, so it wins deterministically
 	// and its results land on its own tiles.
@@ -188,7 +196,7 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 		placeholder = image.NewNRGBA(image.Rect(0, 0, 1, 1))
 	}
 
-	end := layout.offset + layout.config.General.ImagesPerPage
+	end := offset + layout.config.General.ImagesPerPage
 	if end > len(imageFiles) {
 		end = len(imageFiles)
 	}
@@ -196,8 +204,8 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	// layout.offset (same indexing imageLoader and Layout use). Build it
 	// locally on this background goroutine; layout.tiles is assigned on the
 	// UI thread together with the grid objects.
-	newTiles := make([]*Tile, 0, end-layout.offset)
-	for i := layout.offset; i < end; i++ {
+	newTiles := make([]*Tile, 0, end-offset)
+	for i := offset; i < end; i++ {
 		tile := layout.newImageTileFromImage(placeholder, imageFiles[i], func(t *Tile) {})
 		newTiles = append(newTiles, tile)
 	}
@@ -218,7 +226,7 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	})
 
 	// Enqueue the load work; each item gets a fresh retry budget.
-	for i := layout.offset; i < end; i++ {
+	for i := offset; i < end; i++ {
 		imageFiles[i].loadAttempts = 0
 		layout.currentlyLoading.Add(1)
 		layout.imagesToLoad <- imageFiles[i]
@@ -228,7 +236,7 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 	// Calculate if we're on the last page
 	imagesPerPage := layout.config.General.ImagesPerPage
 	totalImages := len(imageFiles)
-	currentPage := layout.offset / imagesPerPage
+	currentPage := offset / imagesPerPage
 	maxPages := totalImages / imagesPerPage
 	if totalImages%imagesPerPage != 0 {
 		maxPages++

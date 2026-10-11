@@ -71,23 +71,11 @@ func newTestQueuePage(backend playback.PlaybackBackend) *queuePage {
 	return newQueuePage(win, session, transport, nil, false, func() {}, nil)
 }
 
-func waitForCond(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
 // A double-tap on a queue row while the player is paused must resume playback:
 // pwplay's Goto loads the track but does not clear the paused flag, so the
 // queue page issues a Play once the jump has landed.
 func TestQueuePlayRowResumesFromPause(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	backend := &scriptBackend{status: playback.Status{
 		Paused:       true,
 		CurrentTrack: 0,
@@ -104,7 +92,7 @@ func TestQueuePlayRowResumesFromPause(t *testing.T) {
 
 // When the jump target is already playing, no extra Play is issued.
 func TestQueuePlayRowNoExtraPlayWhenPlaying(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	backend := &scriptBackend{status: playback.Status{
 		Playing:      true,
 		CurrentTrack: 1,
@@ -117,7 +105,7 @@ func TestQueuePlayRowNoExtraPlayWhenPlaying(t *testing.T) {
 	q.playRow(1)
 
 	// Give the playRow goroutine time to (not) act, then check no Play came.
-	time.Sleep(300 * time.Millisecond)
+	sleepUI(300 * time.Millisecond)
 	if n := backend.playCount(); n != 0 {
 		t.Errorf("Play calls = %d, want 0 for an already-playing row", n)
 	}
@@ -126,7 +114,7 @@ func TestQueuePlayRowNoExtraPlayWhenPlaying(t *testing.T) {
 // noteEnqueued shows the added tracks immediately and shields them from a
 // stale mid-mutation poll until endQueueMutation reconciles.
 func TestQueueNoteEnqueuedIsOptimisticAndSticky(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	backend := &scriptBackend{status: playback.Status{
 		CurrentTrack: -1,
 		Playlist:     []string{"u1"},
@@ -161,7 +149,7 @@ func TestQueueNoteEnqueuedIsOptimisticAndSticky(t *testing.T) {
 // noteQueueReplaced swaps the visible queue instantly and shields it from
 // mid-replace polls (the server transiently holds old+new tracks).
 func TestQueueNoteQueueReplacedIsOptimisticAndSticky(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	backend := &scriptBackend{status: playback.Status{
 		Playing:      true,
 		CurrentTrack: 3,

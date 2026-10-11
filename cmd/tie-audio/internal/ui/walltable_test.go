@@ -16,7 +16,7 @@ import (
 // a stub album opener; the table's hooks are exercised through the stubs.
 func newTestWallTable(t *testing.T) (*wallTable, *browsePage) {
 	t.Helper()
-	test.NewApp()
+	newTestApp(t)
 	covers := newCoverStore(nil)
 	covers.decodeFn = func(string) (image.Image, error) { return nil, data.ErrNoCover }
 	page := &browsePage{

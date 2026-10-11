@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"fyne.io/fyne/v2/test"
-
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
@@ -75,7 +73,7 @@ func (f *fakeBackend) volumeCount() int {
 // all of them at once: with three views registered, one poll performs three
 // SetValue pairs, any of which could echo.
 func TestPlayerApplyDoesNotEchoToBackend(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	backend := &fakeBackend{}
 	p := newPlayer(backend, nil)
@@ -104,7 +102,7 @@ func TestPlayerApplyDoesNotEchoToBackend(t *testing.T) {
 // While the user drags a seek slider, a poll must not move the thumb out from
 // under their finger.
 func TestPlayerApplySkipsPositionWhileSeeking(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	p := newPlayer(&fakeBackend{}, nil)
 	bar := newRegularBar(p, nil)
@@ -173,7 +171,7 @@ func TestPlayerSyncCoverRetriesUnknownTrack(t *testing.T) {
 // polled volume like every other view. The track line appears only while a
 // track is current.
 func TestMiniBarVolumeRowAndTitle(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	p := newPlayer(&fakeBackend{}, nil)
 	bar := newMiniBar(p, func() {}, func() {})
@@ -200,7 +198,7 @@ func TestMiniBarVolumeRowAndTitle(t *testing.T) {
 // transportState carries the queue position and the current track's hash
 // (nav badge, desktop "3 / 42", album-view play marker).
 func TestTransportStateQueueFields(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	p := newPlayer(&fakeBackend{}, nil)
 	var got transportState
 	p.AddView(recordView{&got})
@@ -250,7 +248,7 @@ func (b *closableBackend) Close() error {
 // SetBackend swaps the backend the poll loop and actions target, and stops
 // and closes the old one (the local engine holds a sink and a goroutine).
 func TestPlayerSetBackend(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 	old := &closableBackend{}
 	replacement := &fakeBackend{}
 	p := newPlayer(old, nil)
@@ -271,7 +269,7 @@ func TestPlayerSetBackend(t *testing.T) {
 
 	// Swapping to the same backend is a no-op (no stop/close).
 	p.SetBackend(replacement)
-	time.Sleep(50 * time.Millisecond)
+	sleepUI(50 * time.Millisecond)
 	old.mu.Lock()
 	defer old.mu.Unlock()
 	if old.stops != 1 || old.closes != 1 {
@@ -305,7 +303,7 @@ func TestMPRISState(t *testing.T) {
 // and send linear gain to the backend, never above unity: the old linear
 // 0…2 gain slider was far too loud over most of its range.
 func TestVolumeLevelsMapToCubicGain(t *testing.T) {
-	test.NewApp()
+	newTestApp(t)
 
 	fb := &fakeBackend{}
 	p := newPlayer(fb, nil)
@@ -354,6 +352,6 @@ func waitVolumes(t *testing.T, f *fakeBackend, n int) {
 		if time.Now().After(deadline) {
 			t.Fatalf("got %d SetVolume calls, want %d", f.volumeCount(), n)
 		}
-		time.Sleep(time.Millisecond)
+		sleepUI(time.Millisecond)
 	}
 }

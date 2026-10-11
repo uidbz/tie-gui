@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"fyne.io/fyne/v2/test"
-
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 )
 
@@ -133,7 +131,7 @@ func TestCoverStoreLookupReportsSettledState(t *testing.T) {
 
 func TestCoverStoreRequestDeduplicatesConcurrentAsks(t *testing.T) {
 	// Request delivers its callbacks through fyne.Do, which needs a running app.
-	test.NewApp()
+	newTestApp(t)
 
 	f := newFakeCovers()
 	f.set("a", testImage(), nil)
@@ -155,7 +153,7 @@ func TestCoverStoreRequestDeduplicatesConcurrentAsks(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for atomic.LoadInt32(&done) < 3 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+		sleepUI(5 * time.Millisecond)
 	}
 	if got := atomic.LoadInt32(&done); got != 3 {
 		t.Fatalf("%d of 3 callbacks ran", got)

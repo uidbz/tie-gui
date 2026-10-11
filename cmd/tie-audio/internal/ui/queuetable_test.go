@@ -14,7 +14,7 @@ import (
 // [H(A), T(a1), T(a2), H(B), T(b1), T(b2)].
 func groupedQueuePage(t *testing.T) *queuePage {
 	t.Helper()
-	test.NewApp()
+	newTestApp(t)
 	backend := &scriptBackend{}
 	q := newTestQueuePage(backend)
 	urls := []string{"a1", "a2", "b1", "b2"}
