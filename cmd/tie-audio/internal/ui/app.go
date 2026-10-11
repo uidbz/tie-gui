@@ -4,9 +4,11 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"io"
 	"log"
 	"path"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
+	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/history"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
 
@@ -175,11 +178,89 @@ type App struct {
 	// layoutInfo is the Settings hint describing the layout in effect (see
 	// refreshLayoutInfo).
 	layoutInfo *widget.Label
+	// recorder moves finished plays from the backend's play log into tie's
+	// play history (internal/history); live reads the session it writes to
+	// (a.session is replaced on settings save, on the UI goroutine).
+	recorder *history.Recorder
+	live     atomic.Pointer[data.Session]
 }
+
+// setSession installs a (new) session everywhere the App holds one.
+func (a *App) setSession(s *data.Session) {
+	a.session = s
+	a.live.Store(s)
+}
+
+// startHistory wires and starts the play-history recorder.
+func (a *App) startHistory() {
+	a.recorder = history.New(history.Options{
+		Dir:     config.StateDir(),
+		Session: func() *data.Session { return a.live.Load() },
+		Backend: a.player.be,
+		BackendKey: func() string {
+			s := a.live.Load()
+			if playback.IsLocal(a.player.be()) || s == nil {
+				return "local"
+			}
+			return "pwplay:" + s.Cfg.PwplayServer
+		},
+		Track: a.player.TrackMeta,
+		OnRecorded: func(int) {
+			fyne.Do(func() {
+				if a.browse.home != nil {
+					a.browse.home.invalidate()
+				}
+			})
+		},
+	})
+	a.hookPlayNotifier()
+	a.player.AddView(&historyKicker{kick: a.recorder.Kick})
+	a.recorder.Start()
+	// Convert pre-v0.6 playlists (fake parent edges) once per session.
+	go func() {
+		if n, err := a.live.Load().MigratePlaylists(); err != nil {
+			log.Printf("tie-audio: playlist migration: %v", err)
+		} else if n > 0 {
+			log.Printf("tie-audio: migrated %d legacy playlists", n)
+		}
+	}()
+}
+
+// hookPlayNotifier lets the local engine kick the recorder the moment a
+// play is logged.
+func (a *App) hookPlayNotifier() {
+	if n, ok := a.player.be().(playback.PlayNotifier); ok && a.recorder != nil {
+		n.SetPlayListener(a.recorder.Kick)
+	}
+}
+
+// enableHistory gates the play-history recorder; tests turn it off so
+// building an App never writes state files or plays into a real store.
+var enableHistory = true
+
+// historyKicker kicks the recorder when the playing track changes or
+// playback stops (the remote server has a finished play to log then).
+type historyKicker struct {
+	kick    func()
+	hash    string
+	stopped bool
+}
+
+func (k *historyKicker) apply(st transportState) {
+	if st.trackHash != k.hash || st.stopped != k.stopped {
+		if k.hash != "" {
+			k.kick()
+		}
+		k.hash, k.stopped = st.trackHash, st.stopped
+	}
+}
+
+func (k *historyKicker) setCover(image.Image) {}
 
 // NewApp builds the UI for the given window and session.
 func NewApp(win fyne.Window, session *data.Session) *App {
-	a := &App{session: session, platform: gallery.NewPlatform()}
+	a := &App{platform: gallery.NewPlatform()}
+	a.setSession(session)
 	a.covers = newCoverStore(session)
 	a.compact = compactForWidth(session.Cfg.Layout, a.platform, canvasWidth(win))
 
@@ -198,6 +279,7 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.mini = newMiniBar(a.player, a.showNowPlaying, a.onMiniCover)
 	a.playing = newNowPlayingPage(a.player, a.leaveNowPlaying)
 	a.nav = newNavBar(navActions{
+		home:     a.navHome,
 		albums:   a.navAlbums,
 		tags:     a.navTags,
 		playlist: a.showQueueView,
@@ -269,7 +351,7 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.settingsContent = settingsTab.Content
 
 	// Feed the wall per the configured startup page (latest / favorites /
-	// playlists / a tag); StartupNone leaves it empty until a tag is picked.
+	// playlists / a tag); Home is the default, StartupBlank leaves it empty.
 	a.browse.applyStartupPage()
 
 	// Swipes mirror the compact nav bar's buttons, and work in either layout on
@@ -309,6 +391,10 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	}
 	a.initHotkeys()
 	a.syncBackHandler()
+	a.browse.onFeedChanged = a.syncNav
+	if enableHistory {
+		a.startHistory()
+	}
 
 	win.SetOnClosed(func() {
 		a.player.Stop()
@@ -321,7 +407,13 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 		// app exits anyway — the OS reclaims the sink and the bus name.
 		closeWithin(shutdownTimeout, "MPRIS", a.mpris.Close)
 		if c, ok := a.player.be().(io.Closer); ok {
+			// Closing the local engine logs the play still in progress.
 			closeWithin(shutdownTimeout, "playback backend", func() { _ = c.Close() })
+		}
+		// Final drain: plays logged since the last one reach tie (or the
+		// spool, when tie is unreachable) before exit.
+		if a.recorder != nil {
+			a.recorder.Stop(shutdownTimeout)
 		}
 	})
 	a.player.Start()
@@ -476,9 +568,29 @@ func (a *App) setCompact(compact bool) {
 
 // navAlbums is the nav bar's Albums tab: back to the wall from any view (an
 // open album closes, as its own "Albums" button does), dismissing the drawer.
+// From the Home page it opens the album wall (every album, newest first).
 func (a *App) navAlbums() {
 	a.browse.closeSidebar()
+	if a.browse.feed == feedHome {
+		if a.compact {
+			a.queue.hide()
+		}
+		a.setView(viewBrowse)
+		a.browse.showLatest()
+		return
+	}
 	a.showBrowseView()
+}
+
+// navHome is the nav bar's Home tab.
+func (a *App) navHome() {
+	a.browse.closeSidebar()
+	if a.compact {
+		a.queue.hide()
+	}
+	a.setView(viewBrowse)
+	a.browse.showHome()
+	a.syncNav()
 }
 
 // navTags is the nav bar's Tags tab: the tag drawer over the cover wall,
@@ -521,6 +633,9 @@ func (a *App) currentTab() navTab {
 	if a.browse != nil && a.browse.sidebarOpen() {
 		return tabTags
 	}
+	if a.browse != nil && a.browse.feed == feedHome && !a.browse.albumOpen {
+		return tabHome
+	}
 	return tabAlbums
 }
 
@@ -547,8 +662,8 @@ func (a *App) edgeOverlay() fyne.CanvasObject {
 		switch {
 		case a.browse.albumOpen:
 			left = newEdgeSwipe(a.showBrowseView)
-		case a.browse.tableMode():
-			// The table view has no gallery swipe overlay; the right edge leads
+		case a.browse.feed == feedHome || a.browse.tableMode():
+			// The Home page and the table view have no gallery swipe overlay; the right edge leads
 			// on to the playlist (closing the drawer first if it is open).
 			right = newEdgeSwipeLeft(func() {
 				if a.browse.sidebarOpen() {

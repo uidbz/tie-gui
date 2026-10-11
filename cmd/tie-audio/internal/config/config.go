@@ -63,8 +63,9 @@ type AppConfig struct {
 	// a tablet — hence the override.
 	Layout string
 	// StartupPage selects what the cover wall shows at launch (and after a
-	// collection switch): StartupNone leaves it empty until a tag or folder
-	// is picked; the others feed it immediately. Empty means StartupNone.
+	// collection switch): StartupHome (empty, the default) shows the Home
+	// page, StartupBlank leaves the wall empty until a tag or folder is
+	// picked; the others feed it immediately.
 	StartupPage string
 	// StartupTag is the tag shown at launch when StartupPage is StartupTag.
 	StartupTag string
@@ -150,7 +151,8 @@ const (
 
 // StartupPage values for AppConfig.StartupPage.
 const (
-	StartupNone      = ""          // empty wall until a tag or folder is picked
+	StartupHome      = ""          // the Home page (new, recent, related, rediscover) — the default
+	StartupBlank     = "blank"     // empty wall until a tag or folder is picked
 	StartupLatest    = "latest"    // every album, most recently imported first
 	StartupFavorites = "favorites" // albums tagged "favorite"
 	StartupPlaylists = "playlists" // saved playlists
@@ -232,3 +234,13 @@ func Save(cfg AppConfig) error {
 func LoadTieConfig(name string) tieclient.Config {
 	return tieconfig.Load(name)
 }
+
+// StateDir is the directory tie-audio keeps its runtime state in (play log,
+// history spool): next to the config file, so it is $FILESDIR-relative on
+// Android.
+func StateDir() string {
+	return filepath.Dir(resolveSavePath())
+}
+
+// PlayLogPath is the local engine's persisted play log.
+func PlayLogPath() string { return filepath.Join(StateDir(), "local-plays.jsonl") }

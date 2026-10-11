@@ -17,6 +17,7 @@ type navTab int
 
 const (
 	tabNone navTab = iota - 1 // no tab highlighted (Now Playing)
+	tabHome
 	tabAlbums
 	tabTags
 	tabPlaylist
@@ -26,8 +27,8 @@ const (
 )
 
 // navBar is the compact layout's persistent bottom navigation, pinned under
-// the mini bar on every view (and alone under Now Playing): Albums, Tags,
-// Playlist, Settings and the library's ☰ menu. The active destination is
+// the mini bar on every view (and alone under Now Playing): Home, Albums,
+// Tags, Playlist, Settings and the library's ☰ menu. The active destination is
 // drawn in the primary color with an indicator line above it, like a
 // platform bottom-navigation bar, so the user always knows where they are.
 //
@@ -42,12 +43,13 @@ type navBar struct {
 // navActions are the bar's callbacks, one per tab. menu receives the button,
 // so the popup can be anchored to it.
 type navActions struct {
-	albums, tags, playlist, settings func()
-	menu                             func(anchor fyne.CanvasObject)
+	home, albums, tags, playlist, settings func()
+	menu                                   func(anchor fyne.CanvasObject)
 }
 
 func newNavBar(act navActions) *navBar {
 	n := &navBar{active: tabAlbums}
+	n.buttons[tabHome] = newNavButton("Home", theme.HomeIcon(), act.home)
 	n.buttons[tabAlbums] = newNavButton("Albums", theme.GridIcon(), act.albums)
 	n.buttons[tabTags] = newNavButton("Tags", theme.SearchIcon(), act.tags)
 	n.buttons[tabPlaylist] = newNavButton("Playlist", theme.ListIcon(), act.playlist)

@@ -12,7 +12,7 @@ Fyne fork — hence the monorepo.
 | `cmd/tie-view/` | tie-network image viewer entry point (also opens local directories/images/archives like imgview) |
 | `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction"); copy/move destination conflicts prompt with a Dolphin-style dialog (see "tie-fm copy/move conflicts"); the context menu also offers "New file…" (backends implementing `fs.FileMaker`, local) and "Open in terminal" (local entries; terminal from `Config.Terminal`, `$TERMINAL`, or the first known emulator in PATH, set in Menu → "Terminal…") |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
-| `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/playback/ui) |
+| `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/history/playback/ui; Home page + play history, see the sections at the end) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
 | `gallery/imageview.go` | Single-image display widget |
@@ -33,9 +33,12 @@ Fyne fork — hence the monorepo.
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
 The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
-Go module proxy; no local checkout is needed. (It was previously referenced via
-a `replace` directive to a sibling `../tie` checkout — removed when v0.4.2 was
-tagged — and was imported as `git.sr.ht/~uid/tie` before the sourcehut→GitHub
+Go module proxy. **Temporarily** it is again resolved via a `replace`
+directive to the sibling `../tie` checkout: the media model (collection
+contract, playlists, play history — tie `client/media.go`, `playlist.go`,
+`history.go`) is unreleased; drop the replace and bump the require once tie
+v0.6.0 is tagged. (It was previously referenced via such a replace until
+v0.4.2, and was imported as `git.sr.ht/~uid/tie` before the sourcehut→GitHub
 migration.) The pwplay client (`github.com/uidbz/pwplay/client`, stdlib-only
 HTTP client for the pwplay-server REST API that tie-audio's remote backend
 drives) is a pinned dependency the same way; its old vendored copy under
@@ -943,9 +946,11 @@ stays on the settings page (no `ChangeGallery`).
 **Startup page:** the app form's "startup page"/"startup tag" items
 (`AppConfig.StartupPage`/`StartupTag`, settings.go) choose what the cover
 wall shows at launch and after a collection switch
-(`browsePage.applyStartupPage`): blank (default), latest albums
+(`browsePage.applyStartupPage`): the Home page (`StartupHome` = "", the
+default; see "tie-audio Home page"), blank (`StartupBlank`), latest albums
 (`Session.LatestAlbums` — every audio-dir and audio-archive merged, sorted
-by tag-date, so untagged tie-fm imports appear), favorites (the `favorite`
+by `added-at`, falling back to tag-date, so untagged tie-fm imports appear;
+playlists excluded), favorites (the `favorite`
 tag), playlists (the reserved `playlist` tag), or a chosen tag. Tag-based
 pages select their tag in the sidebar via `SetSelected` (no
 `OnSelectedChanged`, and no co-tag refinement — the full tag list stays
@@ -1031,7 +1036,7 @@ in landscape) has room for the split layout:
 | Playlist | `trackTable` in a permanent right-hand `HSplit` pane, grouped by album headers | full-screen **album-grouped list** (`queueList`) |
 | Album track list | persisted column set + Columns dialog | fixed `compactAlbumColumns` (track no / title / duration) |
 | Transport | `regularBar` (one row, both sliders, "3 / 42" queue position; cover click scrolls the queue pane to the playing track) | `miniBar` (cover + controls, track line, always-visible volume row) → full-screen `nowPlayingPage` |
-| Bottom nav | — | persistent `navBar` (Albums / Tags / Playlist / Settings / ☰) on **every** view |
+| Bottom nav | — | persistent `navBar` (Home / Albums / Tags / Playlist / Settings / ☰) on **every** view |
 
 - **Bottom panel** (`App.applyBottomBar`, `navbar.go`): every compact view
   pins mini bar + nav bar on one shared `panelBackground`; Now Playing (its
@@ -1211,11 +1216,12 @@ to `coverMaxEdge` (512) and the cache is bounded (`coverLimit` = 120, insertion
   switch clears the store and re-points its session (`settings.go`).
 
 `data.Track.AlbumUID` is what artwork and grouping key off: `TrackForHash`
-takes it from the track's `tie-parent` edges, `AlbumTracks` overrides it with
-the directory being listed, and the **playlist** path excludes the playlist's
-own UID (`trackForHash(hash, excludeParent)`) — a saved playlist parents every
-track it lists, and grouping by it would collapse a mixed playlist into one
-album with one cover.
+takes it from the track's `parent` edges, `AlbumTracks` overrides it with
+the album being listed, and the **playlist** path (`playlistTracks`, one
+Expand for all tracks) excludes the playlist's own UID and lifts a disc
+folder to its album (`discFolderAlbum`) — legacy playlists parented every
+track they listed, and grouping by them would collapse a mixed playlist into
+one album with one cover.
 
 ### Compact playlist (`queuelist.go`)
 
@@ -1797,3 +1803,79 @@ states never diff into spurious tie writes:
 ```go
 ts.SetSelected(tagsFromTie)
 ```
+
+---
+
+## tie-audio and the tie media model (`internal/data/albums.go`)
+
+tie-audio reads tie's collection contract (tie `client/media.go`):
+
+- **Albums open in one query:** `AlbumTracks` lists an audio-dir's tracks via
+  its `member-of` edges (`tc.CollectionMembers`, expanded rows — no per-track
+  Get), falling back for un-indexed data (or a triplestore without the
+  member-of reverse index) to walking the dir **and its plain subdirectories**
+  (`collectionAudioRows`: disc folders `cd<N>`, skipping nested collections
+  and `_prev`) plus one Expand. Tracks sort by disc, track no, filename.
+  Multi-disc albums (tie ≥ v0.5.3 files them under `cd<N>/`) used to open
+  empty.
+- **One tile per album:** `QueryAlbums` folds tracks into their album tile
+  through `member-of` and through plain dirs in the result (disc folders) —
+  disc tracks used to show as single-track tiles.
+- `Album` carries the expanded collection fields at no extra cost: `Genres`,
+  `Tags`, `AddedAt` (added-at, else tag-date), `TrackCount`, `Duration`,
+  `Stats` (`client.PlayStats`); `Artist` prefers `album-artist`. Kind
+  `AlbumPlaylist` for playlists (`client.IsPlaylistRow`, legacy ones too).
+- **Covers:** listings record thumbnail hashes (`Session.thumbHints`), so
+  `CoverBytesForUID` fetches the thumbnail blob without a Get per tile; an
+  album with no root files (multi-disc) resolves art from its members.
+- **Playlists** are tie playlist subjects (`Tie.CreatePlaylist` from
+  `SaveQueueAsPlaylist`); `App.startHistory` runs `MigratePlaylists` once per
+  session (legacy audio-dir playlists with fake per-track parent edges).
+
+## tie-audio play history (`internal/history`, `playback/history.go`)
+
+Plays are measured by the pwplay engine (`PlayerOptions.OnPlay`: heard time
+on the output clock, seeks/pauses excluded) and logged with sequence numbers:
+on the pwplay-server (`GET /history`, so plays made while tie-audio was
+closed are picked up) or, for the local backend, in
+`<config dir>/local-plays.jsonl` (`config.PlayLogPath`). Backends expose the
+log via the optional `playback.HistorySource` interface (fakes need not
+implement it); the local backend also implements `PlayNotifier`.
+
+`history.Recorder` (started by `App.startHistory`, gated by
+`enableHistory` — tests switch it off) drains the log on start, every 60 s,
+when `historyKicker` (a transportView) sees the track change/stop, and when
+the local engine logs a play; and once more on window close (after the
+backend's Close, which flushes the open play). Each record is classified
+with `client.ClassifyPlay`, attributed to the album it was played from (the
+queue registry's `Track.AlbumUID`, else `Session.TrackAlbum`), appended to
+`history-spool.jsonl`, the per-backend cursor (`history-cursors.json`, keyed
+`local` / `pwplay:<url>`, holding source + seq; a new source re-reads from 0)
+advances, then the spool is flushed with `Tie.RecordPlays` and deleted only
+on success. Event ids derive from (source, seq), so re-delivery never double
+counts. `OnRecorded` invalidates the Home page.
+
+## tie-audio Home page (`internal/data/home.go`, `internal/ui/home.go`)
+
+The default startup page and the compact nav bar's **Home** tab (also ☰ →
+"Home"; the nav bar is now Home / Albums / Tags / Playlist / Settings / ☰,
+and Albums from Home opens the latest-albums wall). It is a wall feed
+(`feedHome`): `showWall`/`showBrowse`/`Content()`/`reloadWall` route to
+`showHomeView`, so Back from an album returns to it without a rebuild
+(rebuilt when stale — new plays, collection switch — or older than 5 min).
+`homeRoot` composes it like the table view (sidebar split / drawer stack).
+
+`Session.Home` costs ~5 round trips (LatestAlbums ×2 with stats expanded,
+`RecentPlays` limit 3000, `ListPlaylists`, one Expand for recent tracks);
+`data.BuildHome` is pure (inputs + clock + `DaySeed`, so random picks are
+stable per day) and unit-tested. Shelves, hidden below 3 items (1 for
+personal-history rows): Jump back in (albums of the latest complete plays),
+Recently played tracks, Recently added (added-at ≤ 30 d, unplayed first),
+Because you played *X* (seeds: the 1–2 albums most played in 14 d;
+candidates scored by co-listening in the same sessions (30-min gap), same
+album artist, genre/tag Jaccard, year ±5, minus skip ratio; excludes albums
+heard in the last 7 d), Haven't heard in a while (≥ 2 plays or `favorite`,
+last played > 180 d; `log1p(plays)·(1−e^(−days/180))`), On this day (±3 d in
+earlier years), Favorites, Never played (in the library > 30 d), Your
+playlists. "See all" puts a shelf on the wall (`feedList`); track tiles play
+the album from that track (`playFromAlbum`).

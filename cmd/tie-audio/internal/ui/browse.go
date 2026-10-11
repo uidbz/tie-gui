@@ -27,6 +27,8 @@ const (
 	feedTags                   // a tag query (the sidebar selection or a startup tag page)
 	feedLatest                 // the latest-albums startup page
 	feedDir                    // a Files-tab directory listing
+	feedHome                   // the Home page (home.go)
+	feedList                   // a fixed album list (a Home shelf's "See all")
 )
 
 // browsePage is the album cover wall: a gallery grid driven by a Tags/Files/
@@ -55,6 +57,11 @@ type browsePage struct {
 	// when the config starts the app in table mode).
 	albums    []data.Album
 	wallTable *wallTable
+	// home is the Home page, built on first use.
+	home *homeView
+	// onFeedChanged, when set, is called after the wall switched feeds (the
+	// App re-highlights its nav bar: Home vs Albums).
+	onFeedChanged func()
 
 	// transport is the shared playback controller, used to feed now-playing
 	// labels when albums are played or enqueued. Wired by the App shell.
@@ -168,6 +175,7 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 			viewLabel = "Cover view"
 		}
 		return []*fyne.MenuItem{
+			fyne.NewMenuItem("Home", b.showHome),
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
 			fyne.NewMenuItem("Reload albums", b.reloadWall),
 			// The full listing from anywhere (a tag wall, a Files directory):
@@ -192,8 +200,12 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 }
 
 // Content is the browse page's root object, used as the window's initial
-// content: the gallery's root in cover mode, the album table in table mode.
+// content: the Home page when it is the startup page, else the gallery's
+// root in cover mode, the album table in table mode.
 func (b *browsePage) Content() fyne.CanvasObject {
+	if b.feed == feedHome && b.home != nil {
+		return b.homeRoot()
+	}
 	if b.tableMode() && b.wallTable != nil {
 		return b.wallTableRoot()
 	}
@@ -460,6 +472,17 @@ func (b *browsePage) reloadWall() {
 		b.openAlbum(b.album)
 		return
 	}
+	switch b.feed {
+	case feedHome:
+		if b.home != nil {
+			b.home.reload()
+		}
+		return
+	case feedList:
+		b.covers.Clear()
+		b.viewer.ChangeGallery()
+		return
+	}
 	b.covers.Clear()
 	switch b.feed {
 	case feedDir:
@@ -476,8 +499,8 @@ func (b *browsePage) reloadWall() {
 }
 
 // applyStartupPage feeds the cover wall per the configured startup page
-// (Settings → startup page). StartupNone leaves the wall empty until the user
-// picks a tag or a folder. The tag-based pages select their tag in the
+// (Settings → startup page). StartupHome (the default) shows the Home page;
+// StartupBlank leaves the wall empty until the user picks a tag or a folder. The tag-based pages select their tag in the
 // sidebar so the selection — and in the compact layout the filter chips —
 // reflect what the wall shows; the co-tag refinement is deliberately not run,
 // so the sidebar keeps the full tag list until the user changes the
@@ -485,6 +508,9 @@ func (b *browsePage) reloadWall() {
 func (b *browsePage) applyStartupPage() {
 	tag := ""
 	switch b.session.Cfg.StartupPage {
+	case config.StartupHome:
+		b.showHome()
+		return
 	case config.StartupLatest:
 		b.refreshLatest()
 		return
@@ -517,6 +543,9 @@ func (b *browsePage) readers(albums []data.Album) []gallery.CustomReader {
 // the prior collection can neither be displayed nor opened; the empty wall
 // renders when the user returns via showBrowse.
 func (b *browsePage) clearAlbums() {
+	if b.home != nil {
+		b.home.reset()
+	}
 	b.feed = feedNone
 	b.wallStale = true
 	b.setWallAlbums(nil)

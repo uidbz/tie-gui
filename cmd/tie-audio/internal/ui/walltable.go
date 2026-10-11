@@ -233,6 +233,8 @@ func albumKindLabel(kind data.AlbumKind) string {
 		return "Archive"
 	case data.AlbumTrack:
 		return "Track"
+	case data.AlbumPlaylist:
+		return "Playlist"
 	}
 	return ""
 }
@@ -395,6 +397,13 @@ func (b *browsePage) setWallAlbums(albums []data.Album) {
 // showWall pushes the wall to the window in the configured rendering: the
 // cover grid, or the album table.
 func (b *browsePage) showWall() {
+	if b.onFeedChanged != nil {
+		defer b.onFeedChanged()
+	}
+	if b.feed == feedHome {
+		b.showHomeView()
+		return
+	}
 	if b.tableMode() {
 		b.showWallTable()
 		return

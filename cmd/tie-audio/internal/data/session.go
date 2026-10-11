@@ -35,6 +35,14 @@ type Session struct {
 	// album loading runs on background goroutines.
 	archivesMu sync.Mutex
 	archives   map[string][]Track
+
+	// discUp caches disc folder → album lookups (discFolderAlbum).
+	discMu sync.Mutex
+	discUp map[string]string
+
+	// thumbHints remembers each listed album's thumbnail hash (from the
+	// query-expanded rows), so cover resolution skips a Get per tile.
+	thumbHints sync.Map // uid → thumbHash
 }
 
 // NewSession constructs the tie and pwplay clients and the playback backend
@@ -62,7 +70,7 @@ func NewSession(cfg config.AppConfig) *Session {
 		backend = config.DefaultBackend()
 	}
 	if backend == config.BackendLocal {
-		if lb, err := playback.NewLocal(); err == nil {
+		if lb, err := playback.NewLocal(config.PlayLogPath()); err == nil {
 			s.Backend = lb
 		} else {
 			s.BackendErr = err

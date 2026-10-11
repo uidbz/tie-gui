@@ -92,3 +92,8 @@ replace fyne.io/fyne/v2 => ./third_party/fyne
 // proxy picks it up (the /clear endpoint commit); replace keeps local builds
 // working against the sibling checkout until then.
 replace github.com/uidbz/pwplay => ../pwplay
+
+// TODO: drop once tie v0.6.0 (collection contract: member-of/added-at,
+// playlists, play history — client/media.go, history.go, playlist.go) is
+// tagged and the module proxy has it; bump the require above instead.
+replace github.com/uidbz/tie => ../tie

@@ -34,6 +34,10 @@ func (b *browsePage) showBrowse() {
 	b.albumOpen = false
 	b.albumTable = nil
 	b.albumPlaying = nil
+	if b.feed == feedHome {
+		b.showHomeView()
+		return
+	}
 	if b.wallStale || b.tableMode() || !b.viewer.Loaded() {
 		b.wallStale = false
 		b.showWall()

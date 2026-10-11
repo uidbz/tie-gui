@@ -177,12 +177,18 @@ func (t *TieFS) importFile(destDir, srcPath, name string, tags []string, progres
 	if err != nil {
 		return err
 	}
-	return writeAudioMetadata(t.tc, hash, srcPath)
+	if err := writeAudioMetadata(t.tc, hash, srcPath); err != nil {
+		return err
+	}
+	// added-at: the stable "date added" of the tie media model, written once
+	// (tag-date is rewritten by every re-import).
+	return t.tc.EnsureAddedAt(hash)
 }
 
 // writeAudioMetadata records srcPath's audio metadata (title, artist,
-// album-artist, album, year, track, duration) on its content hash — the same
-// triples client.ImportFile's appendTagOps writes. Non-audio files (and
+// album-artist, album, year, track, track-total, disc, disc-total, genre,
+// composer, duration) on its content hash — the same triples
+// client.ImportFile's appendTagOps writes. Non-audio files (and
 // untaggable audio) yield no metadata and no write.
 func writeAudioMetadata(tc *client.TieClient, hash, srcPath string) error {
 	m := client.ExtractMediaMetadata(srcPath)
@@ -211,6 +217,22 @@ func writeAudioMetadata(tc *client.TieClient, hash, srcPath string) error {
 	if m.Duration > 0 {
 		batch.Add(hash, "duration", strconv.FormatFloat(m.Duration, 'f', 3, 64))
 	}
+	if m.TrackTotal != 0 {
+		batch.Set(hash, client.RelTrackTotal, []string{strconv.Itoa(m.TrackTotal)})
+	}
+	if m.Disc != 0 {
+		batch.Set(hash, client.RelDisc, []string{strconv.Itoa(m.Disc)})
+	}
+	if m.DiscTotal != 0 {
+		batch.Set(hash, client.RelDiscTotal, []string{strconv.Itoa(m.DiscTotal)})
+	}
+	if g := client.SplitGenres(m.Genre); len(g) > 0 {
+		batch.Set(hash, client.RelGenre, g)
+	}
+	if m.Composer != "" {
+		batch.Set(hash, client.RelComposer, []string{m.Composer})
+	}
+	batch.Set(hash, client.RelMetaVersion, []string{client.MetaVersion})
 	if _, err := tc.Batch(batch); err != nil {
 		return err
 	}
@@ -310,7 +332,17 @@ func (t *TieFS) LabelDir(dirURI string, label DirLabel) error {
 		return err
 	}
 	if label.Type != "" {
-		return t.tc.SetDirType(uid, label.Type)
+		if err := t.tc.SetDirType(uid, label.Type); err != nil {
+			return err
+		}
+		// Bring the labeled collection up to tie's collection contract
+		// (member-of edges, added-at, disc labels, album summary) so media
+		// apps list it — including multi-disc layouts — in one query.
+		if client.IsCollectionLabel(label.Type) {
+			if _, err := t.tc.IndexCollection(uid, client.IndexOptions{}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

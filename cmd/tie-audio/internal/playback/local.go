@@ -1,6 +1,8 @@
 package playback
 
 import (
+	"log"
+	"sync/atomic"
 	"time"
 
 	pwplayer "github.com/uidbz/pwplay/player"
@@ -16,13 +18,34 @@ import (
 // OpenSL ES on Android); tests inject a fake sink via newLocalWithSink.
 type localBackend struct {
 	p *pwplayer.Player
+	// plays is the engine's play log (see History); nil when it could not
+	// be opened.
+	plays *pwplayer.PlayLog
+	// onPlay, when set, is told about every logged play (the history
+	// recorder drains promptly instead of on its next tick).
+	onPlay atomic.Pointer[func()]
+}
+
+// SetPlayListener registers fn to be called (on the engine's tracking
+// goroutine) after each finished play is logged. Implemented by the local
+// backend only; see PlayNotifier.
+func (b *localBackend) SetPlayListener(fn func()) { b.onPlay.Store(&fn) }
+
+// PlayNotifier is implemented by backends that can announce a logged play.
+type PlayNotifier interface {
+	SetPlayListener(fn func())
 }
 
 // NewLocal builds the on-device backend. Construction cannot fail on Android
 // (the sink is created lazily at the first track load); on Linux a missing
 // PipeWire library surfaces at load time, logged by the engine.
-func NewLocal() (PlaybackBackend, error) {
-	return newLocalWithSink(nil)
+//
+// playLogPath is where the engine's play log is persisted (JSON lines, see
+// pwplay player.PlayLog), so plays survive until the history recorder has
+// written them to tie even if the app is killed first. "" keeps the log in
+// memory.
+func NewLocal(playLogPath string) (PlaybackBackend, error) {
+	return newLocalWith(nil, playLogPath)
 }
 
 // IsLocal reports whether b is the on-device backend — used to decide
@@ -32,16 +55,36 @@ func IsLocal(b PlaybackBackend) bool {
 	return ok
 }
 
-// newLocalWithSink is NewLocal with a sink-factory seam for tests.
+// newLocalWithSink is NewLocal with a sink-factory seam for tests (in-memory
+// play log).
 func newLocalWithSink(sink pwplayer.SinkFactory) (PlaybackBackend, error) {
+	return newLocalWith(sink, "")
+}
+
+func newLocalWith(sink pwplayer.SinkFactory, playLogPath string) (PlaybackBackend, error) {
+	plays, err := pwplayer.OpenPlayLog(playLogPath, "tie-audio", 2000)
+	if err != nil {
+		log.Printf("tie-audio: play log %s: %v (keeping plays in memory)", playLogPath, err)
+		plays, _ = pwplayer.OpenPlayLog("", "tie-audio", 2000)
+	}
+	b := &localBackend{plays: plays}
 	p, err := pwplayer.NewPlayerWithOptions(nil, pwplayer.PlayerOptions{
 		StartPaused: true,
 		Sink:        sink,
+		OnPlay: func(r pwplayer.PlayRecord) {
+			if _, err := plays.Append(r); err != nil {
+				log.Printf("tie-audio: play log: %v", err)
+			}
+			if fn := b.onPlay.Load(); fn != nil && *fn != nil {
+				(*fn)()
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &localBackend{p: p}, nil
+	b.p = p
+	return b, nil
 }
 
 // Close shuts the engine down (sink, decoder goroutine, temp files). The

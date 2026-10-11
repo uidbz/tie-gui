@@ -92,6 +92,7 @@ func (a *App) buildSettingsTab() *container.TabItem {
 	// collection switch). Saved with the rest of the form; applies at the
 	// next launch.
 	startupOptions := []string{
+		"Home (new, recent, related)",
 		"Blank (pick tags or a folder)",
 		"Latest albums",
 		"Favorites (tag: favorite)",
@@ -99,7 +100,8 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		"A tag…",
 	}
 	startupPages := []string{
-		config.StartupNone,
+		config.StartupHome,
+		config.StartupBlank,
 		config.StartupLatest,
 		config.StartupFavorites,
 		config.StartupPlaylists,
@@ -111,7 +113,7 @@ func (a *App) buildSettingsTab() *container.TabItem {
 				return startupPages[i]
 			}
 		}
-		return config.StartupNone
+		return config.StartupHome
 	}
 	startup := widget.NewSelect(startupOptions, nil)
 	startup.Selected = startupOptions[0]
@@ -164,13 +166,17 @@ func (a *App) buildSettingsTab() *container.TabItem {
 			dialog.ShowError(err, a.win)
 			return
 		}
-		a.session = data.NewSession(cfg)
+		a.setSession(data.NewSession(cfg))
 		a.browse.session = a.session
 		a.queue.session = a.session
 		// The playback backend may have changed: rewire the transport's poll
 		// and action target (stops and closes the old one) and let the media
 		// bridge know whether local playback is now in charge.
 		a.player.SetBackend(a.session.Backend)
+		a.hookPlayNotifier()
+		if a.recorder != nil {
+			a.recorder.Kick()
+		}
 		a.media.SetEnabled(playback.IsLocal(a.session.Backend))
 		// The cover store fetches through the session's filehost, so it has to
 		// follow the swap — and its cached art was resolved against the old
@@ -178,6 +184,9 @@ func (a *App) buildSettingsTab() *container.TabItem {
 		a.covers.session = a.session
 		a.covers.Clear()
 		a.browse.loadTags()
+		if a.browse.home != nil {
+			a.browse.home.reset()
+		}
 		if a.session.BackendErr != nil {
 			dialog.ShowError(fmt.Errorf("local playback unavailable, using pwplay remote: %w", a.session.BackendErr), a.win)
 			return

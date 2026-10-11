@@ -19,7 +19,7 @@ func TestLocalSmokeRealSink(t *testing.T) {
 	srv := trackServer(t, wavFixture(44100, 2, 2))
 	defer srv.Close()
 
-	b, err := NewLocal()
+	b, err := NewLocal("")
 	if err != nil {
 		t.Fatalf("NewLocal: %v", err)
 	}

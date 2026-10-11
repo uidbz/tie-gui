@@ -201,4 +201,4 @@ func TestNavBarActiveAndBadge(t *testing.T) {
 	}
 }
 
-func init() { enableMPRIS = false }
+func init() { enableMPRIS = false; enableHistory = false }
