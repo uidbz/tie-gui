@@ -33,13 +33,12 @@ Fyne fork — hence the monorepo.
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
 The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
-Go module proxy. **Temporarily** it is again resolved via a `replace`
-directive to the sibling `../tie` checkout: the media model (collection
-contract, playlists, play history — tie `client/media.go`, `playlist.go`,
-`history.go`) is unreleased; drop the replace and bump the require once tie
-v0.6.0 is tagged. (It was previously referenced via such a replace until
-v0.4.2, and was imported as `git.sr.ht/~uid/tie` before the sourcehut→GitHub
-migration.) The pwplay client (`github.com/uidbz/pwplay/client`, stdlib-only
+Go module proxy; no local checkout is needed (v0.6.0+ carries the media
+model — collection contract, playlists, play history — that tie-audio
+needs). (It was resolved via a `replace` directive to a sibling `../tie`
+checkout until v0.4.2, and again while the media model was unreleased
+before v0.6.0, and was imported as `git.sr.ht/~uid/tie` before the
+sourcehut→GitHub migration.) The pwplay client (`github.com/uidbz/pwplay/client`, stdlib-only
 HTTP client for the pwplay-server REST API that tie-audio's remote backend
 drives) is a pinned dependency the same way; its old vendored copy under
 `cmd/tie-audio/internal/pwplay/` was deleted. tie-audio's **local** playback

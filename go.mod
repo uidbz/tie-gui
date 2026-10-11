@@ -14,7 +14,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.1
 	github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6
 	github.com/uidbz/pwplay v0.0.0-20260902212933-349941cbfdcd
-	github.com/uidbz/tie v0.5.3
+	github.com/uidbz/tie v0.6.0
 )
 
 require (
@@ -92,8 +92,3 @@ replace fyne.io/fyne/v2 => ./third_party/fyne
 // proxy picks it up (the /clear endpoint commit); replace keeps local builds
 // working against the sibling checkout until then.
 replace github.com/uidbz/pwplay => ../pwplay
-
-// TODO: drop once tie v0.6.0 (collection contract: member-of/added-at,
-// playlists, play history — client/media.go, history.go, playlist.go) is
-// tagged and the module proxy has it; bump the require above instead.
-replace github.com/uidbz/tie => ../tie
