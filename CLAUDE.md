@@ -43,9 +43,12 @@ HTTP client for the pwplay-server REST API that tie-audio's remote backend
 drives) is a pinned dependency the same way; its old vendored copy under
 `cmd/tie-audio/internal/pwplay/` was deleted. tie-audio's **local** playback
 backend uses the same module's `player` package (the engine pwplay-server
-runs) — currently resolved via a `replace` directive to the sibling
-`../pwplay` checkout. The pwplay *server* itself stays in its own repo —
-tie-audio's `test-env` builds it from the sibling `../pwplay` checkout.
+runs). pwplay is pinned to a tagged release (v0.3.0+; its tags are v0.x
+because the module path has no `/v2`, even though its CHANGELOG history
+reaches v2.2.0), so the only `replace` left in `go.mod` is the in-repo Fyne
+fork and a `--recurse-submodules` clone builds on its own. The pwplay
+*server* itself stays in its own repo — tie-audio's `test-env` builds it
+from the sibling `../pwplay` checkout.
 
 Note: the `gallery` library serves `imgview`, `tie-view` and tie-fm's preview
 grid; `tie-audio` has its own UI code and shares only the `tagselection`
