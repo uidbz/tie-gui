@@ -176,8 +176,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6 h1:GTI/4+CFJJDcBplnIYw5i+2Zy8VO8DBgJGgPkDzW34U=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6/go.mod h1:XIwt3LLWCVqucBqkfBSAvr6Qs52z8VS+NXGRcdr6FQ8=
-github.com/uidbz/pwplay v0.3.0 h1:7bDX3RzXKvwbwoEVecR0FEPIpL7Wd7PcFknTE1bDKRQ=
-github.com/uidbz/pwplay v0.3.0/go.mod h1:xf0+TnsU08sOIEK/ezCUtjYYdp73S6uNJuuhmupAvic=
+github.com/uidbz/pwplay v0.3.1 h1:WlewxF57j3aasKf0EkCsBKlSyqYU11p2uc0lgOgXYHY=
+github.com/uidbz/pwplay v0.3.1/go.mod h1:xf0+TnsU08sOIEK/ezCUtjYYdp73S6uNJuuhmupAvic=
 github.com/uidbz/tie v0.6.0 h1:XPL1IjU8QIJVBPWp7HkO7IDiLjJVakviTK/bL1fOrfQ=
 github.com/uidbz/tie v0.6.0/go.mod h1:saTRPurAJUARw8KlXQTP9uJWN3qid0aEozhrRJUT2FY=
 github.com/ulikunitz/xz v0.5.8/go.mod h1:nbz6k7qbPmH4IRqmfOplQw/tblSgqTqBwxkY0oWt/14=
