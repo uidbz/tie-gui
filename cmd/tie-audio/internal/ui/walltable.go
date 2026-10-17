@@ -14,7 +14,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
-	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/widget/tablewidget"
+	"github.com/uidbz/tie-gui/tablewidget"
 )
 
 // The browse wall's table view: the same albums the cover wall shows, listed

@@ -12,7 +12,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
-	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/widget/tablewidget"
+	"github.com/uidbz/tie-gui/tablewidget"
 )
 
 // albumColumn is one selectable track-table column: a stable key persisted in

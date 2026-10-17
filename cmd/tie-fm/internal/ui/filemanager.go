@@ -17,8 +17,8 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
-	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/widget/tablewidget"
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/tablewidget"
 )
 
 const (

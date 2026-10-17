@@ -10,9 +10,17 @@ import (
 
 	"image/color"
 	"sort"
+	"time"
 
 	"fyne.io/fyne/v2/theme"
 )
+
+// doubleTapInterval is the window within which two taps on the same row count as
+// a double-tap. We detect double-taps manually (see cellTapped) rather than
+// implementing fyne.DoubleTappable, because that interface makes the driver
+// delay every single Tapped to disambiguate — regressing the album view's
+// instant single-tap-to-play.
+const doubleTapInterval = 300 * time.Millisecond
 
 // currentKeyModifiers returns the keyboard modifiers held right now, or 0 on a
 // driver without a keyboard (mobile). Used to give taps standard shift/ctrl
@@ -60,7 +68,11 @@ type FlexTable struct {
 	OnClick          func(row int)
 	OnClickSecondary func(row int, obj fyne.CanvasObject)
 	OnActivate       func(row int)
-	SelectColumn     int
+	// OnDoubleTap, when set, fires on a double-tap of a row (detected manually via
+	// tap timing). The queue uses it to play the double-clicked track. Single taps
+	// still fire immediately for selection.
+	OnDoubleTap  func(row int)
+	SelectColumn int
 	// OnSort, when set, is called on a header click instead of the built-in
 	// in-place TableData sort. It lets a consumer that owns the backing data
 	// (e.g. an external []Entry) re-sort its own source and rebuild the table.
@@ -70,16 +82,39 @@ type FlexTable struct {
 	// so a consumer can hit-test it against another widget's bounds (Fyne has no
 	// cross-widget drop target). Drag events keep flowing to the source cell for
 	// the whole gesture, so dragPos tracks the pointer across the window.
-	OnDragStart  func(row int)
-	OnDragMove   func(absPos fyne.Position)
-	OnDrop       func(row int, absPos fyne.Position)
-	dragging     bool
-	dragStartRow int
-	dragPos      fyne.Position
+	OnDragStart func(row int)
+	OnDragMove  func(absPos fyne.Position)
+	OnDrop      func(row int, absPos fyne.Position)
+	// OnReorder, when set, turns a drag gesture into an intra-table row move:
+	// on release the grabbed row's new index is computed from the pointer's
+	// vertical travel (in whole row heights) and OnReorder(from, to) fires. It
+	// takes precedence over OnDrop, which stays for cross-widget drops. The
+	// pixel-delta approach is scroll-position independent within a single drag.
+	OnReorder func(from, to int)
+	// RowSelectable, when set, reports whether a row can be selected, dragged
+	// or double-tapped. Non-selectable rows (e.g. the queue's album header
+	// rows) ignore taps and drags entirely. Nil means every row is.
+	RowSelectable func(row int) bool
+	dragging      bool
+	dragStartRow  int
+	dragStartPos  fyne.Position
+	dragRowHeight float32
+	dragPos       fyne.Position
+	// dragRowTop is the grabbed row's absolute top and dragTableY the table's
+	// absolute top at drag start; their difference converts a row boundary to a
+	// table-local Y for the drop-indicator line.
+	dragRowTop float32
+	dragTableY float32
+	// dropLine is a thin bar drawn at the insertion boundary during a reorder
+	// drag. Owned by the renderer; positioned in dragMove and hidden otherwise.
+	dropLine     *canvas.Rectangle
 	selectedRows map[int]bool
 	// selAnchor is the pivot row for shift-range selection (the last row selected
 	// without shift). -1 when there is no anchor.
-	selAnchor      int
+	selAnchor int
+	// lastTapRow/lastTapTime power manual double-tap detection.
+	lastTapRow     int
+	lastTapTime    time.Time
 	minWidth       float32
 	scroll         *container.Scroll
 	w              fyne.Window
@@ -106,6 +141,11 @@ type FlexTable struct {
 	// direction and erase the header arrow.
 	sortCol string
 	sortAsc bool
+
+	// templateHeight caches the table's default row height (the header's
+	// MinSize — the widget-mode cell wrapper measures zero on its own), used
+	// by SetRowHeight to reset a row to the template height.
+	templateHeight float32
 }
 
 func NewFlexTable(data *TableData, onClick func(row int)) *FlexTable {
@@ -114,12 +154,15 @@ func NewFlexTable(data *TableData, onClick func(row int)) *FlexTable {
 		SelectColumn:   -1,
 		selectedRows:   map[int]bool{},
 		selAnchor:      -1,
+		lastTapRow:     -1,
 		minWidth:       float32(data.ColumnCount() * 200),
 		SelectionColor: theme.Color(theme.ColorNameSelection),
 		CellBgColor:    theme.Color(theme.ColorNameBackground),
 		CellBgColorAlt: theme.Color(theme.ColorNameInputBackground),
-		// headerBgColor:  color.RGBA{89, 89, 89, 255},
-		// headerBgColor: color.RGBA{85, 170, 127, 255},
+		// headerBgColor must be a real color: a nil one leaves the header
+		// background rectangle's FillColor nil, which the GL painter tolerates
+		// but the software painter (tests, Capture) crashes on.
+		headerBgColor: theme.Color(theme.ColorNameBackground),
 	}
 
 	table.table = widget.NewTable(
@@ -233,6 +276,28 @@ func (t *FlexTable) SetColumnWidth(id int, width float32) {
 	t.table.SetColumnWidth(id, width)
 }
 
+// ScrollToRow scrolls the table so the given display row is visible.
+func (t *FlexTable) ScrollToRow(row int) {
+	if row < 0 {
+		return
+	}
+	t.table.ScrollTo(widget.TableCellID{Row: row, Col: 0})
+}
+
+// SetRowHeight sets one row's height. height <= 0 resets the row to the
+// template height — widget.Table.SetRowHeight has no reset of its own (a 0
+// there would collapse the row to nothing), and a row that was once given an
+// explicit height keeps it until reset.
+func (t *FlexTable) SetRowHeight(id int, height float32) {
+	if height <= 0 {
+		if t.templateHeight == 0 {
+			t.templateHeight = NewHeader("Mg", nil, t).MinSize().Height
+		}
+		height = t.templateHeight
+	}
+	t.table.SetRowHeight(id, height)
+}
+
 // SetSort records the current sort column and direction for the header arrow
 // without triggering a sort. Consumers that own their own sort state (via
 // OnSort) call it to seed the arrow before any header click.
@@ -293,10 +358,15 @@ func (tr *tableRenderer) Refresh() {
 }
 
 func (t *FlexTable) CreateRenderer() fyne.WidgetRenderer {
+	if t.dropLine == nil {
+		t.dropLine = canvas.NewRectangle(theme.Color(theme.ColorNamePrimary))
+		t.dropLine.Hide()
+	}
 	tr := &tableRenderer{
 		table: t.table,
 	}
-	tr.objects = []fyne.CanvasObject{t.table}
+	// The line is listed after the table so it paints on top of the rows.
+	tr.objects = []fyne.CanvasObject{t.table, t.dropLine}
 	return tr
 }
 
@@ -330,10 +400,27 @@ func (c *TableCell) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(clipped)
 }
 
-// cellTapped routes a single tap: a tap in SelectColumn (or any column when
+// cellTapped routes a tap. A tap in SelectColumn (or any column when
 // SelectColumn < 0) updates the selection (with standard plain/ctrl/shift
 // semantics) and fires OnClick; a tap in any other column fires OnActivate.
+// When OnDoubleTap is set, a second tap on the same row within doubleTapInterval
+// fires OnDoubleTap instead (the first tap's selection has already applied).
+// Rows RowSelectable rejects ignore the tap entirely.
 func (t *FlexTable) cellTapped(row, col int) {
+	if t.RowSelectable != nil && !t.RowSelectable(row) {
+		return
+	}
+	if t.OnDoubleTap != nil {
+		now := time.Now()
+		if t.lastTapRow == row && now.Sub(t.lastTapTime) < doubleTapInterval {
+			t.lastTapRow = -1
+			t.OnDoubleTap(row)
+			return
+		}
+		t.lastTapRow = row
+		t.lastTapTime = now
+	}
+
 	if t.SelectColumn < 0 || col == t.SelectColumn {
 		t.applySelection(row)
 		if t.OnClick != nil {
@@ -347,12 +434,19 @@ func (t *FlexTable) cellTapped(row, col int) {
 	}
 }
 
-// applySelection mutates selectedRows for a tap on row, honoring the modifiers
-// held at tap time: plain replaces the selection with just this row; ctrl/super
-// toggles this row; shift selects the contiguous range from the anchor (adding
-// to the selection when ctrl is also held, else replacing it).
+// applySelection mutates selectedRows for a tap on row, using the modifiers the
+// driver reports right now. The modifiers are read here and passed down rather
+// than read inside selectRow because the software test driver reports no
+// keyboard at all, which would leave the multi-select semantics untestable.
 func (t *FlexTable) applySelection(row int) {
-	mods := currentKeyModifiers()
+	t.selectRow(row, currentKeyModifiers())
+}
+
+// selectRow applies a tap on row given the modifiers held: plain replaces the
+// selection with just this row; ctrl/super toggles this row; shift selects the
+// contiguous range from the anchor (adding to the selection when ctrl is also
+// held, else replacing it).
+func (t *FlexTable) selectRow(row int, mods fyne.KeyModifier) {
 	shift := mods&fyne.KeyModifierShift != 0
 	toggle := mods&(fyne.KeyModifierControl|fyne.KeyModifierSuper) != 0
 
@@ -392,36 +486,142 @@ func (t *FlexTable) rowSecondary(row int, obj fyne.CanvasObject) {
 
 // dragStart marks the beginning of a drag gesture on the given display row. It
 // is idempotent within a gesture: OnDragStart fires only on the first event so
-// dragStartRow captures the row the drag was grabbed from.
-func (t *FlexTable) dragStart(row int) {
+// dragStartRow captures the row the drag was grabbed from. Rows RowSelectable
+// rejects cannot be grabbed.
+func (t *FlexTable) dragStart(row int, cell fyne.CanvasObject, startPos fyne.Position, rowHeight float32) {
 	if t.dragging {
+		return
+	}
+	if t.RowSelectable != nil && !t.RowSelectable(row) {
 		return
 	}
 	t.dragging = true
 	t.dragStartRow = row
+	t.dragStartPos = startPos
+	// The on-screen row pitch is the cell height plus the inter-row padding the
+	// table lays between cells (see widget.Table.findY); using the bare cell
+	// height makes the drop line drift by one padding per row.
+	t.dragRowHeight = rowHeight + theme.Size(theme.SizeNamePadding)
+	d := fyne.CurrentApp().Driver()
+	t.dragRowTop = d.AbsolutePositionForObject(cell).Y
+	t.dragTableY = d.AbsolutePositionForObject(t).Y
 	if t.OnDragStart != nil {
 		t.OnDragStart(row)
 	}
 }
 
-// dragMove records the pointer position and notifies OnDragMove so a consumer
-// can move a drag indicator that follows the cursor.
+// dropGap returns the insertion gap the current pointer travel maps to: the
+// number of rows above the boundary the drop will land at, clamped to [0, n].
+// The grabbed row's top tracks the pointer by the vertical travel since grab,
+// and the gap is that top rounded to the nearest row boundary. Both the live
+// insertion line and the committed move derive from this one value, so they can
+// never disagree.
+func (t *FlexTable) dropGap() int {
+	gap := t.dragStartRow
+	if t.dragRowHeight > 0 {
+		travel := (t.dragPos.Y - t.dragStartPos.Y) / t.dragRowHeight
+		gap = t.dragStartRow + int(roundHalf(travel))
+	}
+	if gap < 0 {
+		gap = 0
+	}
+	if n := t.data.RowCount(); gap > n {
+		gap = n
+	}
+	return gap
+}
+
+// roundHalf rounds to the nearest integer, halves away from zero.
+func roundHalf(f float32) float32 {
+	if f < 0 {
+		return -roundHalf(-f)
+	}
+	return float32(int(f + 0.5))
+}
+
+// dragMove records the pointer position, notifies OnDragMove (cursor-following
+// ghost) and, for a reorder drag, positions the insertion-line bar at the live
+// drop boundary — the same gap the release will commit to.
 func (t *FlexTable) dragMove(pos fyne.Position) {
 	t.dragPos = pos
 	if t.OnDragMove != nil {
 		t.OnDragMove(pos)
 	}
+	if t.OnReorder != nil && t.dropLine != nil {
+		gap := t.dropGap()
+		y := (t.dragRowTop - t.dragTableY) + float32(gap-t.dragStartRow)*t.dragRowHeight
+		t.dropLine.Move(fyne.NewPos(0, y-1))
+		t.dropLine.Resize(fyne.NewSize(t.Size().Width, 3))
+		t.dropLine.Show()
+		canvas.Refresh(t.dropLine)
+	}
 }
 
-// dragEnd ends the current gesture and fires OnDrop with the last pointer
-// position recorded during the drag.
+// dragEnd ends the current gesture. With OnReorder set it converts the pointer's
+// insertion gap into a MoveItems final index and fires OnReorder(from, to);
+// otherwise it fires OnDrop for a cross-widget drop.
 func (t *FlexTable) dragEnd() {
 	if !t.dragging {
 		return
 	}
 	t.dragging = false
+	if t.dropLine != nil {
+		t.dropLine.Hide()
+		canvas.Refresh(t.dropLine)
+	}
+	if t.OnReorder != nil {
+		gap := t.dropGap()
+		// Gap → final index: inserting after the grabbed row's own slot shifts the
+		// target up by one once the row is lifted out. gap == from and gap == from+1
+		// both mean "stay put".
+		to := gap
+		if gap > t.dragStartRow {
+			to = gap - 1
+		}
+		if n := t.data.RowCount(); to >= n {
+			to = n - 1
+		}
+		// Always fire (even when to == dragStartRow) so consumers can reliably
+		// clear per-gesture state; they no-op on an unchanged index.
+		t.OnReorder(t.dragStartRow, to)
+		return
+	}
 	if t.OnDrop != nil {
 		t.OnDrop(t.dragStartRow, t.dragPos)
+	}
+}
+
+// InsertionGapAt maps an absolute pointer position to a row insertion gap in
+// [0, rows] for an external (cross-widget) drag, where no cell receives the
+// pointer events. Callers use it to compute the destination index of a drop
+// originating outside the table (e.g. an album cover dragged from the gallery).
+func (t *FlexTable) InsertionGapAt(absPos fyne.Position) int {
+	localY := absPos.Y - fyne.CurrentApp().Driver().AbsolutePositionForObject(t).Y
+	gap, _ := t.table.RowInsertGapAt(localY)
+	return gap
+}
+
+// ShowInsertionLineAt positions the drop-indicator line at the insertion gap
+// under an external drag's pointer and returns that gap. It reuses the same bar
+// the intra-table reorder draws, so a cover dragged from the gallery lands with
+// identical feedback.
+func (t *FlexTable) ShowInsertionLineAt(absPos fyne.Position) int {
+	localY := absPos.Y - fyne.CurrentApp().Driver().AbsolutePositionForObject(t).Y
+	gap, lineY := t.table.RowInsertGapAt(localY)
+	if t.dropLine != nil {
+		t.dropLine.Move(fyne.NewPos(0, lineY-1))
+		t.dropLine.Resize(fyne.NewSize(t.Size().Width, 3))
+		t.dropLine.Show()
+		canvas.Refresh(t.dropLine)
+	}
+	return gap
+}
+
+// HideInsertionLine hides the drop-indicator line after an external drag.
+func (t *FlexTable) HideInsertionLine() {
+	if t.dropLine != nil {
+		t.dropLine.Hide()
+		canvas.Refresh(t.dropLine)
 	}
 }
 
@@ -565,7 +765,7 @@ func (w *WidgetCell) TappedSecondary(_ *fyne.PointEvent) {
 // sibling panel. The row is captured on the first event; the pointer's absolute
 // position is recorded on every event for the drop hit-test.
 func (w *WidgetCell) Dragged(e *fyne.DragEvent) {
-	w.table.dragStart(w.currentID.Row)
+	w.table.dragStart(w.currentID.Row, w, e.AbsolutePosition, w.Size().Height)
 	w.table.dragMove(e.AbsolutePosition)
 }
 
@@ -602,6 +802,14 @@ func (r *widgetCellRenderer) Destroy() {}
 
 func (r *widgetCellRenderer) Layout(size fyne.Size) {
 	r.stack.Resize(size)
+	// Resize the content directly: the vendored container.Clip drops its
+	// first layout (NewClip does not ExtendBaseWidget, so the Resize before
+	// its renderer exists is a no-op), leaving the content at zero size until
+	// a second layout pass — one frame of unlaid-out content in production,
+	// and permanently in single-pass test renders.
+	if r.cell.content != nil {
+		r.cell.content.Resize(size)
+	}
 }
 
 func (r *widgetCellRenderer) MinSize() fyne.Size {

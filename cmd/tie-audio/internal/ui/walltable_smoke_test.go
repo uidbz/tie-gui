@@ -22,7 +22,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
-	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/widget/tablewidget"
+	"github.com/uidbz/tie-gui/tablewidget"
 )
 
 // smokeTag tags the albums the table-view integration test browses.
