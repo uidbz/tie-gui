@@ -113,7 +113,7 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 		if !slices.Contains(it.allTags, tag) {
 			it.allTags = append(it.allTags, tag)
 		}
-		// Add to trie so the tag is reachable from search going forward.
+		// Add to the search index so the tag is reachable from search going forward.
 		it.ts.AddTag(tag)
 		// New tags are unstarred by default; quick-pick list is unchanged.
 		it.ts.AddSelected(tagselection.NewTagItemData(tag))
@@ -214,9 +214,7 @@ func (it *imageTagger) syncRating(rating int) {
 func (it *imageTagger) SetAllTags(tags []string) {
 	it.allTags = append([]string(nil), tags...)
 	it.ts.ClearAllTags()
-	for _, tag := range tags {
-		it.ts.AddTag(tag)
-	}
+	it.ts.AddTags(tags)
 	// Quick-pick shows only starred tags; search reaches everything else.
 	it.ts.SetFavoritesWithStars(it.ts.StarredTags())
 }

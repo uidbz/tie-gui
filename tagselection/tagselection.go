@@ -11,7 +11,7 @@ import (
 
 	"fyne.io/fyne/v2/canvas"
 
-	"github.com/uidbz/tie-gui/tagselection/trie"
+	"github.com/uidbz/tie-gui/tagselection/tagindex"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -124,16 +124,7 @@ func NewSearchItem(ts *TagSelection) *SearchItem {
 	clearing := false
 
 	search := func(query string) {
-		query = strings.ToLower(query)
-		keys := ts.tags.KeysWithPrefix(query)
-		si.results = si.results[:0]
-		for _, k := range keys {
-			if orig, ok := ts.caseMap[k]; ok {
-				si.results = append(si.results, orig)
-			} else {
-				si.results = append(si.results, k)
-			}
-		}
+		si.results = append(si.results[:0], ts.tags.Search(query)...)
 		si.focusIndex = -1
 		si.searchList.Refresh()
 		if len(si.results) == 0 {
@@ -451,15 +442,14 @@ type TagSelection struct {
 	// leaves it false so focus is released and window-level gallery hotkeys
 	// keep working after a tag is picked.
 	KeepSearchFocus bool
-	starredSet         map[string]bool // tags whose star button shows ★
-	tags               *trie.Trie
-	selectedList       *AutoExpandingList
-	quickPickList      *AutoExpandingList
-	listLabel          *widget.Label
-	content            fyne.CanvasObject
-	search             *SearchItem
-	window             fyne.Window
-	caseMap            map[string]string // lowercase tag -> original case
+	starredSet   map[string]bool // tags whose star button shows ★
+	tags         *tagindex.Index
+	selectedList *AutoExpandingList
+	quickPickList *AutoExpandingList
+	listLabel     *widget.Label
+	content       fyne.CanvasObject
+	search        *SearchItem
+	window        fyne.Window
 
 	// OnMinSizeChanged, when non-nil, is called on the UI goroutine whenever
 	// the widget's MinSize may have changed (search dropdown opened/closed,
@@ -548,9 +538,8 @@ func (a *AutoExpandingList) MinSize() fyne.Size {
 
 func NewTagSelection(window fyne.Window) *TagSelection {
 	ts := &TagSelection{
-		window:  window,
-		tags:    trie.NewTrie(),
-		caseMap: make(map[string]string),
+		window: window,
+		tags:   tagindex.New(),
 	}
 
 	ts.quickPickList = NewAutoExpandingList(
@@ -653,24 +642,37 @@ func (ts *TagSelection) relayout() {
 	}
 }
 
-// AddTag inserts a tag into the search trie (lowercased for case-insensitive
-// search) and records its original case in caseMap for display.
+// AddTag inserts a tag into the search index. Search matches case-insensitively
+// and returns the spelling that was added.
 //
-// Note: If multiple tags differ only by case (e.g. "Test", "TEST"), the trie
-// will match all of them on search, but caseMap retains only the last one's
-// case. This is a known limitation; case variants are effectively merged.
+// Tags differing only by case (e.g. "Test", "TEST") are merged into one entry,
+// keeping the last spelling added.
 func (ts *TagSelection) AddTag(tag string) {
-	lower := strings.ToLower(tag)
-	ts.tags.Put(lower)
-	if ts.caseMap == nil {
-		ts.caseMap = make(map[string]string)
-	}
-	ts.caseMap[lower] = tag
+	ts.tags.Add(tag)
 }
 
+// AddTags adds many tags at once. The index sorts lazily on the first search,
+// so loading a whole collection costs one sort rather than one insert per tag.
+func (ts *TagSelection) AddTags(tags []string) {
+	ts.tags.AddAll(tags)
+}
+
+// SetTags replaces the tag index wholesale. Callers loading tags from the store
+// build the index on a background goroutine (tagindex.New + AddAll) and swap it
+// in here on the UI goroutine, so a large collection never stalls the window —
+// rebuilding the old trie here cost a full graph rebuild per tag selection.
+func (ts *TagSelection) SetTags(index *tagindex.Index) {
+	if index == nil {
+		index = tagindex.New()
+	}
+	ts.tags = index
+}
+
+// TagCount reports how many distinct tags the search index holds.
+func (ts *TagSelection) TagCount() int { return ts.tags.Len() }
+
 func (ts *TagSelection) ClearAllTags() {
-	ts.tags = trie.NewTrie()
-	ts.caseMap = make(map[string]string)
+	ts.tags.Reset()
 }
 
 func (ts *TagSelection) AddFavorite(tag string) {

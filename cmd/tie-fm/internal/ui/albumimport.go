@@ -17,6 +17,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/tagselection"
+	"github.com/uidbz/tie-gui/tagselection/tagindex"
 )
 
 // importAsAlbums starts a bulk album import of one or more local directories
@@ -140,11 +141,9 @@ func (fm *FileManager) newAlbumTagSelector(backend fs.FileSystem) *tagselection.
 			if err != nil {
 				return // free-form tags still work
 			}
-			fyne.Do(func() {
-				for _, t := range tags {
-					ts.AddTag(t)
-				}
-			})
+			index := tagindex.New()
+			index.AddAll(tags)
+			fyne.Do(func() { ts.SetTags(index) })
 		}()
 	}
 	return ts

@@ -13,6 +13,7 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/tagselection"
+	"github.com/uidbz/tie-gui/tagselection/tagindex"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
@@ -576,6 +577,9 @@ func (b *browsePage) loadTags() {
 	gen, session := b.tagGen, b.session
 	go func() {
 		all, favorites, err := session.TagSets()
+		// Build the search index off the UI goroutine; only the swap is on it.
+		index := tagindex.New()
+		index.AddAll(all)
 		fyne.Do(func() {
 			if gen != b.tagGen {
 				return // superseded by a later loadTags
@@ -587,9 +591,7 @@ func (b *browsePage) loadTags() {
 			}
 			b.allTags = all
 			b.starred = favorites
-			for _, tag := range all {
-				b.ts.AddTag(tag)
-			}
+			b.ts.SetTags(index)
 			b.ts.SetStarred(favorites)
 			b.applyFavoritesView()
 		})
@@ -631,11 +633,11 @@ func (b *browsePage) setStarred(tag string, starred bool) {
 // selection; an empty selection restores the default quick-pick list.
 func (b *browsePage) refineTags(include, exclude []string) {
 	if len(include) == 0 && len(exclude) == 0 {
+		full := append([]string(nil), b.allTags...)
+		index := tagindex.New()
+		index.AddAll(full)
 		fyne.Do(func() {
-			b.ts.ClearAllTags()
-			for _, tag := range b.allTags {
-				b.ts.AddTag(tag)
-			}
+			b.ts.SetTags(index)
 			b.applyFavoritesView()
 		})
 		return
@@ -645,11 +647,10 @@ func (b *browsePage) refineTags(include, exclude []string) {
 		fmt.Println("Error getting co-tags:", err)
 		return
 	}
+	index := tagindex.New()
+	index.AddAll(coTags)
 	fyne.Do(func() {
-		b.ts.ClearAllTags()
-		for _, tag := range coTags {
-			b.ts.AddTag(tag)
-		}
+		b.ts.SetTags(index)
 		if len(coTags) > 0 {
 			b.ts.SetListLabel("Related tags")
 		} else {

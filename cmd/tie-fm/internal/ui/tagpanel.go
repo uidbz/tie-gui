@@ -12,6 +12,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/tagselection"
+	"github.com/uidbz/tie-gui/tagselection/tagindex"
 )
 
 // TagPanel is the dedicated tie tag panel. It shows one of two mutually
@@ -125,12 +126,12 @@ func (tp *TagPanel) reloadTags() {
 	if err != nil {
 		return
 	}
-	tp.filter.ClearAllTags()
-	tp.editor.ClearAllTags()
-	for _, t := range tags {
-		tp.filter.AddTag(t)
-		tp.editor.AddTag(t)
-	}
+	filterIndex := tagindex.New()
+	filterIndex.AddAll(tags)
+	editorIndex := tagindex.New()
+	editorIndex.AddAll(tags)
+	tp.filter.SetTags(filterIndex)
+	tp.editor.SetTags(editorIndex)
 	if fav, err := ts.ListFavoriteTags(); err == nil {
 		tp.favorites = fav
 	}

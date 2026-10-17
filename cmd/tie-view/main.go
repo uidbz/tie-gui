@@ -21,6 +21,7 @@ import (
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/mpvplayer"
 	"github.com/uidbz/tie-gui/tagselection"
+	"github.com/uidbz/tie-gui/tagselection/tagindex"
 	"github.com/uidbz/tie-gui/tieconfig"
 	"github.com/uidbz/tie-gui/tiethumb"
 	// "github.com/pkg/profile"
@@ -711,22 +712,28 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 				fyne.Do(func() { ts.SetListLabel("Error loading tags") })
 				return
 			}
+			// Read and index off the UI goroutine: a large collection is
+			// thousands of tags, and building and sorting the index is work
+			// that must not stall the window. Only the swap happens on the UI
+			// goroutine.
+			tags := client.RowValues(row, client.RelAll)
+			// The ☆/★ state reflects the real ("tags","favorite") relation;
+			// applyFavoritesView substitutes "every tag" for the quick-pick
+			// list when no favorites are configured, so the sidebar isn't
+			// empty until something is typed.
+			favs := client.RowValues(row, client.RelFavorite)
+			sort.Strings(favs)
+			index := tagindex.New()
+			index.AddAll(tags)
 			fyne.Do(func() {
-				allTags = client.RowValues(row, client.RelAll)
-				for _, tag := range allTags {
-					ts.AddTag(tag)
-				}
-				// The ☆/★ state reflects the real ("tags","favorite")
-				// relation; applyFavoritesView substitutes "every tag" for
-				// the quick-pick list when no favorites are configured, so
-				// the sidebar isn't empty until something is typed.
-				starred = client.RowValues(row, client.RelFavorite)
-				sort.Strings(starred)
-				ts.SetStarred(starred)
+				allTags = tags
+				starred = favs
+				ts.SetTags(index)
+				ts.SetStarred(favs)
 				applyFavoritesView()
 				if tagger != nil {
-					tagger.SetAllTags(allTags)
-					tagger.SetFavoriteTags(starred)
+					tagger.SetAllTags(tags)
+					tagger.SetFavoriteTags(favs)
 				}
 			})
 		}()
@@ -764,12 +771,13 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 		exSnap := append([]string(nil), ex...)
 		go func() {
 			if len(inSnap) == 0 && len(exSnap) == 0 {
-				// Nothing selected: restore the original full list.
+				// Nothing selected: restore the original full list. Snapshot
+				// it on the UI goroutine and rebuild the index here, off it.
+				full := append([]string(nil), allTags...)
+				index := tagindex.New()
+				index.AddAll(full)
 				fyne.Do(func() {
-					ts.ClearAllTags()
-					for _, tag := range allTags {
-						ts.AddTag(tag)
-					}
+					ts.SetTags(index)
 					ts.SetListLabel(allFavoritesLabel)
 					ts.SetFavorites(allFavorites)
 				})
@@ -780,11 +788,10 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 				fmt.Println("Error getting co-tags:", err)
 				return
 			}
+			index := tagindex.New()
+			index.AddAll(coTags)
 			fyne.Do(func() {
-				ts.ClearAllTags()
-				for _, tag := range coTags {
-					ts.AddTag(tag)
-				}
+				ts.SetTags(index)
 				if len(coTags) > 0 {
 					ts.SetListLabel("Related tags")
 				} else {
