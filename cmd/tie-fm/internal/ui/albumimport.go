@@ -359,8 +359,8 @@ func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string
 	var failed []string
 	done := func(op *fs.Op) {
 		fyne.Do(func() {
-			if op.Err != nil {
-				failed = append(failed, fmt.Sprintf("%s: %v", op.B.Path, op.Err))
+			if op.Err() != nil {
+				failed = append(failed, fmt.Sprintf("%s: %v", op.B.Path, op.Err()))
 			}
 			remaining--
 			if remaining > 0 {

@@ -117,20 +117,20 @@ func (v *opView) updateRates(active []*fs.Op) {
 		live[op] = true
 		s := v.samples[op]
 		if s == nil {
-			v.samples[op] = &sample{lastBytes: op.TotalBytesRead, lastAt: now}
+			v.samples[op] = &sample{lastBytes: op.BytesRead(), lastAt: now}
 			continue
 		}
 		dt := now.Sub(s.lastAt).Seconds()
 		if dt <= 0 {
 			continue
 		}
-		inst := float64(op.TotalBytesRead-s.lastBytes) / dt
+		inst := float64(op.BytesRead()-s.lastBytes) / dt
 		if s.rate == 0 {
 			s.rate = inst
 		} else {
 			s.rate = 0.6*s.rate + 0.4*inst // EWMA smoothing
 		}
-		s.lastBytes = op.TotalBytesRead
+		s.lastBytes = op.BytesRead()
 		s.lastAt = now
 	}
 	for op := range v.samples {
@@ -150,16 +150,16 @@ func (v *opView) rowText(op *fs.Op) string {
 	v.mu.Unlock()
 
 	name := op.A.Name
-	if op.TotalSize > 0 {
-		line := fmt.Sprintf("%s  —  %s / %s", name, humanBytes(op.TotalBytesRead), humanBytes(op.TotalSize))
+	if op.TotalSize() > 0 {
+		line := fmt.Sprintf("%s  —  %s / %s", name, humanBytes(op.BytesRead()), humanBytes(op.TotalSize()))
 		if op.IsPaused() {
 			line += "  ·  paused"
-		} else if rate > 0 && op.Status == fs.StatusRunning {
+		} else if rate > 0 && op.Status() == fs.StatusRunning {
 			line += "  ·  " + humanRate(rate)
 		}
 		return line
 	}
-	return fmt.Sprintf("%s  —  %s", name, humanBytes(op.TotalBytesRead))
+	return fmt.Sprintf("%s  —  %s", name, humanBytes(op.BytesRead()))
 }
 
 // humanBytes formats a byte count with a binary (KiB-scale) unit.

@@ -37,9 +37,14 @@ const (
 // Operations is a queue-based async engine that runs file copy/move ops one at a
 // time, exposing in-flight ops for progress display.
 type Operations struct {
-	queued        chan *Op
-	active        []*Op
-	reg           *Registry
+	queued chan *Op
+	// mu guards active: run appends and remove deletes on the ops goroutine,
+	// while the progress view reads Active() from the UI goroutine.
+	mu     sync.Mutex
+	active []*Op
+	reg    *Registry
+	// ActiveChanged fires on the ops goroutine whenever the in-flight list
+	// changes. Implementations must marshal any UI work into fyne.Do.
 	ActiveChanged func()
 	// ConflictResolver, when non-nil, is consulted whenever a copy/move finds
 	// the destination name already occupied. It runs on the ops goroutine and
@@ -95,20 +100,20 @@ var errConflictCancelled = errors.New("cancelled")
 func (o *Operations) run() {
 	var opID int
 	for op := range o.queued {
+		o.mu.Lock()
 		op.opID = opID
 		opID++
 		o.active = append(o.active, op)
-		op.StartTime = time.Now()
-		o.ActiveChanged()
+		o.mu.Unlock()
 		if err := op.ctx.Err(); err != nil {
 			// Cancelled while still queued: skip the transfer entirely.
-			op.Status = StatusError
-			op.Err = err
+			op.SetStatus(StatusError)
+			op.SetErr(err)
 		} else {
-			op.Status = StatusRunning
+			op.SetStatus(StatusRunning)
 			if err := op.Do(); err != nil {
-				op.Status = StatusError
-				op.Err = err
+				op.SetStatus(StatusError)
+				op.SetErr(err)
 			}
 		}
 		o.remove(op.opID)
@@ -118,15 +123,30 @@ func (o *Operations) run() {
 	}
 }
 
-func (o *Operations) Active() []*Op { return o.active }
+// Active returns the in-flight operations, oldest first. The snapshot is a copy:
+// the ops goroutine appends to and deletes from the live list while the UI
+// goroutine reads it to draw progress, so handing out the slice itself raced and
+// let a frame render a torn view — a row for an op that had already finished, or
+// the same op twice.
+func (o *Operations) Active() []*Op {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]*Op(nil), o.active...)
+}
 
 func (o *Operations) remove(opID int) {
+	o.mu.Lock()
+	found := false
 	for i, x := range o.active {
 		if x.opID == opID {
 			o.active = slices.Delete(o.active, i, i+1)
-			o.ActiveChanged()
-			return
+			found = true
+			break
 		}
+	}
+	o.mu.Unlock()
+	if found {
+		o.ActiveChanged()
 	}
 }
 
@@ -199,7 +219,7 @@ func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, tags []str
 		op.Files = append(op.Files, g.Files...)
 		op.Files = append(op.Files, g.Sidecars...)
 		op.FileSubPaths = g.SubPaths
-		op.TotalSize = g.Size // probed by the planner; drives the progress bar
+		op.SetTotalSize(g.Size) // probed by the planner; drives the progress bar
 	default:
 		op.ExactDest = true
 	}
@@ -228,6 +248,9 @@ func (o *Operations) newOp(source, dest Entry, t OpType, done func(*Op)) *Op {
 		OnComplete: done,
 		ctx:        ctx,
 		cancel:     cancel,
+		// Set before the op is ever published to Active(), so the UI never
+		// reads a zero start time.
+		StartTime: time.Now(),
 	}
 	if o.reg != nil {
 		op.destFS = o.reg.For(dest.Path)
@@ -259,14 +282,10 @@ func (o *Operations) exporterFor(srcPath string) FileSystem {
 }
 
 type Op struct {
-	A              Entry
-	B              Entry
-	OpType         OpType
-	TotalSize      int64
-	TotalBytesRead int64
-	StartTime      time.Time
-	Status         Status
-	Err            error
+	A         Entry
+	B         Entry
+	OpType    OpType
+	StartTime time.Time
 	// DirType, when non-empty, is a dir-type label (e.g. "audio-dir") stamped
 	// on the imported directory after a successful import into a typing
 	// backend (tie): the freshly created directory root for a directory
@@ -331,6 +350,83 @@ type Op struct {
 	mu     sync.Mutex
 	cond   *sync.Cond // signaled on Resume/Cancel to wake a paused transfer
 	paused bool
+
+	// Progress state is written by the ops goroutine while a transfer runs and
+	// read by the UI goroutine to draw it, so it is guarded rather than plain.
+	// (It used to be plain fields, which raced: the progress view polled them
+	// every frame while the transfer updated them.)
+	progMu sync.Mutex
+	status Status
+	err    error
+	total  int64 // bytes the transfer is expected to move
+	read   int64 // bytes moved so far
+}
+
+// Status reports where the op is in its lifecycle. Safe to read from any
+// goroutine.
+func (op *Op) Status() Status {
+	op.progMu.Lock()
+	defer op.progMu.Unlock()
+	return op.status
+}
+
+// SetStatus records the op's lifecycle state. Only the ops goroutine should
+// write it.
+func (op *Op) SetStatus(s Status) {
+	op.progMu.Lock()
+	op.status = s
+	op.progMu.Unlock()
+}
+
+// Err reports the transfer's failure, or nil. Safe to read from any goroutine.
+func (op *Op) Err() error {
+	op.progMu.Lock()
+	defer op.progMu.Unlock()
+	return op.err
+}
+
+// SetErr records a transfer failure. Only the ops goroutine should write it.
+func (op *Op) SetErr(err error) {
+	op.progMu.Lock()
+	op.err = err
+	op.progMu.Unlock()
+}
+
+// TotalSize is the byte count the transfer is expected to move, 0 while that is
+// unknown (PctComplete then reports 0).
+func (op *Op) TotalSize() int64 {
+	op.progMu.Lock()
+	defer op.progMu.Unlock()
+	return op.total
+}
+
+// SetTotalSize sets the expected byte count of the transfer.
+func (op *Op) SetTotalSize(n int64) {
+	op.progMu.Lock()
+	op.total = n
+	op.progMu.Unlock()
+}
+
+// BytesRead is how many bytes have moved so far.
+func (op *Op) BytesRead() int64 {
+	op.progMu.Lock()
+	defer op.progMu.Unlock()
+	return op.read
+}
+
+// AddBytesRead accounts for n more bytes transferred.
+func (op *Op) AddBytesRead(n int64) {
+	op.progMu.Lock()
+	op.read += n
+	op.progMu.Unlock()
+}
+
+// SetBytesRead sets the transferred byte count, for the cases where it is known
+// in one step rather than accumulated (a same-filesystem rename).
+func (op *Op) SetBytesRead(n int64) {
+	op.progMu.Lock()
+	op.read = n
+	op.progMu.Unlock()
 }
 
 // Cancel aborts the operation. In-flight byte transfers stop at their next
@@ -398,10 +494,11 @@ func (op *Op) wait() error {
 
 // PctComplete returns copy progress in [0,1].
 func (op *Op) PctComplete() float32 {
-	if op.TotalSize == 0 {
+	total := op.TotalSize()
+	if total == 0 {
 		return 0
 	}
-	return float32(op.TotalBytesRead) / float32(op.TotalSize)
+	return float32(op.BytesRead()) / float32(total)
 }
 
 func (op *Op) Do() error {
@@ -437,7 +534,7 @@ func (op *Op) doCopy() error {
 		return err
 	}
 	if !proceed {
-		op.Status = StatusCompleted
+		op.SetStatus(StatusCompleted)
 		return nil
 	}
 	if op.A.IsDir {
@@ -446,7 +543,7 @@ func (op *Op) doCopy() error {
 	if err := copyFile(op, nil); err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -488,10 +585,10 @@ func (op *Op) doImport() error {
 		return err
 	}
 	if !proceed {
-		op.Status = StatusCompleted
+		op.SetStatus(StatusCompleted)
 		return nil
 	}
-	op.TotalSize = op.A.Size
+	op.SetTotalSize(op.A.Size)
 	if err := op.importFile(op.B.Path, op.A.Path, op.destName()); err != nil {
 		return err
 	}
@@ -499,7 +596,7 @@ func (op *Op) doImport() error {
 	if err := op.applyDirLabel(op.B.Path, ""); err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -549,12 +646,12 @@ func (op *Op) importFile(destDir, srcPath, name string) error {
 	if pi, ok := op.importer.(ProgressImporter); ok {
 		return pi.ImportWithProgress(destDir, srcPath, name, &progressWriter{op: op})
 	}
-	before := op.TotalBytesRead
+	before := op.BytesRead()
 	if err := op.importer.Import(destDir, srcPath, name); err != nil {
 		return err
 	}
 	if info, err := os.Stat(srcPath); err == nil {
-		op.TotalBytesRead = before + info.Size()
+		op.SetBytesRead(before + info.Size())
 	}
 	return nil
 }
@@ -569,7 +666,7 @@ func (op *Op) importDir() error {
 			return err
 		}
 		if !proceed {
-			op.Status = StatusCompleted
+			op.SetStatus(StatusCompleted)
 			return nil
 		}
 	}
@@ -585,7 +682,7 @@ func (op *Op) importDir() error {
 		}
 		if !d.IsDir() {
 			if info, err := d.Info(); err == nil {
-				op.TotalSize += info.Size()
+				op.AddTotalSize(info.Size())
 			}
 		}
 		return nil
@@ -626,7 +723,7 @@ func (op *Op) importDir() error {
 	if err := op.applyDirLabel(base, path.Base(tiePath(base))); err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -673,7 +770,7 @@ func (op *Op) importFileList() error {
 	if err := op.applyDirLabel(op.B.Path, path.Base(tiePath(op.B.Path))); err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -688,7 +785,7 @@ func (op *Op) doExport() error {
 		return err
 	}
 	if !proceed {
-		op.Status = StatusCompleted
+		op.SetStatus(StatusCompleted)
 		return nil
 	}
 	local, err := op.srcFS.Materialize(op.A)
@@ -699,7 +796,7 @@ func (op *Op) doExport() error {
 	if err := copyFile(op, nil); err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -711,7 +808,7 @@ func (op *Op) exportDir() error {
 		return err
 	}
 	if !proceed {
-		op.Status = StatusCompleted
+		op.SetStatus(StatusCompleted)
 		return nil
 	}
 	base := filepath.Join(op.B.Path, op.destName())
@@ -750,7 +847,7 @@ func (op *Op) exportDir() error {
 				materializedPath: local,
 				renameTo:         name,
 			}
-			op.TotalSize += child.Size
+			op.AddTotalSize(child.Size)
 			if err := copyFile(sub, op); err != nil {
 				return err
 			}
@@ -760,7 +857,7 @@ func (op *Op) exportDir() error {
 	if err := walk(op.A, ""); err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -789,15 +886,15 @@ func (op *Op) doMove() error {
 		return err
 	}
 	if !proceed {
-		op.Status = StatusCompleted
+		op.SetStatus(StatusCompleted)
 		return nil
 	}
 	dest := op.destPath()
 	// Fast path: a same-filesystem rename moves without copying bytes.
 	if err := os.Rename(op.A.Path, dest); err == nil {
-		op.TotalSize = op.A.Size
-		op.TotalBytesRead = op.A.Size
-		op.Status = StatusCompleted
+		op.SetTotalSize(op.A.Size)
+		op.SetBytesRead(op.A.Size)
+		op.SetStatus(StatusCompleted)
 		return nil
 	}
 	// Cross-device or otherwise un-renameable: copy then delete the source.
@@ -814,7 +911,7 @@ func (op *Op) doMove() error {
 	if err := os.RemoveAll(op.A.Path); err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -983,7 +1080,7 @@ func (r *readerCtx) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := r.r.Read(p)
-	r.op.TotalBytesRead += int64(n)
+	r.op.AddBytesRead(int64(n))
 	return n, err
 }
 
@@ -996,7 +1093,7 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 	if err := w.op.wait(); err != nil {
 		return 0, err
 	}
-	w.op.TotalBytesRead += int64(len(p))
+	w.op.AddBytesRead(int64(len(p)))
 	return len(p), nil
 }
 
@@ -1048,7 +1145,7 @@ func copyDir(dirOp *Op) error {
 			return err
 		}
 		ops = append(ops, &Op{A: src, B: dst, OpType: OpCopy})
-		dirOp.TotalSize += src.Size
+		dirOp.AddTotalSize(src.Size)
 		return nil
 	}
 	if err := filepath.WalkDir(dirOp.A.Path, walk); err != nil {
@@ -1067,7 +1164,7 @@ func copyDir(dirOp *Op) error {
 			return err
 		}
 	}
-	dirOp.Status = StatusCompleted
+	dirOp.SetStatus(StatusCompleted)
 	return nil
 }
 
@@ -1082,7 +1179,7 @@ func copyFile(op *Op, parent *Op) error {
 	if parent != nil {
 		progressOp = parent
 	} else {
-		op.TotalSize += op.A.Size
+		op.AddTotalSize(op.A.Size)
 	}
 
 	srcPath := op.A.Path
@@ -1114,4 +1211,11 @@ func copyFile(op *Op, parent *Op) error {
 			") differs from source size (" + strconv.Itoa(int(op.A.Size)) + ")")
 	}
 	return os.Chtimes(dest, time.Now(), op.A.ModTime)
+}
+
+// AddTotalSize grows the expected byte count as a walk discovers it.
+func (op *Op) AddTotalSize(n int64) {
+	op.progMu.Lock()
+	op.total += n
+	op.progMu.Unlock()
 }

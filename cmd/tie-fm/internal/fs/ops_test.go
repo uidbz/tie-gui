@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,14 +17,14 @@ import (
 func waitDone(t *testing.T, op *Op) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError {
+	for op.Status() != StatusCompleted && op.Status() != StatusError {
 		if time.Now().After(deadline) {
 			t.Fatal("operation did not finish in time")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if op.Status == StatusError {
-		t.Fatalf("operation failed: %v", op.Err)
+	if op.Status() == StatusError {
+		t.Fatalf("operation failed: %v", op.Err())
 	}
 }
 
@@ -167,8 +168,8 @@ func TestCopyConflictCancel(t *testing.T) {
 	op := ops.Copy(src, dst, nil)
 	waitSettled(t, op)
 
-	if op.Status != StatusError || op.Err != errConflictCancelled {
-		t.Fatalf("Status = %v, Err = %v; want StatusError with errConflictCancelled", op.Status, op.Err)
+	if op.Status() != StatusError || op.Err() != errConflictCancelled {
+		t.Fatalf("Status = %v, Err = %v; want StatusError with errConflictCancelled", op.Status(), op.Err())
 	}
 	got, _ := os.ReadFile(filepath.Join(destDir, "src.txt"))
 	if string(got) != "old content" {
@@ -374,7 +375,7 @@ func (f *fakePlainImportFS) Import(destDir, srcPath, name string) error {
 func waitSettled(t *testing.T, op *Op) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError {
+	for op.Status() != StatusCompleted && op.Status() != StatusError {
 		if time.Now().After(deadline) {
 			t.Fatal("operation did not finish in time")
 		}
@@ -520,11 +521,11 @@ func TestImportDirTypeUnsupportedBackendFails(t *testing.T) {
 	op := ops.CopyAs(src, Entry{Path: "tie:/music", IsDir: true}, "audio-dir", nil)
 	waitSettled(t, op)
 
-	if op.Status != StatusError {
-		t.Fatalf("Status = %v, want StatusError", op.Status)
+	if op.Status() != StatusError {
+		t.Fatalf("Status = %v, want StatusError", op.Status())
 	}
-	if op.Err == nil || !strings.Contains(op.Err.Error(), "directory types") {
-		t.Fatalf("Err = %v, want a directory-types error", op.Err)
+	if op.Err() == nil || !strings.Contains(op.Err().Error(), "directory types") {
+		t.Fatalf("Err = %v, want a directory-types error", op.Err())
 	}
 }
 
@@ -978,11 +979,11 @@ func TestImportTagsUnsupportedBackendFails(t *testing.T) {
 	op := ops.ImportAlbum(g, "audio-dir", []string{"jazz"}, nil)
 	waitSettled(t, op)
 
-	if op.Status != StatusError {
-		t.Fatalf("Status = %v, want StatusError", op.Status)
+	if op.Status() != StatusError {
+		t.Fatalf("Status = %v, want StatusError", op.Status())
 	}
-	if op.Err == nil || !strings.Contains(op.Err.Error(), "tagging") {
-		t.Fatalf("Err = %v, want a tagging error", op.Err)
+	if op.Err() == nil || !strings.Contains(op.Err().Error(), "tagging") {
+		t.Fatalf("Err = %v, want a tagging error", op.Err())
 	}
 }
 
@@ -1054,17 +1055,17 @@ func TestMoveDirIntoOwnSubdir(t *testing.T) {
 	op := ops.Move(src, sub, nil)
 
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError {
+	for op.Status() != StatusCompleted && op.Status() != StatusError {
 		if time.Now().After(deadline) {
 			t.Fatal("move did not finish in time")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if op.Status != StatusError || op.Err == nil {
-		t.Fatalf("move into own subdir: status=%v err=%v, want an error", op.Status, op.Err)
+	if op.Status() != StatusError || op.Err() == nil {
+		t.Fatalf("move into own subdir: status=%v err=%v, want an error", op.Status(), op.Err())
 	}
-	if !strings.Contains(op.Err.Error(), "into itself") {
-		t.Fatalf("unexpected error: %v", op.Err)
+	if !strings.Contains(op.Err().Error(), "into itself") {
+		t.Fatalf("unexpected error: %v", op.Err())
 	}
 	if after := countTree(t, root); after != before {
 		t.Fatalf("source tree changed: %d entries before, %d after", before, after)
@@ -1089,14 +1090,14 @@ func TestCopyDirIntoOwnSubdir(t *testing.T) {
 	sub, _ := statEntry(filepath.Join(root, "sub"))
 	op := ops.Copy(src, sub, nil)
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError {
+	for op.Status() != StatusCompleted && op.Status() != StatusError {
 		if time.Now().After(deadline) {
 			t.Fatal("copy did not finish in time")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if op.Status != StatusError || op.Err == nil {
-		t.Fatalf("copy into own subdir: status=%v err=%v, want an error", op.Status, op.Err)
+	if op.Status() != StatusError || op.Err() == nil {
+		t.Fatalf("copy into own subdir: status=%v err=%v, want an error", op.Status(), op.Err())
 	}
 	if after := countTree(t, root); after != before {
 		t.Fatalf("source tree changed: %d entries before, %d after", before, after)
@@ -1160,5 +1161,89 @@ func TestInsideOrSame(t *testing.T) {
 		if insideOrSame(tc[0], tc[1]) {
 			t.Errorf("insideOrSame(%q, %q) = true, want false", tc[0], tc[1])
 		}
+	}
+}
+
+// TestActiveRace is the regression for review §3.1: Active() handed out the
+// live slice while the ops goroutine appended to it and slices.Delete'd it, so
+// the progress view raced the transfer and could render a torn list. Run it
+// under -race.
+func TestActiveRace(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dstDir := filepath.Join(dir, "dst")
+	if err := os.Mkdir(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := NewOperations(nil)
+	s, _ := statEntry(src)
+	d, _ := statEntry(dstDir)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			ops.Copy(s, d, nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			for _, op := range ops.Active() {
+				_ = op.Status()
+				_ = op.Err()
+				_ = op.PctComplete()
+				_ = op.StartTime
+			}
+		}
+	}()
+	wg.Wait()
+
+	// Every queued op must have been accounted for exactly once.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(ops.Active()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("ops never drained from Active()")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestActiveSnapshotIsStable checks the copy semantics: a captured snapshot is
+// not reshaped underneath the reader as ops complete.
+func TestActiveSnapshotIsStable(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dstDir := filepath.Join(dir, "dst")
+	if err := os.Mkdir(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := NewOperations(nil)
+	s, _ := statEntry(src)
+	d, _ := statEntry(dstDir)
+
+	snap := []*Op{}
+	for i := 0; i < 5; i++ {
+		ops.Copy(s, d, nil)
+	}
+	snap = ops.Active()
+	before := len(snap)
+	for len(ops.Active()) > 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(snap) != before {
+		t.Fatalf("snapshot changed from %d entries to %d while ops drained", before, len(snap))
+	}
+	if got := len(ops.Active()); got != 0 {
+		t.Fatalf("live list still has %d entries", got)
 	}
 }

@@ -1050,8 +1050,8 @@ func (fm *FileManager) extractArchives(archives []fs.Entry, dest fs.Entry) {
 	destPath := fm.pathValue()
 	done := func(op *fs.Op) {
 		fyne.Do(func() {
-			if op.Err != nil {
-				dialog.ShowError(fmt.Errorf("extracting %s: %w", op.A.Name, op.Err), fm.win)
+			if op.Err() != nil {
+				dialog.ShowError(fmt.Errorf("extracting %s: %w", op.A.Name, op.Err()), fm.win)
 			}
 			if fm.pathValue() == destPath {
 				fm.reload()
