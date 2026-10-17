@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
@@ -1012,5 +1013,152 @@ func TestImportDirLabelsRootWithName(t *testing.T) {
 	}
 	if got[0].Name != "album" {
 		t.Fatalf("label.Name = %q, want album", got[0].Name)
+	}
+}
+
+// countTree counts every entry under root, root itself included.
+func countTree(t *testing.T, root string) int {
+	t.Helper()
+	n := 0
+	err := filepath.WalkDir(root, func(string, fs.DirEntry, error) error {
+		n++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestMoveDirIntoOwnSubdir is the regression for the review's §2.1: the
+// destination lying inside the source used to run the copy-then-delete move
+// path into the source itself, so the op reported success and the whole tree
+// was gone.
+func TestMoveDirIntoOwnSubdir(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		name := filepath.Join(root, "sub", "f"+string(rune('0'+i))+".txt")
+		if err := os.WriteFile(name, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := countTree(t, root)
+
+	ops := NewOperations(nil)
+	src, _ := statEntry(root)
+	sub, _ := statEntry(filepath.Join(root, "sub"))
+	op := ops.Move(src, sub, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for op.Status != StatusCompleted && op.Status != StatusError {
+		if time.Now().After(deadline) {
+			t.Fatal("move did not finish in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if op.Status != StatusError || op.Err == nil {
+		t.Fatalf("move into own subdir: status=%v err=%v, want an error", op.Status, op.Err)
+	}
+	if !strings.Contains(op.Err.Error(), "into itself") {
+		t.Fatalf("unexpected error: %v", op.Err)
+	}
+	if after := countTree(t, root); after != before {
+		t.Fatalf("source tree changed: %d entries before, %d after", before, after)
+	}
+}
+
+// TestCopyDirIntoOwnSubdir covers the mirror case: copying a folder into
+// itself used to walk the copy it was writing and grow until the disk filled.
+func TestCopyDirIntoOwnSubdir(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	before := countTree(t, root)
+
+	ops := NewOperations(nil)
+	src, _ := statEntry(root)
+	sub, _ := statEntry(filepath.Join(root, "sub"))
+	op := ops.Copy(src, sub, nil)
+	deadline := time.Now().Add(5 * time.Second)
+	for op.Status != StatusCompleted && op.Status != StatusError {
+		if time.Now().After(deadline) {
+			t.Fatal("copy did not finish in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if op.Status != StatusError || op.Err == nil {
+		t.Fatalf("copy into own subdir: status=%v err=%v, want an error", op.Status, op.Err)
+	}
+	if after := countTree(t, root); after != before {
+		t.Fatalf("source tree changed: %d entries before, %d after", before, after)
+	}
+}
+
+// TestMoveDirIntoSiblingStillWorks guards the other direction: the containment
+// check must not reject a move whose destination merely shares a parent.
+func TestMoveDirIntoSiblingStillWorks(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	for _, d := range []string{src, dst} {
+		if err := os.Mkdir(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := NewOperations(nil)
+	s, _ := statEntry(src)
+	d, _ := statEntry(dst)
+	waitDone(t, ops.Move(s, d, nil))
+
+	if _, err := os.Stat(filepath.Join(dst, "src", "a.txt")); err != nil {
+		t.Fatalf("moved file missing: %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("source still present after move: %v", err)
+	}
+}
+
+func TestInsideOrSame(t *testing.T) {
+	yes := [][2]string{
+		{"/a/b", "/a/b"},
+		{"/a/b", "/a/b/"},
+		{"/a/b", "/a/b/c"},
+		{"/a/b", "/a/b/c/d"},
+		{"/a/b/", "/a/b/c"},
+		{"/a/b", "/a/./b/c"},
+		{"tie:/music/album", "tie:/music/album/cd1"},
+	}
+	no := [][2]string{
+		{"/a/b", "/a"},
+		{"/a/b", "/a/bc"},
+		{"/a/b", "/a/c"},
+		{"/a/b", "/a/../c"},
+		// Mixed relative and absolute: lexical comparison cannot resolve them,
+		// so checkContainment absolutises both paths before calling this.
+		{"/a/b", "./a/b/c"},
+		{"tie:/music/album", "tie:/music/other"},
+	}
+	for _, tc := range yes {
+		if !insideOrSame(tc[0], tc[1]) {
+			t.Errorf("insideOrSame(%q, %q) = false, want true", tc[0], tc[1])
+		}
+	}
+	for _, tc := range no {
+		if insideOrSame(tc[0], tc[1]) {
+			t.Errorf("insideOrSame(%q, %q) = true, want false", tc[0], tc[1])
+		}
 	}
 }

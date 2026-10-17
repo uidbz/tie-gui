@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -419,6 +420,9 @@ func (op *Op) doCopy() error {
 	if op.A.Path == op.B.Path {
 		return errors.New("source and destination are identical")
 	}
+	if err := op.checkContainment(); err != nil {
+		return err
+	}
 	if op.srcFS != nil && op.importer != nil {
 		return errors.New("remote-to-remote transfer is not supported")
 	}
@@ -764,6 +768,9 @@ func (op *Op) doMove() error {
 	if op.A.Path == op.B.Path {
 		return errors.New("source and destination are identical")
 	}
+	if err := op.checkContainment(); err != nil {
+		return err
+	}
 	if op.srcFS != nil {
 		return errors.New("moving out of a remote device is not supported; copy instead")
 	}
@@ -830,6 +837,55 @@ func (op *Op) destName() string {
 		return op.renameTo
 	}
 	return op.A.Name
+}
+
+// insideOrSame reports whether child names the same location as parent or a
+// location below it. Paths are slash-normalised and cleaned, so the check works
+// for local paths and tie:/ URIs alike and cannot be slipped by a trailing
+// slash or a "./" prefix.
+func insideOrSame(parent, child string) bool {
+	p := path.Clean(filepath.ToSlash(parent))
+	c := path.Clean(filepath.ToSlash(child))
+	return c == p || strings.HasPrefix(c, p+"/")
+}
+
+// checkContainment rejects a directory transfer whose destination lies inside
+// its own source.
+//
+// Without it, "move root into root/sub" is a data-loss machine: os.Rename
+// refuses with EINVAL (POSIX will not move a directory into itself) and the
+// error is discarded as "cross-device, fall back to copy", so copyDir walks
+// root while writing the copies into root/sub/root/…, and doMove then
+// RemoveAll's root — taking the fresh copies with it. The op reports
+// StatusCompleted with Err nil and nothing is left. Copying a folder into
+// itself is the mirror image: WalkDir descends into the copy it is writing and
+// grows the tree until the disk fills.
+//
+// Only a local→local transfer can contain itself: an import walks a local
+// source into a remote namespace and an export downloads a remote tree to a
+// local one, so source and destination never name locations in one tree.
+func (op *Op) checkContainment() error {
+	if !op.A.IsDir || !IsLocal(op.A.Path) || !IsLocal(op.B.Path) {
+		return nil
+	}
+	// Compare absolute paths: a relative source and an absolute destination
+	// (or vice versa) name the same tree, and a lexical compare of mixed forms
+	// would miss it.
+	src, err := filepath.Abs(op.A.Path)
+	if err != nil {
+		return nil
+	}
+	dest, err := filepath.Abs(op.destPath())
+	if err != nil {
+		return nil
+	}
+	if insideOrSame(src, dest) {
+		if op.OpType == OpMove {
+			return errors.New("cannot move a folder into itself")
+		}
+		return errors.New("cannot copy a folder into itself")
+	}
+	return nil
 }
 
 // resolveConflict asks the user what to do about an occupied destination
