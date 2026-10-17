@@ -62,6 +62,17 @@ if [ ! -f "$LIBCXX" ]; then
     exit 1
 fi
 
+# Everything is checked before anything is deleted. The rm -rf below throws away
+# the only copy of the vendored .so files (they are not committed), so an
+# unexpanded glob in the cp calls afterwards — an ffmpeg build missing libav*.so,
+# say — would leave the tree empty instead of merely failing.
+for f in "$MPV_PREFIX"/lib/libav*.so "$MPV_PREFIX"/lib/libsw*.so "$MPV_PREFIX"/include/mpv/*.h; do
+    if [ ! -e "$f" ]; then
+        echo "error: $MPV_PREFIX is missing $f; refusing to replace $DST." >&2
+        exit 1
+    fi
+done
+
 echo "Vendoring native libs from $MPV_PREFIX ..."
 rm -rf "$ABI_DIR" "$DST/include"
 mkdir -p "$ABI_DIR" "$DST/include/mpv"

@@ -46,10 +46,25 @@ func openLocal(cfg *config.Config, target, name string) error {
 			if cmd == nil {
 				return fmt.Errorf("invalid open command %q", assoc.Command)
 			}
-			return cmd.Start()
+			return startDetached(cmd)
 		}
 	}
-	return exec.Command("xdg-open", target).Start()
+	return startDetached(exec.Command("xdg-open", target))
+}
+
+// startDetached starts cmd and makes sure it is reaped. Handing back after
+// Start and dropping the *exec.Cmd leaves the child as a zombie for the whole
+// life of the session, one per opened file.
+func startDetached(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		// The exit status is not acted on: there is nowhere in the file manager
+		// to show it, and a program that fails to start reports it itself.
+		_ = cmd.Wait()
+	}()
+	return nil
 }
 
 // buildCommand splits a stored command line into an *exec.Cmd for opening file.
@@ -109,7 +124,7 @@ func openTerminal(cfg *config.Config, dir string) error {
 	if cmd == nil {
 		return fmt.Errorf("invalid terminal command %q", cmdline)
 	}
-	return cmd.Start()
+	return startDetached(cmd)
 }
 
 // ShowTerminalSettings prompts for the terminal command used by "Open in

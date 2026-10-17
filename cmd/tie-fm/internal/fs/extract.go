@@ -299,7 +299,10 @@ func (op *Op) copyMember(dest string, info archives.FileInfo, count bool) error 
 		return err
 	}
 	defer src.Close()
-	dst, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm()|0600)
+	// Mask the member's mode rather than OR into it: `perm|0600` turns an
+	// archive's 0777 into a world-writable file on disk. & 0755 keeps what the
+	// archive asked for and strips write for group and other.
+	dst, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm()&0755)
 	if err != nil {
 		return err
 	}

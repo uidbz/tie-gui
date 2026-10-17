@@ -17,6 +17,7 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/internal/httpx"
+	"github.com/uidbz/tie-gui/tieconfig"
 	"github.com/uidbz/tie-gui/tiethumb"
 )
 
@@ -108,6 +109,14 @@ func (t *tieReader) IsVideo() bool { return t.isVideo }
 // The tie filehost URL scheme is: baseURL + "/" + contentHash.
 func (t *tieReader) StreamURL() string {
 	if t.host.URL == "" {
+		return ""
+	}
+	// Refuse to build a stream URL from a host URL that carries credentials:
+	// it would land in libmpv's command line and log. An empty result makes
+	// the caller download through the tie client instead, which authenticates
+	// through the HTTP transport.
+	if ui := tieconfig.HostURLUserinfo(t.host.URL); ui != "" {
+		log.Warn("refusing stream URL with credentials", "hash", t.hash, "userinfo", ui)
 		return ""
 	}
 	return t.host.URL + "/" + t.hash

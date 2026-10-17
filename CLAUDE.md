@@ -11,10 +11,12 @@ Fyne fork — hence the monorepo.
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tie-view/` | tie-network image viewer entry point (also opens local directories/images/archives like imgview) |
 | `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction"); copy/move destination conflicts prompt with a Dolphin-style dialog (see "tie-fm copy/move conflicts"); the context menu also offers "New file…" (backends implementing `fs.FileMaker`, local) and "Open in terminal" (local entries; terminal from `Config.Terminal`, `$TERMINAL`, or the first known emulator in PATH, set in Menu → "Terminal…") |
-| `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
-| `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/history/playback/ui; Home page + play history, see the sections at the end) |
+| `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`) |
+| `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/history/playback/ui; Home page + play history, see the sections at the end). Its album table and browse wall use the shared `tablewidget` package (its old copy under `internal/widget/` was deleted) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
+| `gallery/tilelayout.go` | Grid layout engine, the `Tile` widget, the loader/updater pipeline and the thumbnail disk cache sharding |
+| `gallery/tilecache.go` | Session-scoped decoded-thumbnail cache: byte-budgeted LRU |
 | `gallery/imageview.go` | Single-image display widget |
 | `gallery/imageinfo.go` | Per-item data model (extracted from tilelayout.go in Phase 1) |
 | `gallery/pagination.go` | Elided bottom-bar page links (2-6 by width) + grid `sizeWatcher` |
@@ -26,14 +28,17 @@ Fyne fork — hence the monorepo.
 | `gallery/filterchips.go` | Filter summary chip row above the grid (`SetFilterChips`, `TagFilterChips`); `FilterChipRow` renders a chip list for app-level views that replace the grid |
 | `gallery/extension.go` | Extension interface documentation (Phase 6) |
 | `tagselection/` | Tag-picker widget used by tie-view sidebar, image tagger, and tie-fm tag panel |
-| `tagselection/trie/` | 256-ary prefix trie backing tag search |
+| `tagselection/tagindex/` | Tag search index backing the picker: prefix matching over the tag list, byte-compact (the 256-ary trie it replaced cost ~900 MB for 20k tags and mangled non-ASCII keys) |
+| `tablewidget/` | Shared paginated, filterable table (`TableWidget`/`FlexTable`/`TableData`) used by tie-fm's file list and tie-audio's album table and browse wall; one package where both apps used to carry diverged copies |
 | `mpvplayer/` | libmpv video player window |
 | `tieconfig/` | Shared tie client config: Android-safe path resolution (`Dir`/`ResolvePath`/`Load`), the `[Collections.*]` connection editor (`Editor`), and per-app collection resolution (`AppCollection`) |
+| `tielog/` | One `slog` setup per app: stderr plus `$XDG_STATE_HOME/tie/<app>.log` (rotated), `-v`/`-q`/`-no-log` flags, `Recover` for long-lived goroutines, logcat mirroring on Android. Libraries take a `*slog.Logger` and never print on their own |
+| `internal/httpx/` | Shared `http.Client` for tie's filehost/collection calls: pooled transport with a small request timeout and a long bulk-transfer timeout |
 | `tiethumb/` | Shared filehost-backed `gallery.Thumbnailer` (tie relation `(hash, "thumbnail", thumbHash)` + `dimensions`), used by tie-view and tie-fm's preview grid; the tie client and filehost resolve per call so collection/config switches need no rewiring |
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
 The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
-Go module proxy; no local checkout is needed (v0.6.0+ carries the media
+Go module proxy; no local checkout is needed (v0.7.0 is the floor: it carries the media
 model — collection contract, playlists, play history — that tie-audio
 needs). (It was resolved via a `replace` directive to a sibling `../tie`
 checkout until v0.4.2, and again while the media model was unreleased
@@ -148,11 +153,15 @@ gendex picks the highest-numbered ones) and commit `dex.go` with it. See
 The gallery implements several optimizations for fluid performance on mobile and
 lower-end devices:
 
-### LRU Tile Cache (`gallery/tilecache.go`)
-In-memory thumbnail cache with size limits (1500 desktop, 300 mobile — ~3
-pages each, so page-back navigation is served from memory; one page exactly
-filled the old 500/150 budget, so any round-trip evicted the whole previous
-page). Uses insertion-order LRU eviction. Cache operations are
+### Thumbnail cache (`gallery/tilecache.go`)
+In-memory cache of **decoded `*image.RGBA` thumbnails**, keyed by path/content
+hash. The budget is a byte count — 150 MB desktop, 40 MB mobile — not a tile
+count: a tile's pixel data is `(2*TileWidth) x (2*TileWidth*aspect)` bytes, so
+with `TileWidth` user-settable, counting tiles made the limit meaningless (the
+old 1500-tile budget allowed close to 4 GB of portrait thumbnails). Eviction is
+a real LRU (`container/list`, front = most recently used, touched on read), not
+insertion order: the old FIFO evicted the page you had just come back from. A
+bitmap larger than the whole budget is not cached at all. Cache operations are
 mutex-protected.
 
 ### Off-screen culling (Fyne clip)
@@ -202,7 +211,7 @@ reports grid-width changes and rebuilds the links on window resize.
   that entry's page (it may differ from the page the user left, after
   next/prev navigation) and scrolls the tile into view. When the page must
   be re-placed, the tile's page-relative index is handed to
-  `layout.pendingReveal`, which `PlaceTiles` consumes after the new page is
+  `layout.pendingReveal`, which `placeTiles` consumes after the new page is
   laid out; on an unchanged page the scroll is computed directly from the
   live tile position.
 
@@ -256,13 +265,13 @@ values → fewer, taller rows. `TileGap` (default 5 px) is the inter-tile gap.
 
 `tile.width` / `tile.height` are the thumbnail's pixel dimensions, which
 preserve the original image's aspect ratio (thumbnails are width-scaled with
-`imaging.Resize(w, 0, Lanczos)`). When `ImageInfo.Width / .Height` are
+`imaging.Resize(w, 0, Lanczos)`). When `ImageInfo.Dimensions()` are
 pre-populated (from tie metadata), the placeholder tile uses those instead,
 giving the correct aspect ratio from the first layout pass.
 
 ### Placeholder tiles and lazy loading
 
-`PlaceTiles` decodes `loading.png` **once** and shares it across placeholder
+`placeTiles` decodes `loading.png` **once** and shares it across placeholder
 tiles for every slot on the current page, **installs** the placeholder tiles
 into `layout.tiles`/`grid.Objects` via `fyne.Do`, and only **then** sends
 each `ImageInfo` to the `imagesToLoad` channel. The install-before-enqueue
@@ -278,8 +287,8 @@ wins deterministically.
 `GetThumbnail` → `NewImageTile`, and forward the real tile to a single
 `tileUpdater` goroutine via the `results` channel. A failed load (network
 error, truncated blob, decode failure) is re-queued with a per-item budget
-(`maxTileLoadAttempts` = 3, tracked in `ImageInfo.loadAttempts`, reset by
-`PlaceTiles`) so transient failures don't strand placeholders; after the
+(`maxTileLoadAttempts` = 3, tracked in `ImageInfo.loadAttempts()`, reset by
+`placeTiles`) so transient failures don't strand placeholders; after the
 budget the placeholder stays. The updater batches write-backs: one `fyne.Do`
 per flush (every ~120 ms trailing or 32 tiles) swaps tiles into
 `layout.tiles`/`grid.Objects` and calls `relayoutGrid()` — replacing the old
@@ -288,14 +297,14 @@ cross-page results are dropped via an `Info`-pointer guard. Decoded
 thumbnails are converted to `*image.RGBA` on the worker so texture upload
 skips the painter's CPU pixel conversion.
 
-When the current page is not the last page, `PlaceTiles` adds a large
+When the current page is not the last page, `placeTiles` adds a large
 "Load Next Page ▼" button as the final object in `grid.Objects`. This button
 is 60px tall on desktop (80px on mobile) and styled with high importance for
 easy tapping.
 
-`tileCache *tileCache` holds an LRU in-memory tile cache keyed by path/hash.
-Cache hits skip thumbnail decoding entirely. Cache size is limited to 1500
-tiles on desktop, 300 on mobile.
+`thumbCache *thumbnailCache` holds the decoded thumbnails, keyed by path/hash.
+Cache hits skip thumbnail decoding entirely. The budget is 150 MB of pixel data
+on desktop, 40 MB on mobile, evicted LRU.
 
 ### Thumbnail pipeline
 
@@ -310,9 +319,49 @@ not Lanczos) → JPEG quality 90 → write cache.
 
 Thumbnail width is always `TileWidth * 2` (2× for HiDPI). Height is
 aspect-preserved. Directory/archive tiles show the preview image at
-`ImageInfo.previewIndex` with a semi-transparent folder icon overlaid
+`ImageInfo.PreviewIndex()` with a semi-transparent folder icon overlaid
 (`dirPreviewThumbnail`), disk-cached under `<hash>d` so the icon never leaks
 into the same image's plain thumbnail.
+
+### Threading rules
+
+The gallery has three kinds of goroutine: the UI goroutine (Fyne), the
+`Workers` loader pool, and one `tileUpdater`. The rule that keeps them from
+corrupting each other:
+
+- **The `tileUpdater` is the single owner of every grid mutation.** Loader
+  workers never touch `layout.tiles` or `grid.Objects`; they hand finished
+  tiles to `layout.results` as a `uiJob`, and the updater installs them inside
+  one `fyne.Do` per flush. Anything else that wants the grid changed — page
+  placement, a reveal, a relayout — goes through `layout.postUI(job)` and is
+  applied by the same goroutine. That is what makes "the placeholder is still
+  on screen" and "the new page's tiles vanished" impossible at the same time.
+- **`uiSync()`** round-trips an ack through `uiCtl` to learn that the updater
+  has caught up; `AwaitIdle()` is the public settle for an embedding app's
+  tests. Both are bounded (10 s), so a wedged updater stalls instead of
+  hanging.
+- **`SetSyncPlacement(true)`** is test-only: placement and posted grid
+  mutations then run on the caller's goroutine. It exists because the Fyne
+  software test driver runs `fyne.Do` inline on the calling goroutine, and this
+  fork has no `NewAppWithDriver`, so a test that feeds the gallery and then
+  inspects the grid needs a happens-before edge it can control.
+- **`placeMu` covers the whole placement** — drain the queue, wait for
+  in-flight fetches, `placeTiles`. `placeTiles` documents that the caller must
+  hold it. Overlapping placements are serialized and a `placeSeq` generation
+  guard drops a superseded one.
+- **`inflight`** (`tilelayout.go`) counts outstanding loads with a broadcast
+  channel, deliberately not a `sync.WaitGroup`: `WaitGroup` forbids `Add`
+  concurrent with `Wait` at a zero counter, which is exactly what a retry
+  re-enqueue plus a placement wait does.
+- **Never read `viewer.layout.tiles` or drive Fyne layout from a test
+  goroutine without a prior `AwaitIdle()`** (or `layout.uiSync()` when a load is
+  deliberately blocked, since `AwaitIdle` would wait for it).
+- **Libraries do not log to stdout/stderr.** `Gallery`, `tiethumb.Thumbnailer`
+  and `mpvplayer` take a `*slog.Logger` defaulting to discard; apps install
+  `tielog.Setup`'s logger. Long-lived goroutines start with
+  `defer tielog.Recover(log, "site")`; the loader recovers **per entry** so one
+  bad blob neither kills a worker nor leaves a placement waiting on the count it
+  held.
 
 ---
 
@@ -327,7 +376,7 @@ extra cost. `tieReader.dimensions` holds the raw string; `tieReader.Dimensions()
 parses it and implements `gallery.DimensionProvider`.
 
 `gallery.ReadCustom` checks each `CustomReader` for `DimensionProvider` and
-pre-populates `ImageInfo.Width` / `ImageInfo.Height`. `NewImageTile` uses
+pre-populates `ImageInfo.SetDimensions()`. `NewImageTile` uses
 these when non-zero so placeholder tiles already have correct aspect ratios,
 preventing layout reflow as thumbnails load.
 
@@ -337,12 +386,14 @@ preventing layout reflow as thumbnails load.
 
 ### `gallery.TileLayout` (`gallery/tilelayout.go`)
 - Implements `fyne.Layout`
-- `tiles []*Tile` — current page, indexed 0…pageSize-1
-- `offset int` — index of first tile on this page within `viewer.imageFiles`
+- `tiles []*Tile` — current page, indexed 0…pageSize-1. Only the `tileUpdater`
+  goroutine writes it (see "Threading rules" below).
+- `offset atomic.Int64` — index of first tile on this page within
+  `viewer.imageFiles`; read from the scroller's goroutine, so it is atomic
 - `minHeight float32` — total pixel height of all rows; reported by `MinSize`
-- `tileCache *tileCache` — session-scoped LRU in-memory thumbnail cache
+- `thumbCache *thumbnailCache` — session-scoped decoded-thumbnail cache, byte-budgeted LRU
 - `imagesToLoad chan *ImageInfo` — work queue for loader goroutines
-- `results chan loadedTile` — finished tiles from workers; the `tileUpdater` goroutine batches them into one relayout per flush (~120 ms trailing / 32 tiles)
+- `results chan uiJob` — finished tiles from workers; the `tileUpdater` goroutine batches them into one relayout per flush (~120 ms trailing / 32 tiles)
 
 ### `gallery.Tile` (`gallery/tilelayout.go`)
 - `width, height float32` — thumbnail pixel dims (= original aspect ratio)
@@ -351,11 +402,22 @@ preventing layout reflow as thumbnails load.
 - `Info *ImageInfo` — metadata and reader
 
 ### `gallery.ImageInfo` (`gallery/imageinfo.go`)
-- `Width, Height int` — pre-stored original dimensions (0 = unknown, use thumbnail dims)
-- `CustomReader CustomReader` — tie or archive reader
-- `OnOpen func()` — if non-nil, replaces default image display (used for directories)
-- `ThumbnailIsScaled bool` — set when thumbnail is already at tileWidth*2
-- `PreviewPaths` / `PreviewReaders` / `previewIndex` — collection & video swipe previews (see "Directory/archive/video tiles: preview swipe")
+An `ImageInfo` is handed to the loader pool, the tile updater and the app at the
+same time, so it is split in two:
+
+- **Immutable core** — plain fields, set once when the entry is built and never
+  written again: `Path`, `DisplayName`, `CustomReader`, `OnOpen`, `ShowArchive`,
+  `InputIsVideo`, `InputIsDir`, `PreviewPaths`. Reading these needs no lock.
+- **Guarded state** — reached only through accessors, all of which take
+  `stateMu`: `Dimensions()`/`SetDimensions()`, `ThumbnailIsScaled()`/
+  `SetThumbnailScaled()`, `PreviewReaders()`/`SetPreviewReaders()`,
+  `PreviewIndex()`/`SetPreviewIndex()`/`AdvancePreview()`, `loadAttempts()`/
+  `bumpLoadAttempts()`/`resetLoadAttempts()`. The prefetch path keeps its own
+  `prefetchMu` so a background decode cannot be double-started.
+
+Write a new mutable field as an accessor pair, not as a bare field: the whole
+point of the split is that `go test -race` can only catch a race on a field
+whose accesses all funnel through one place.
 
 ### `gallery.Gallery` (`gallery/gallery.go`)
 - Renamed from `Viewer` in Phase 1 refactoring
@@ -382,7 +444,7 @@ preventing layout reflow as thumbnails load.
 | `DimensionProvider` | `Dimensions() (w, h int)` | Pre-known image dimensions for stable placeholder layout |
 | `DisplayNamer` | `DisplayName() string` | Human-readable name for thumbnail label (fallback: filepath.Base(Path())) |
 | `PreviewProvider` | `Previews() ([]CustomReader, error)` | Browsable collection (tie dir/archive): supplies preview readers for the tile thumbnail + swipe cycling; called lazily on loader goroutines |
-| `CoverProvider` | `CoverThumbnail()` + `StoreCoverThumbnail([]byte)` | Server-cached cover for a collection tile (tie archive): serves previewIndex 0 without enumerating the collection; the gallery stores a generated first preview as the cover on a miss |
+| `CoverProvider` | `CoverThumbnail()` + `StoreCoverThumbnail([]byte)` | Server-cached cover for a collection tile (tie archive): serves `PreviewIndex() == 0` without enumerating the collection; the gallery stores a generated first preview as the cover on a miss |
 
 ---
 
@@ -409,16 +471,16 @@ the gallery view but does not pop a directory stack.
 ### Directory/archive/video tiles: preview swipe
 Directory and archive entries carry `ImageInfo.PreviewPaths` (all images in
 the folder / all image members in the archive); tie directories and archive
-blobs instead resolve `ImageInfo.PreviewReaders` lazily via the
+blobs instead resolve `ImageInfo.PreviewReaders()` lazily via the
 `PreviewProvider` interface (resolved inside `dirPreviewThumbnail` on a
 loader goroutine — except that a `CoverProvider` entry's initial view
-(previewIndex 0) prefers its server-cached cover, skipping enumeration
+(`PreviewIndex() == 0`) prefers its server-cached cover, skipping enumeration
 entirely).
 Video tiles offer up to `videoPreviewFrames` (10) frame thumbnails spread
 across the duration by seek percent (`mpvplayer.ExtractFramePercent`), cached
 per frame index (`videoThumbnailCachePath` `-N` suffix; frame 0 keeps the
 historic suffix-free name). The tile displays the preview at
-`ImageInfo.previewIndex` (folder tiles get a folder-icon badge, video tiles
+`ImageInfo.PreviewIndex()` (folder tiles get a folder-icon badge, video tiles
 a play icon). A transparent `dirSwipeOverlay` widget covers only tiles whose
 `ImageInfo.HasPreviews()` is true (regular image tiles have no overlay, so
 the scroller keeps native drag/fling there): taps forward to the tile,
@@ -1669,26 +1731,39 @@ Config file locations: `~/.config/imgview/config.toml` (Linux),
 - All widget mutations must run on the UI goroutine via `fyne.Do(func(){...})`.
 - `TileLayout.Layout` and all `fyne.WidgetRenderer` methods are called on the
   UI goroutine automatically.
-- `imageLoader` goroutines write to `layout.tiles[idx]` and `layout.grid.Objects[idx]`
-  via `fyne.Do`; the grid `Refresh` is also dispatched via `fyne.Do`.
-- `makeTagSidebar` closure variables (`allTags`, `allFavorites`, `allFavoritesLabel`)
-  are only read/written inside `fyne.Do` blocks, so no mutex is needed.
+- **The `tileUpdater` goroutine is the only writer of `layout.tiles` and
+  `layout.grid.Objects`.** `imageLoader` workers decode and hand finished tiles
+  to `layout.results` as a `uiJob`; the updater installs them — and every other
+  grid mutation, which arrives through `layout.postUI` — inside one `fyne.Do`
+  per flush. See "Threading rules" under the gallery layout section.
+- `makeTagSidebar` closure variables (`allTags`, `allFavorites`,
+  `allFavoritesLabel`) are only read/written inside `fyne.Do` blocks, so no
+  mutex is needed.
 - Network calls (`tc.Get`, `tc.Query`, `CoTagsForQueryExcludingInput`,
   `getlib.ReadFile`) must run in goroutines, never on the UI goroutine.
-- `Gallery.cache` is guarded by `cacheMu`: `LoadImageToCache` runs both on
-  the UI goroutine (ChangeImage) and on background prefetch goroutines.
-- `layout.placement` (a `sync.WaitGroup`) tracks a running `PlaceTiles` so
-  tests can await page placement deterministically (with the test driver's
-  inline `fyne.Do`, `Wait` covers the whole placement); production code
-  never blocks on it — blocking the UI goroutine would deadlock, since
-  `PlaceTiles` enqueues `fyne.Do` work to it.
+  `LoadGallery`/`ChangePage` therefore never block the UI: an async listing
+  fetch (`beginFetch`/`endFetch`) hands off to `startPlacement`, which runs
+  `placeNow` once the fetches drain, and a `placeSeq` generation guard drops a
+  placement superseded in the meantime.
+- `Gallery.cache` is guarded by `cacheMu`: `LoadImageToCache` runs both on the
+  UI goroutine (ChangeImage) and on background prefetch goroutines.
+  `Gallery.imageFiles` is guarded by `filesMu` and reached only through
+  `files()`/`setFiles()`; `CustomReaders` are published with their listing.
+- `layout.placement` (a `sync.WaitGroup`) counts running placements so an
+  embedding app's tests can await page placement; `Gallery.AwaitIdle()` is the
+  public settle. Production code never blocks on it — blocking the UI goroutine
+  would deadlock, since placement enqueues `fyne.Do` work to it.
+- Outstanding loads are counted by `inflight` (counter plus broadcast channel),
+  deliberately not a `sync.WaitGroup`: `WaitGroup` forbids `Add` concurrent with
+  `Wait` at a zero counter, which is exactly what a retry re-enqueue plus a
+  placement wait does.
 - The Fyne **test driver runs `fyne.Do` inline on the calling goroutine**
   instead of marshalling to a UI thread, so background work that is safe in
-  production races with test-goroutine widget access. Tests therefore swap
-  in synchronous seams (`Gallery.infoMetadataFn` for the info overlay's
-  EXIF load) and wait on `placement` + `currentlyLoading` + the tile
-  updater's trailing debounce before asserting. (The `gallery` package's
-  tests still report races under `-race`; tie-audio's ui tests do not.)
+  production races with test-goroutine widget access. Tests therefore swap in
+  synchronous seams (`Gallery.infoMetadataFn` for the info overlay's EXIF load,
+  `Gallery.SetSyncPlacement` for placement and posted grid mutations) and
+  settle with `AwaitIdle()` or `layout.uiSync()` instead of sleeping.
+  `go test -race ./...` is clean and is a CI gate (`make race`).
 - tie-audio's ui tests instead model the UI thread: `newTestApp(t)`
   (`internal/ui/uithread_test.go`, use it instead of `test.NewApp()`)
   installs a driver wrapper under which `fyne.Do` from the test goroutine
@@ -1697,11 +1772,10 @@ Config file locations: `~/.config/imgview/config.toml` (Linux),
   never a bare `time.Sleep`/poll loop, or queued UI work never runs. This
   keeps `go test -race ./cmd/tie-audio/internal/ui` clean: every async feed
   (tags, wall, Home, covers, queue polls) reports through `fyne.Do`.
-- `LoadGallery` snapshots `layout.offset` (with `imageFiles`) on the UI
-  goroutine for the background `placeTiles`; `ChangeGallery`/`ChangePage`
-  rewrite it there. tie-audio's `loadTags` drops a fetch superseded by a
-  later call (`tagGen`), so a collection switch mid-fetch can't land the
-  previous collection's tags.
+- `layout.offset` is an `atomic.Int64` (the scroller reads it off the UI
+  goroutine); `ChangeGallery`/`ChangePage` rewrite it on the UI goroutine.
+  tie-audio's `loadTags` drops a fetch superseded by a later call (`tagGen`),
+  so a collection switch mid-fetch can't land the previous collection's tags.
 
 ---
 

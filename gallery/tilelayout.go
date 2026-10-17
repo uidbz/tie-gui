@@ -522,15 +522,15 @@ func (layout *TileLayout) scrollToOffset(y, h float32) {
 	}
 	viewport := v.scroll.Size().Height
 	target := y - (viewport-h)/2
-	max := layout.minHeight - viewport
-	if max < 0 {
-		max = 0
+	maxOffset := layout.minHeight - viewport
+	if maxOffset < 0 {
+		maxOffset = 0
 	}
 	if target < 0 {
 		target = 0
 	}
-	if target > max {
-		target = max
+	if target > maxOffset {
+		target = maxOffset
 	}
 	v.scroll.ScrollToOffset(fyne.NewPos(0, target))
 }
@@ -804,8 +804,6 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 		return layout.thumbnailer.GetThumbnail(info)
 	}
 
-	var thumbnail string
-	var thumbnailDir string = layout.config.General.ThumbnailDir
 	var reader io.ReadSeeker
 	r, err := info.GetReader()
 	if err != nil {
@@ -824,12 +822,9 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	if len(hash) != 64 {
 		return nil, errors.New("Invalid hash: " + hash)
 	}
-	max := lvlDeep * dirWidth
-	for i := 0; i <= max; i = i + dirWidth {
-		thumbnailDir = filepath.Join(thumbnailDir, hash[i:i+dirWidth])
-	}
-	thumbnail = filepath.Join(thumbnailDir, hash)
-	if _, err := os.Stat(thumbnail); err == nil && !layout.refreshThumbs { // && false {
+	thumbnail := shardedPath(layout.config.General.ThumbnailDir, hash, "")
+	thumbnailDir := filepath.Dir(thumbnail)
+	if _, err := os.Stat(thumbnail); err == nil && !layout.refreshThumbs {
 		reader, err = os.Open(thumbnail)
 		if err != nil {
 			return nil, err
@@ -1056,12 +1051,7 @@ func (layout *TileLayout) finishDirPreview(cacheKey string, scaled image.Image) 
 // preview thumbnail: the 64-hex cache key split into directory levels, with
 // a "d" suffix on the filename.
 func (layout *TileLayout) dirPreviewCachePath(cacheKey string) string {
-	thumbnailDir := layout.config.General.ThumbnailDir
-	max := lvlDeep * dirWidth
-	for i := 0; i <= max; i = i + dirWidth {
-		thumbnailDir = filepath.Join(thumbnailDir, cacheKey[i:i+dirWidth])
-	}
-	return filepath.Join(thumbnailDir, cacheKey+"d")
+	return shardedPath(layout.config.General.ThumbnailDir, cacheKey, "d")
 }
 
 // dirPreviewCache returns the cached preview thumbnail for cacheKey.
@@ -1272,11 +1262,31 @@ func drawFolderIcon(dst *image.NRGBA, x0, y0, size int) {
 	}
 }
 
+// The disk thumbnail cache shards a 64-hex content key into nested
+// directories — <base>/<ab>/<cd>/<ef>/<gh>/<key> — so one directory does not
+// end up holding every thumbnail.
+//
+// cacheDirLevels is the number of levels the sharding loop actually produces.
+// It used to be spelled lvlDeep = 3 with a `i <= lvlDeep*dirWidth` loop, which
+// walks four levels; the constant now says what happens, and the layout on disk
+// is unchanged. The old package-level `max` also shadowed the builtin of the
+// same name, so `max(a, b)` could not be used anywhere in this package.
 const (
-	lvlDeep  = 3
-	dirWidth = 2
-	max      = lvlDeep * dirWidth
+	cacheDirLevels = 4
+	cacheDirChars  = 2
+	cacheDirSpan   = cacheDirLevels * cacheDirChars
 )
+
+// shardedPath returns the cache file for key under base, with suffix appended
+// to the file name. The suffix keeps two kinds of derived image — a plain
+// thumbnail and a directory preview — from colliding on the same content key.
+func shardedPath(base, key, suffix string) string {
+	dir := base
+	for i := 0; i < cacheDirSpan; i += cacheDirChars {
+		dir = filepath.Join(dir, key[i:i+cacheDirChars])
+	}
+	return filepath.Join(dir, key+suffix)
+}
 
 func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
 	bitmap, err := decodeThumbnailRGBA(reader)

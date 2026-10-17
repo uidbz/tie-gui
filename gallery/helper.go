@@ -151,6 +151,11 @@ func getOrientation(reader io.Reader) string {
 	return "1"
 }
 
+// ReadDir returns the directory containing imgPath, its entries, and the index
+// of imgPath within them, or -1 when the file is not in the listing (deleted
+// since it was opened, or a different filesystem). The -1 matters: 0 is a
+// perfectly good index, so a caller that treats "not found" as 0 silently
+// starts navigating from the first entry instead.
 func ReadDir(imgPath string) (string, []fs.DirEntry, int) {
 	path := filepath.Dir(imgPath)
 	dirContent, _ := os.ReadDir(path)
@@ -160,7 +165,7 @@ func ReadDir(imgPath string) (string, []fs.DirEntry, int) {
 		}
 	}
 
-	return path, dirContent, 0
+	return path, dirContent, -1
 }
 
 // IsImage reports whether the reader contains an image, detected by reading

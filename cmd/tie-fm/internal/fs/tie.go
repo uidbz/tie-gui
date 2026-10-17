@@ -14,6 +14,8 @@ import (
 
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/metadata"
+
+	"github.com/uidbz/tie-gui/tieconfig"
 )
 
 // TieFS serves the tie tagging filesystem over a tie client. It implements both
@@ -333,6 +335,12 @@ func (t *TieFS) StreamURL(e Entry) (string, error) {
 	host, err := t.tc.ResolveHost("")
 	if err != nil {
 		return "", err
+	}
+	// A host URL with user:pass@ in it would put the password in the player's
+	// command line and log. Fall back to downloading through TieFS, which
+	// authenticates through the transport instead.
+	if ui := tieconfig.HostURLUserinfo(host.URL); ui != "" {
+		return "", fmt.Errorf("tie: filehost URL for %q carries credentials (%s); refusing to hand them to the media player", e.Name, ui)
 	}
 	return strings.TrimRight(host.URL, "/") + "/" + e.Hash, nil
 }

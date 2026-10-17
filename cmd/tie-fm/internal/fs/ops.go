@@ -3,6 +3,7 @@ package fs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -1037,7 +1038,13 @@ func (op *Op) checkLocalConflict(destDir, name string, src Entry) (string, bool,
 	p := filepath.Join(osPath(destDir), name)
 	info, err := os.Stat(p)
 	if err != nil {
-		return name, true, nil // absent or unreadable: proceed
+		// Only "not there" means proceed. A permission or I/O error must not
+		// be read as "absent": the caller would then create the name and
+		// overwrite something it never got to compare against.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", false, fmt.Errorf("checking %s: %w", p, err)
+		}
+		return name, true, nil
 	}
 	existing := Entry{Name: name, Path: p, IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}
 	return op.resolveConflict(destDir, src, existing)
@@ -1191,13 +1198,30 @@ func copyFile(op *Op, parent *Op) error {
 		return err
 	}
 	defer src.Close()
+	// The size and mode come from the handle we are about to read, not from the
+	// Entry captured when the operation was planned: a file written to while
+	// the copy runs is not a failed copy, and its planned size would then
+	// disagree with the bytes actually read.
+	srcInfo, err := src.Stat()
+	if err != nil {
+		return err
+	}
 
 	dest := op.destPath()
-	dst, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	perm := srcInfo.Mode().Perm()
+	dst, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
 	defer dst.Close()
+	// Set the mode explicitly. OpenFile's mode is filtered by the process
+	// umask, and an existing destination keeps the mode it already had, so
+	// without this a 0600 private key copied through tie-fm comes out
+	// group/other-readable.
+	if err := os.Chmod(dest, perm); err != nil {
+		os.Remove(dest)
+		return err
+	}
 
 	written, err := io.Copy(dst, &readerCtx{r: src, op: progressOp})
 	if err != nil {
@@ -1206,9 +1230,9 @@ func copyFile(op *Op, parent *Op) error {
 		os.Remove(dest)
 		return err
 	}
-	if written != op.A.Size {
+	if written != srcInfo.Size() {
 		return errors.New("bytes written (" + strconv.Itoa(int(written)) +
-			") differs from source size (" + strconv.Itoa(int(op.A.Size)) + ")")
+			") differs from source size (" + strconv.Itoa(int(srcInfo.Size())) + ")")
 	}
 	return os.Chtimes(dest, time.Now(), op.A.ModTime)
 }

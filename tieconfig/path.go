@@ -109,5 +109,6 @@ func Load(name string) client.Config {
 		}
 		return client.DefaultConfig()
 	}
+	WarnHostURLUserinfo(c)
 	return c
 }

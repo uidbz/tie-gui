@@ -298,7 +298,15 @@ func (r *Recorder) readSpool() ([]tieclient.PlayEvent, error) {
 	return out, sc.Err()
 }
 
-// flush writes the spooled events to tie and empties the spool on success.
+// flushChunkSize bounds one RecordPlays call. The spool is append-only, so
+// being offline for weeks turns it into a single enormous request that the
+// server refuses — and a refused request keeps the whole spool, so nothing ever
+// gets recorded. Chunking lets the front of the history land even if the tail
+// keeps failing.
+const flushChunkSize = 200
+
+// flush writes the spooled events to tie in chunks and empties the spool on
+// success.
 func (r *Recorder) flush() (int, error) {
 	events, err := r.readSpool()
 	if err != nil || len(events) == 0 {
@@ -308,17 +316,76 @@ func (r *Recorder) flush() (int, error) {
 	if sess == nil || sess.Tie == nil {
 		return 0, nil
 	}
-	n, err := sess.Tie.RecordPlays(events)
+	total, left, err := recordChunks(sess.Tie.RecordPlays, events)
+	if len(left) != len(events) {
+		// Rewrite the spool with only what has NOT been recorded. Leaving it
+		// whole would replay the chunks that already succeeded into tie as
+		// duplicate plays on the next drain.
+		if rerr := r.rewriteSpool(left); rerr != nil {
+			return total, rerr
+		}
+	}
 	if err != nil {
-		return 0, err // keep the spool; retried on the next drain
+		return total, err // the rest is retried on the next drain
 	}
 	if err := os.Remove(r.spoolPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return n, err
+		return total, err
 	}
-	if n > 0 && r.opts.OnRecorded != nil {
-		r.opts.OnRecorded(n)
+	if total > 0 && r.opts.OnRecorded != nil {
+		r.opts.OnRecorded(total)
 	}
-	return n, nil
+	return total, nil
+}
+
+// recordChunks hands events to send in flushChunkSize batches. It stops at the
+// first failure and returns how many plays landed, the events that were never
+// sent, and the error.
+func recordChunks(send func([]tieclient.PlayEvent) (int, error), events []tieclient.PlayEvent) (int, []tieclient.PlayEvent, error) {
+	total := 0
+	for len(events) > 0 {
+		chunk := events
+		if len(chunk) > flushChunkSize {
+			chunk = events[:flushChunkSize]
+		}
+		n, err := send(chunk)
+		if err != nil {
+			return total, events, err
+		}
+		total += n
+		events = events[len(chunk):]
+	}
+	return total, nil, nil
+}
+
+// rewriteSpool replaces the spool with the events that still need recording,
+// via a temp file and a rename so an interrupted write cannot lose history.
+func (r *Recorder) rewriteSpool(events []tieclient.PlayEvent) error {
+	if len(events) == 0 {
+		return os.Remove(r.spoolPath())
+	}
+	tmp := r.spoolPath() + ".part"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	for _, e := range events {
+		if err := enc.Encode(e); err != nil {
+			f.Close()
+			os.Remove(tmp)
+			return err
+		}
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, r.spoolPath())
 }
 
 func (r *Recorder) loadCursors() {
