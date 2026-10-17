@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -18,8 +19,8 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/internal/appboot"
 	"github.com/uidbz/tie-gui/mpvplayer"
-	"github.com/uidbz/tie-gui/tielog"
 	// "github.com/pkg/profile"
 )
 
@@ -176,15 +177,20 @@ func main() {
 	// defer profile.Start(profile.CPUProfile).Stop()
 	// defer profile.Start().Stop()
 	configPath := gallery.ConfigFlag("imgview config file to load (default: config.toml in user config dir)")
-	var logOpts tielog.Options
-	logOpts.App = "imgview"
-	logOpts.AddFlags(flag.CommandLine)
+	// Logging, -conf-show, Ctrl-C handling and the sweep of video files an
+	// earlier killed run left in /tmp (see internal/appboot).
+	var boot appboot.Options
+	boot.App = "imgview"
+	boot.CleanTemp = true
+	boot.Grace = 5 * time.Second
+	appboot.AddFlags(flag.CommandLine, &boot)
 	flag.Parse()
 
-	appLog, closeLog := tielog.Setup(logOpts)
-	defer closeLog()
-	log = appLog
-	mpvplayer.SetLogger(appLog)
+	run := appboot.Start(boot)
+	defer run.Close()
+	run.MaybeShowConfig()
+	log = run.Log
+	mpvplayer.SetLogger(run.Log)
 
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.imgview", "imgview", icon)
 
@@ -212,7 +218,7 @@ func main() {
 		}
 	})
 
-	viewer.SetLogger(appLog)
+	viewer.SetLogger(run.Log)
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
 

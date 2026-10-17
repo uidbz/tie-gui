@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"sort"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -25,25 +26,23 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/ui"
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/internal/appboot"
 	"github.com/uidbz/tie-gui/mpvplayer"
 	"github.com/uidbz/tie-gui/tieconfig"
-	"github.com/uidbz/tie-gui/tielog"
 	"github.com/uidbz/tie-gui/tiethumb"
 )
 
 func main() {
-	var logOpts tielog.Options
-	logOpts.App = "tie-fm"
-	logOpts.AddFlags(flag.CommandLine)
+	// Logging, -conf-show, Ctrl-C handling and the sweep of staging directories
+	// an earlier killed run left in /tmp (see internal/appboot). tie-fm spends
+	// its life talking to remote stores (tie filehosts, MTP devices), so the
+	// log file is the only way back from "it stopped working".
+	var boot appboot.Options
+	boot.App = "tie-fm"
+	boot.CleanTemp = true
+	boot.Grace = 5 * time.Second
+	appboot.AddFlags(flag.CommandLine, &boot)
 	flag.Parse()
-
-	// tie-fm spends its life talking to remote stores (tie filehosts, MTP
-	// devices), so the log file is the only way back from "it stopped
-	// working".
-	appLog, closeLog := tielog.Setup(logOpts)
-	defer closeLog()
-	tieconfig.SetLogger(appLog)
-	mpvplayer.SetLogger(appLog)
 
 	application := app.NewWithID("net.sourcehut.tie-fm")
 	mainWin := application.NewWindow("tie-fm")
@@ -53,13 +52,28 @@ func main() {
 		appCfg = config.Default()
 	}
 
+	run := appboot.Start(boot)
+	defer run.Close()
+	appLog := run.Log
+	mpvplayer.SetLogger(appLog)
+
 	// The tie client is built from the configured tie config (a local server by
 	// default) but only connects when a tie: path is visited; connection errors
 	// surface as dialogs at that point. The bound collection is tie-fm's own
 	// profile selection (TieCollection, preferring the "files" entry when
 	// unset), not the tie config's shared DefaultCollection.
 	tieCfg, _ := config.LoadTieConfig(appCfg.TieConfig)
-	tc := client.NewTieClientFor(tieCfg, tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))
+	tieCollection := tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection)
+	// tie-fm's tie config is its own: an explicit path from its settings, or
+	// the built-in local-server default rather than the user's config.toml, so
+	// -conf-show has to report these values rather than the ones appboot
+	// loaded.
+	tieCfgPath := "(built-in default; no config file)"
+	if appCfg.TieConfig != "" {
+		tieCfgPath = tieconfig.ResolvePath(appCfg.TieConfig)
+	}
+	run.ShowConfigFor(tieCfgPath, tieCfg, tieCollection)
+	tc := client.NewTieClientFor(tieCfg, tieCollection)
 
 	registry := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(tc))
 
@@ -175,7 +189,7 @@ func main() {
 			return
 		}
 		tieCfg = cfg
-		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))))
+		registry.SetTie(fs.NewTieFS(client.NewTieClientFor(tieCfg, tieCollection)))
 		appCfg.TieConfig = path
 		if err := appCfg.Save(); err != nil {
 			dialog.ShowError(err, mainWin)
@@ -200,7 +214,7 @@ func main() {
 	// (appCfg.TieCollection may be empty on first run while a fallback
 	// profile is bound).
 	currentCollection := func() string {
-		return tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection)
+		return tieCollection
 	}
 
 	sidebar := widget.NewList(
@@ -342,7 +356,7 @@ func main() {
 				return
 			}
 			sel := widget.NewSelect(names, nil)
-			sel.SetSelected(tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))
+			sel.SetSelected(tieCollection)
 			dialog.NewCustomConfirm("Tie collection", "Apply", "Cancel", sel, func(ok bool) {
 				if ok && sel.Selected != "" {
 					applyTieCollection(sel.Selected)

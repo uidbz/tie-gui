@@ -4,21 +4,21 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/dialog"
 
+	"github.com/uidbz/tie/client"
+
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/mpris"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/ui"
+	"github.com/uidbz/tie-gui/internal/appboot"
 	"github.com/uidbz/tie-gui/tieconfig"
-	"github.com/uidbz/tie-gui/tielog"
 )
 
 func main() {
@@ -27,6 +27,8 @@ func main() {
 	//   bindsym XF86AudioPlay exec tie-audio -control play-pause
 	control := flag.String("control", "",
 		"send an action to the running tie-audio and exit: "+strings.Join(mpris.Actions, ", "))
+	var boot appboot.Options
+	appboot.AddFlags(flag.CommandLine, &boot)
 	flag.Parse()
 	if *control != "" {
 		if err := mpris.Control(*control); err != nil {
@@ -38,15 +40,24 @@ func main() {
 
 	// The -control path above is a one-shot CLI call: it reports on stderr and
 	// exits, and deliberately does not open a log file.
-	appLog, closeLog := tielog.Setup(tielog.Options{App: "tie-audio"})
-	defer closeLog()
-	tieconfig.SetLogger(appLog)
+	cfg, _ := config.Load()
+
+	// Logging, -conf-show, Ctrl-C handling and the sweep of staging files an
+	// earlier killed run left in /tmp (see internal/appboot).
+	boot.App = "tie-audio"
+	boot.ConfigName = cfg.TieConfig
+	boot.CleanTemp = true
+	boot.Grace = 3 * time.Second
+	boot.Collection = func(tieCfg client.Config) string {
+		return tieconfig.AppCollection(tieCfg, cfg.TieCollection, config.DefaultTieCollection)
+	}
+	run := appboot.Start(boot)
+	defer run.Close()
+	run.MaybeShowConfig()
+	appLog := run.Log
 	ui.SetLogger(appLog)
 	data.SetLogger(appLog)
 
-	forceExitOnSignal(3 * time.Second)
-
-	cfg, _ := config.Load()
 	session := data.NewSession(cfg)
 
 	a := app.New()
@@ -58,24 +69,4 @@ func main() {
 		dialog.ShowError(fmt.Errorf("local playback unavailable, using pwplay remote: %w", session.BackendErr), w)
 	}
 	w.ShowAndRun()
-}
-
-// forceExitOnSignal makes SIGINT/SIGTERM (Ctrl+C, kill) always end the
-// process. Fyne handles those signals by queueing a Quit onto the UI
-// goroutine, so if that goroutine is ever blocked the signal does nothing and
-// only SIGKILL helps (tie-audio once hung like this in the playback engine's
-// Close). This handler runs alongside Fyne's: it gives the normal shutdown
-// grace to finish, then exits; a second signal exits immediately.
-func forceExitOnSignal(grace time.Duration) {
-	ch := make(chan os.Signal, 2)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-ch
-		select {
-		case <-ch:
-		case <-time.After(grace):
-			fmt.Fprintln(os.Stderr, "tie-audio: shutdown did not finish, forcing exit")
-		}
-		os.Exit(130)
-	}()
 }

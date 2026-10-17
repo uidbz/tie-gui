@@ -14,7 +14,14 @@ Fyne fork — hence the monorepo.
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`) |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/history/playback/ui; Home page + play history, see the sections at the end). Its album table and browse wall use the shared `tablewidget` package (its old copy under `internal/widget/` was deleted) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
-| `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
+| `gallery/gallery.go` | The `Gallery` struct, its constructor and the logger (renamed from imageviewer.go in Phase 1) |
+| `gallery/page.go` | The listing the gallery shows, the current page, placement, and the four `Read*` entry points |
+| `gallery/single.go` | The single-image view: `ChangeImage`, next/prev, fullscreen, the image-view cache, `ShowVideo` |
+| `gallery/hotkeys.go` | `KeyPress`, the default hotkey table, `RegisterHotkey` |
+| `gallery/chrome.go` | `Init`, the sidebar and its drawer, the bottom bar, the ☰ menu |
+| `gallery/loader.go` | The loader pipeline: worker queue, retry budget, the `tileUpdater` that owns every grid mutation |
+| `gallery/thumbsource.go` | Where a tile's thumbnail comes from: the `Thumbnailer`, the disk cache and its sharding, dir/archive/video previews |
+| `gallery/tile.go` | The `Tile` widget, its renderer, the tap/swipe gestures and the two overlay widgets |
 | `gallery/tilelayout.go` | Grid layout engine, the `Tile` widget, the loader/updater pipeline and the thumbnail disk cache sharding |
 | `gallery/tilecache.go` | Session-scoped decoded-thumbnail cache: byte-budgeted LRU |
 | `gallery/imageview.go` | Single-image display widget |
@@ -33,6 +40,7 @@ Fyne fork — hence the monorepo.
 | `mpvplayer/` | libmpv video player window |
 | `tieconfig/` | Shared tie client config: Android-safe path resolution (`Dir`/`ResolvePath`/`Load`), the `[Collections.*]` connection editor (`Editor`), and per-app collection resolution (`AppCollection`) |
 | `tielog/` | One `slog` setup per app: stderr plus `$XDG_STATE_HOME/tie/<app>.log` (rotated), `-v`/`-q`/`-no-log` flags, `Recover` for long-lived goroutines, logcat mirroring on Android. Libraries take a `*slog.Logger` and never print on their own |
+| `internal/appboot/` | Shared startup sequence for the four apps: logging, tie config load, `-conf-show`, signal handling, and the sweep of scratch files a killed run left in the temp dir |
 | `internal/httpx/` | Shared `http.Client` for tie's filehost/collection calls: pooled transport with a small request timeout and a long bulk-transfer timeout |
 | `tiethumb/` | Shared filehost-backed `gallery.Thumbnailer` (tie relation `(hash, "thumbnail", thumbHash)` + `dimensions`), used by tie-view and tie-fm's preview grid; the tie client and filehost resolve per call so collection/config switches need no rewiring |
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
@@ -435,7 +443,7 @@ whose accesses all funnel through one place.
   container Refresh); `BottomBarVisible()` reports it. `Loaded()` reports
   whether `LoadGallery` ran (re-show `Content` without reloading).
 
-### Optional `CustomReader` interfaces (`gallery/gallery.go`)
+### Optional `CustomReader` interfaces (`gallery/extension.go`)
 | Interface | Method | Purpose |
 |-----------|--------|---------|
 | `Openable` | `Open()` | Directory entries: replaces tap with navigation |
@@ -1596,7 +1604,7 @@ stale results. The bar mirrors its state back into the reader
 `Set*` methods never write). Adds also register the tag in `("tags","all")`
 once per session.
 
-**Hotkeys:** `Gallery.RegisterHotkey(name, fn)` (new, `gallery/gallery.go`)
+**Hotkeys:** `Gallery.RegisterHotkey(name, fn)` (new, `gallery/hotkeys.go`)
 appends to `viewer.hotkeys` so bindings reach the desktop via the focused
 `ImageView.TypedKey` and mobile via window-level `KeyPress`, like the
 configured `[Image]` keys. Call it **after** `viewer.Init()` (which resets
@@ -1779,6 +1787,50 @@ Config file locations: `~/.config/imgview/config.toml` (Linux),
 
 ---
 
+## App bootstrap (`internal/appboot/`)
+
+The four `main`s share one startup sequence rather than re-deriving it:
+
+```go
+var boot appboot.Options
+boot.App = "tie-view"            // names the log file and the temp sweep
+boot.ConfigName = *tieConfigName
+boot.CleanTemp = true
+boot.Grace = 5 * time.Second
+boot.Collection = func(cfg client.Config) string { /* app's own profile pick */ }
+appboot.AddFlags(flag.CommandLine, &boot)   // -v -q -no-log -conf-show
+flag.Parse()
+run := appboot.Start(boot)       // tielog.Setup + tieconfig.Load + sweep + signals
+defer run.Close()
+run.MaybeShowConfig()            // exits here when -conf-show was given
+log = run.Log                    // the package logger every file reports through
+```
+
+`Start` installs the library loggers it can reach without pulling in cgo
+(`tieconfig`); apps that use the player call `mpvplayer.SetLogger` themselves,
+so `go build ./cmd/tie-audio` still works on a machine without libmpv headers.
+
+- **`-conf-show`** prints the resolved triplestore URL, filehost URLs,
+  collection, namespace, config path and TLS settings, with passwords masked
+  and a warning when a filehost URL carries credentials (they would leak into
+  media-player command lines, see `tieconfig.HostURLUserinfo`). It mirrors
+  `client.Config.ResolveCollection`'s own name resolution, so it reports the
+  entry actually used rather than the one asked for. This is the fastest way to
+  answer "which store is this app talking to". tie-fm loads its tie config
+  itself (its own path, or a built-in local default rather than the user's
+  `config.toml`), so it calls `run.ShowConfigFor(path, cfg, collection)` with
+  its own values.
+- **`SweepTemp`** removes scratch files an earlier killed run left in
+  `os.TempDir()`: downloaded videos, MTP/archive staging directories,
+  materialized tie blobs, the MPRIS bridge's cover-art PNGs. They reach tens of
+  megabytes and nothing else ever removes them. Only entries older than
+  `DefaultTempAge` (24 h) whose name matches the app's prefix list are touched,
+  so a running instance's in-progress file is never removed.
+- **`HandleSignals`** is a backstop, not the shutdown path: Fyne already queues
+  a `Quit` on SIGINT. What this adds is a grace window after which the process
+  exits anyway, because a blocked UI goroutine makes Fyne's handler do nothing
+  (tie-audio once hung in the playback engine's `Close`).
+
 ## Shared app helpers (`gallery/apphelper.go`, Phase 4)
 
 Phase 4 refactoring factored common bootstrap code from both mains into shared
@@ -1793,7 +1845,7 @@ helpers:
   skips on mobile (soft keyboard avoidance). Used in `OnImageChange` handlers.
 
 Video is played **in the main window** via `Gallery.ShowVideo(player,
-displayName, onClose)` (`gallery/gallery.go`), mirroring `ChangeImage`'s
+displayName, onClose)` (`gallery/single.go`), mirroring `ChangeImage`'s
 in-window content swap — it does not spawn a separate window. The
 `mpvplayer.Video` widget carries a fullscreen button (`OnFullscreen` callback →
 `Gallery.toggleVideoFullscreen`) and toggles its controls bar on tap while

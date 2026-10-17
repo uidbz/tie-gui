@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -19,11 +20,11 @@ import (
 	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/internal/appboot"
 	"github.com/uidbz/tie-gui/mpvplayer"
 	"github.com/uidbz/tie-gui/tagselection"
 	"github.com/uidbz/tie-gui/tagselection/tagindex"
 	"github.com/uidbz/tie-gui/tieconfig"
-	"github.com/uidbz/tie-gui/tielog"
 	"github.com/uidbz/tie-gui/tiethumb"
 	// "github.com/pkg/profile"
 )
@@ -37,20 +38,16 @@ func main() {
 	tieTag := flag.String("tag", "favorite", "Show images with tag")
 	tieConfigName := gallery.ConfigFlag("Tie config file to load: a name searched in tie's config dirs (like `tie -c`), or a file path (default: config.toml from the user config dir)")
 	flag.StringVar(&tieHostName, "host", "", "Fetch content from this filehost named in the tie config (default: \"fast\" when configured, else the first DefaultFileHosts entry)")
-	var logOpts tielog.Options
-	logOpts.App = "tie-view"
-	logOpts.AddFlags(flag.CommandLine)
+	// Logging, the tie config, -conf-show, Ctrl-C handling and the sweep of
+	// video files an earlier killed run left in /tmp, all shared with the
+	// other three apps (see internal/appboot).
+	var boot appboot.Options
+	boot.App = "tie-view"
+	boot.CleanTemp = true
+	boot.Grace = 5 * time.Second
+	appboot.AddFlags(flag.CommandLine, &boot)
 	flag.Parse()
-
-	// One logger for the whole app: stderr plus
-	// $XDG_STATE_HOME/tie/tie-view.log. The libraries get it too, because a
-	// thumbnail upload that failed against a remote filehost is exactly the
-	// thing a user needs to be able to find out afterwards.
-	appLog, closeLog := tielog.Setup(logOpts)
-	defer closeLog()
-	log = appLog
-	tieconfig.SetLogger(appLog)
-	mpvplayer.SetLogger(appLog)
+	boot.ConfigName = *tieConfigName
 
 	// The first positional argument opens content at startup: a tie: URL
 	// (tie:<hash> for a single subject, tie:/path for a virtual-filesystem
@@ -64,6 +61,25 @@ func main() {
 
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.tieview", "tieview", icon)
 
+	// The collection (profile) this app binds is its own choice, not the tie
+	// config's shared DefaultCollection: the stored Preferences selection
+	// wins, then a collection named like the app ("images"), so images and
+	// sound can live in different profiles without the apps fighting over the
+	// shared default.
+	boot.Collection = func(cfg client.Config) string {
+		return tieconfig.AppCollection(cfg, myApp.Preferences().String(prefTieCollection), "images")
+	}
+	run := appboot.Start(boot)
+	run.MaybeShowConfig()
+	defer run.Close()
+	appLog := run.Log
+	// The package logger is what every file in this app reports through; the
+	// libraries get it too, because a thumbnail upload that failed against a
+	// remote filehost is exactly the thing a user needs to be able to find
+	// out afterwards.
+	log = appLog
+	mpvplayer.SetLogger(appLog)
+
 	config := gallery.LoadConfig(myWindow, "")
 
 	// Adjust config for mobile if needed
@@ -72,20 +88,15 @@ func main() {
 		config.AdjustForMobile()
 	}
 
-	tieConfigPath = tieconfig.ResolvePath(*tieConfigName)
-	tieConfig := tieconfig.Load(*tieConfigName)
+	tieConfigPath = run.ConfigPath
+	tieConfig := run.TieConfig
 	if tieHostName != "" {
 		if _, ok := tieConfig.FileHosts[tieHostName]; !ok {
 			fmt.Fprintf(os.Stderr, "No filehost %q in the tie config. Configured filehosts: %s\n", tieHostName, strings.Join(fileHostNames(tieConfig), ", "))
 			os.Exit(2)
 		}
 	}
-	// The collection (profile) this app binds is its own choice, not the tie
-	// config's shared DefaultCollection: the stored Preferences selection
-	// wins, then a collection named like the app ("images"), so images and
-	// sound can live in different profiles without the apps fighting over the
-	// shared default.
-	activeName := tieconfig.AppCollection(tieConfig, myApp.Preferences().String(prefTieCollection), "images")
+	activeName := run.Collection
 	tieClient := client.NewTieClientFor(tieConfig, activeName)
 
 	tagger := newImageTagger(myWindow, tieClient)
