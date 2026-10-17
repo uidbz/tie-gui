@@ -203,15 +203,28 @@ func IsImage(file io.Reader) bool {
 	return filetype.IsImage(head)
 }
 
+// sniffFile returns the header bytes of the file at path, or nil if it cannot
+// be opened or read. Every content-based check on a path goes through here so
+// the open/short-read handling exists once (the two callers used to duplicate
+// it, and both had the same short-read bug).
+func sniffFile(path string) []byte {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	head, err := sniffHead(file)
+	if err != nil {
+		return nil
+	}
+	return head
+}
+
 // IsImageFromPath reports whether the file at path is an image, detected by
 // reading the file header.
 func IsImageFromPath(path string) bool {
-	file, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer file.Close()
-	return IsImage(file)
+	head := sniffFile(path)
+	return head != nil && filetype.IsImage(head)
 }
 
 // IsVideoFromPath reports whether the file at path is a common video format,
@@ -228,14 +241,6 @@ func IsVideoFromPath(path string) bool {
 // IsArchiveFromPath reports whether the file at path is an archive, detected
 // by reading the file header.
 func IsArchiveFromPath(path string) bool {
-	file, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer file.Close()
-	head, err := sniffHead(file)
-	if err != nil {
-		return false
-	}
-	return filetype.IsArchive(head)
+	head := sniffFile(path)
+	return head != nil && filetype.IsArchive(head)
 }

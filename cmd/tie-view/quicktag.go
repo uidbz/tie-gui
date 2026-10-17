@@ -21,6 +21,8 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie/client"
+
+	"github.com/uidbz/tie-gui/gallery"
 )
 
 // quickTagIconSize returns the base quick tag button edge length (Size "m").
@@ -650,6 +652,12 @@ func (c *quickTagCell) MouseOut()                        { c.bar.setStatus("") }
 // only an On icon. It returns nil when the image cannot be decoded, in which
 // case the cell falls back to dimming the On icon.
 func grayscaleResource(res fyne.Resource) fyne.Resource {
+	// Guarded like every other decode: a quicktag icon is a path the user
+	// types into the config, so it can name a 30000x30000 PNG.
+	if err := gallery.CheckDecodeLimits(bytes.NewReader(res.Content())); err != nil {
+		log.Warn("quicktag icon too large to process", "icon", res.Name(), "err", err)
+		return nil
+	}
 	src, _, err := image.Decode(bytes.NewReader(res.Content()))
 	if err != nil {
 		return nil
