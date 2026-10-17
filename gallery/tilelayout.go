@@ -65,7 +65,7 @@ type TileLayout struct {
 	// (with the test driver, PlaceTiles' fyne.Do blocks run inline before
 	// it returns, so Wait covers the whole placement).
 	placement  sync.WaitGroup
-	tileCache  *tileCache
+	thumbCache *thumbnailCache
 	showLabels bool
 	// placeMu serializes overlapping PlaceTiles calls (rapid page changes,
 	// re-sorts): the last placement must win deterministically — its tile
@@ -125,14 +125,14 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 	tiles := make([]*Tile, 0)
 	imagesToLoad := make(chan *ImageInfo, batchSize)
 
-	// Cache size based on platform: smaller on mobile to save memory. Each
-	// holds ~3 pages at the default page sizes so page-back navigation is
-	// served from memory instead of reloading every thumbnail (one page
-	// exactly filled the old 500/150 budget, so any round-trip evicted the
-	// whole previous page).
-	maxCacheSize := 1500
+	// Cache budget in bytes of decoded thumbnails rather than a tile count: a
+	// tile's pixel data is (2*TileWidth) x (2*TileWidth*aspect) bytes, which
+	// varies with a user-settable config value, so counting tiles made the
+	// limit meaningless. Sized for roughly three pages of thumbnails in each
+	// direction so page-back navigation is served from memory.
+	maxCacheBytes := int64(150 << 20)
 	if viewer.Platform().IsMobile() {
-		maxCacheSize = 300
+		maxCacheBytes = 40 << 20
 	}
 
 	// Default: labels off to save vertical space (mobile optimization)
@@ -153,7 +153,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 		window:        window,
 		app:           app,
 		viewer:        viewer,
-		tileCache:     newTileCache(maxCacheSize),
+		thumbCache:    newThumbnailCache(maxCacheBytes),
 		showLabels:    showLabels,
 		thumbnailer:   viewer.Thumbnailer,
 		refreshThumbs: viewer.refreshThumbs,
@@ -487,12 +487,17 @@ func (layout *TileLayout) ToggleLabels() {
 	})
 }
 
-func (layout *TileLayout) tileFromCache(path string) (*Tile, bool) {
-	return layout.tileCache.get(path)
+// bitmapFromCache returns a decoded thumbnail already in the cache.
+func (layout *TileLayout) bitmapFromCache(path string) (*image.RGBA, bool) {
+	return layout.thumbCache.get(path)
 }
 
-func (layout *TileLayout) tileToCache(path string, tile *Tile) {
-	layout.tileCache.put(path, tile)
+// bitmapToCache stores a decoded thumbnail for later reuse. The bitmap, not
+// the tile, is what is shared: a canvas object can only have one parent, so
+// reusing a *Tile for two grid slots (same content hash, two names) made the
+// layout move one object twice.
+func (layout *TileLayout) bitmapToCache(path string, img *image.RGBA) {
+	layout.thumbCache.put(path, img)
 }
 
 // maxTileLoadAttempts bounds how many times a failing thumbnail load is
@@ -509,13 +514,11 @@ const maxTileLoadAttempts = 3
 // ChangePage/ChangeGallery if discarded).
 func (layout *TileLayout) imageLoader() {
 	for tc := range layout.imagesToLoad {
-		var tile *Tile
-		if t, ok := layout.tileFromCache(tc.Path); ok {
-			tile = t
-		} else {
+		bitmap, ok := layout.bitmapFromCache(tc.Path)
+		if !ok {
 			thumb, err := layout.GetThumbnail(tc)
 			if err == nil {
-				tile, err = layout.NewImageTile(thumb, tc, layout.tabFn)
+				bitmap, err = decodeThumbnailRGBA(thumb)
 			}
 			if err != nil {
 				// Thumbnail failed (network hiccup, truncated blob, ...):
@@ -530,8 +533,11 @@ func (layout *TileLayout) imageLoader() {
 				layout.currentlyLoading.Done()
 				continue
 			}
-			layout.tileToCache(tc.Path, tile)
+			layout.bitmapToCache(tc.Path, bitmap)
 		}
+		// Every slot gets its own Tile around the shared bitmap: two entries
+		// with the same content hash must be two independent widgets.
+		tile := layout.newImageTileFromImage(bitmap, tc, layout.tabFn)
 		layout.results <- loadedTile{info: tc, tile: tile}
 		layout.currentlyLoading.Done()
 	}
@@ -1110,6 +1116,16 @@ const (
 )
 
 func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, tabFn func(t *Tile)) (*Tile, error) {
+	bitmap, err := decodeThumbnailRGBA(reader)
+	if err != nil {
+		return nil, err
+	}
+	return layout.newImageTileFromImage(bitmap, info, tabFn), nil
+}
+
+// decodeThumbnailRGBA decodes a thumbnail reader into the RGBA bitmap the tile
+// cache stores and the painter uploads directly.
+func decodeThumbnailRGBA(reader io.ReadSeeker) (*image.RGBA, error) {
 	decoded, _, err := Decode(reader)
 	if err != nil {
 		return nil, err
@@ -1117,7 +1133,7 @@ func (layout *TileLayout) NewImageTile(reader io.ReadSeeker, info *ImageInfo, ta
 	if decoded == nil {
 		return nil, errors.New("decode returned no image")
 	}
-	return layout.newImageTileFromImage(toRGBA(decoded), info, tabFn), nil
+	return toRGBA(decoded), nil
 }
 
 // toRGBA converts img to *image.RGBA. The GL painter uploads *image.RGBA

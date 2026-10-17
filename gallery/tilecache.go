@@ -1,76 +1,148 @@
 package gallery
 
 import (
+	"container/list"
+	"image"
 	"sync"
 )
 
-// tileCache is an in-memory LRU cache for thumbnail tiles. It enforces a size
-// budget by evicting the oldest entries when the cache fills up. Entries are
-// tracked in insertion order; the front of the list is oldest.
-type tileCache struct {
-	maxSize int // maximum number of tiles to cache
+// thumbnailCache is an in-memory LRU cache of decoded thumbnail bitmaps.
+//
+// It used to cache *Tile widgets, which caused two separate problems:
+//
+//   - A Fyne CanvasObject has one parent and one position, so handing the same
+//     *Tile to two grid slots broke the grid. ImageInfo.Path is the content
+//     hash for tie entries, so the same image listed under two names — or a
+//     duplicate UID, which tie has — got one widget laid out twice: one entry
+//     painted over the other, the second slot stayed blank, and preview
+//     cycling and the drag overlays acted on both "entries" at once. Caching
+//     the bitmap and building a fresh Tile per slot keeps the decode savings
+//     and gives every slot its own object.
+//   - The budget counted tiles. Each holds a decoded RGBA of roughly
+//     (2*TileWidth) x (2*TileWidth*aspect), so at the default TileWidth of 300
+//     a portrait thumbnail is ~2.8 MB and the 1500-entry budget allowed close
+//     to 4 GB, with TileWidth user-configurable on top of that. Budgeting the
+//     actual bytes makes the limit mean what it says.
+//
+// Eviction is now least-recently-used rather than insertion order: the old
+// FIFO evicted exactly the page the user had just scrolled back to, which is
+// the case the budget was raised to serve.
+type thumbnailCache struct {
+	maxBytes int64
 
-	mu      sync.Mutex
-	entries map[string]*Tile
-	order   []string // paths in insertion order; front = oldest (evict first)
+	mu     sync.Mutex
+	lru    *list.List // front = most recently used
+	byPath map[string]*list.Element
+	bytes  int64
 }
 
-// newTileCache creates a tileCache that holds up to maxSize tiles in memory.
-func newTileCache(maxSize int) *tileCache {
-	return &tileCache{
-		maxSize: maxSize,
-		entries: make(map[string]*Tile),
+type thumbEntry struct {
+	path  string
+	img   *image.RGBA
+	bytes int64
+}
+
+// newThumbnailCache returns a cache holding at most maxBytes of decoded
+// thumbnails.
+func newThumbnailCache(maxBytes int64) *thumbnailCache {
+	return &thumbnailCache{
+		maxBytes: maxBytes,
+		lru:      list.New(),
+		byPath:   make(map[string]*list.Element),
 	}
 }
 
-// get retrieves a tile by path, returning (tile, true) if present or (nil, false)
-// if absent. Access does not update LRU position (insertion-order LRU, not access-order).
-func (c *tileCache) get(path string) (*Tile, bool) {
+// get returns a cached bitmap and marks it the most recently used entry.
+func (c *thumbnailCache) get(path string) (*image.RGBA, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t, ok := c.entries[path]
-	return t, ok
+	el, ok := c.byPath[path]
+	if !ok {
+		return nil, false
+	}
+	c.lru.MoveToFront(el)
+	return el.Value.(*thumbEntry).img, true
 }
 
-// put stores a tile in the cache and evicts old entries if the cache exceeds maxSize.
-func (c *tileCache) put(path string, tile *Tile) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// If already present, don't add it again (preserves original insertion order).
-	if _, ok := c.entries[path]; ok {
+// put stores a decoded bitmap, replacing any entry for path, and evicts the
+// coldest entries until the cache is back inside its byte budget.
+//
+// A bitmap larger than the whole budget is not cached: keeping it (the old
+// "never evict what we just admitted" rule) would throw away every warmer
+// entry to hold one oversized one.
+func (c *thumbnailCache) put(path string, img *image.RGBA) {
+	size := imageBytes(img)
+	if img == nil || size == 0 {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	c.entries[path] = tile
-	c.order = append(c.order, path)
-	c.evictLocked(path)
-}
-
-// evictLocked drops the oldest tiles until the cache size is within maxSize.
-// keep is the path just admitted; it is rotated to the back rather than evicted
-// immediately (a tile that would overflow the budget is still cached).
-// Must be called with c.mu held.
-func (c *tileCache) evictLocked(keep string) {
-	for len(c.entries) > c.maxSize && len(c.order) > 0 {
-		oldest := c.order[0]
-		if oldest == keep {
-			// Never evict the tile we just admitted.
-			if len(c.order) == 1 {
-				break
-			}
-			c.order = append(c.order[1:], oldest)
-			continue
+	if el, ok := c.byPath[path]; ok {
+		old := el.Value.(*thumbEntry)
+		c.bytes -= old.bytes
+		old.img = img
+		old.bytes = size
+		c.bytes += size
+		c.lru.MoveToFront(el)
+	} else {
+		c.byPath[path] = c.lru.PushFront(&thumbEntry{path: path, img: img, bytes: size})
+		c.bytes += size
+	}
+	if size > c.maxBytes {
+		// This one entry cannot fit. Drop it and let the rest of the cache be.
+		c.evictOneLocked()
+	}
+	for c.bytes > c.maxBytes {
+		if !c.evictOneLocked() {
+			break
 		}
-		c.order = c.order[1:]
-		delete(c.entries, oldest)
 	}
 }
 
-// clear removes all cached tiles.
-func (c *tileCache) clear() {
+// evictOneLocked drops the least recently used entry. It reports whether
+// anything was removed. Callers must hold c.mu.
+func (c *thumbnailCache) evictOneLocked() bool {
+	el := c.lru.Back()
+	if el == nil {
+		return false
+	}
+	e := el.Value.(*thumbEntry)
+	c.lru.Remove(el)
+	delete(c.byPath, e.path)
+	c.bytes -= e.bytes
+	return true
+}
+
+// clear empties the cache.
+func (c *thumbnailCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries = make(map[string]*Tile)
-	c.order = nil
+	c.lru = list.New()
+	c.byPath = make(map[string]*list.Element)
+	c.bytes = 0
+}
+
+// len reports how many bitmaps are cached.
+func (c *thumbnailCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.byPath)
+}
+
+// size reports the bytes of decoded pixel data the cache holds.
+func (c *thumbnailCache) size() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes
+}
+
+// imageBytes is the heap a decoded RGBA bitmap costs. Fyne uploads *image.RGBA
+// pixel data directly, so this is also what a visible tile pins in memory.
+func imageBytes(img *image.RGBA) int64 {
+	if img == nil {
+		return 0
+	}
+	b := img.Bounds()
+	return int64(b.Dx()) * int64(b.Dy()) * 4
 }
