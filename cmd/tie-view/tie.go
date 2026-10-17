@@ -17,6 +17,7 @@ import (
 	"github.com/uidbz/tie/io/getlib"
 
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/internal/httpx"
 	"github.com/uidbz/tie-gui/tiethumb"
 )
 
@@ -130,7 +131,7 @@ func (t *tieReader) DisplayName() string {
 
 func (t *tieReader) httpClient() *http.Client {
 	if t.client == nil {
-		t.client = client.HTTPClientFor(t.host)
+		t.client = httpx.Bulk(t.host)
 	}
 	return t.client
 }
@@ -335,7 +336,7 @@ func (a *archiveMemberReader) GetReader() (io.ReadSeeker, error) {
 // once and shared across the member readers.
 func browseTieArchive(viewer *gallery.Gallery, host client.FileHost, hash string) {
 	viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		r, err := getlib.ReadFile(client.HTTPClientFor(host), host.URL, hash)
+		r, err := getlib.ReadFile(httpx.Bulk(host), host.URL, hash)
 		if err != nil {
 			fmt.Println("Error fetching archive", hash, ":", err)
 			return nil

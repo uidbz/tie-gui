@@ -23,6 +23,7 @@ import (
 	"github.com/uidbz/tie/metadata/tag"
 
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/internal/httpx"
 )
 
 // archiveCoverEdge is the pixel width a cover extracted from an archive is
@@ -81,7 +82,7 @@ func (s *Session) resolveArchive(a Album, host client.FileHost) ([]Track, error)
 		return nil, fmt.Errorf("listing archive members: %w", err)
 	}
 
-	pc := putlib.PutConfig{Client: client.HTTPClientFor(host), Store: host.Store}
+	pc := putlib.PutConfig{Client: httpx.Bulk(host), Store: host.Store}
 
 	// memberTrack keeps the member's directory alongside its track so the
 	// sort below can keep multi-disc archives (one subdirectory per disc)

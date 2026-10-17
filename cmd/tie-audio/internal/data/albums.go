@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/uidbz/tie/client"
+
+	"github.com/uidbz/tie-gui/internal/httpx"
 	"github.com/uidbz/tie/io/getlib"
 	"github.com/uidbz/tie/metadata/tag"
 )
@@ -117,7 +119,7 @@ func (s *Session) StreamURL(hash string) string {
 
 func (s *Session) fetchBlob(hash string) ([]byte, error) {
 	h := s.Host()
-	r, err := getlib.ReadFile(client.HTTPClientFor(h), h.URL, hash)
+	r, err := getlib.ReadFile(httpx.Bulk(h), h.URL, hash)
 	if err != nil {
 		return nil, err
 	}
