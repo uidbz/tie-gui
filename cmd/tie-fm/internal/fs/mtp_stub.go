@@ -27,8 +27,8 @@ type MTPFS struct{}
 
 func NewMTPFS(*MTPManager) *MTPFS { return &MTPFS{} }
 
-func (f *MTPFS) Scheme() string                    { return "mtp" }
-func (f *MTPFS) List(string) ([]Entry, error)      { return nil, errMTPUnsupported }
-func (f *MTPFS) Materialize(Entry) (string, error) { return "", errMTPUnsupported }
+func (f *MTPFS) Scheme() string                      { return "mtp" }
+func (f *MTPFS) List(string) ([]Entry, error)        { return nil, errMTPUnsupported }
+func (f *MTPFS) Materialize(Entry) (string, error)   { return "", errMTPUnsupported }
 func (f *MTPFS) Import(string, string, string) error { return errMTPUnsupported }
-func (f *MTPFS) Mkdir(string, string) error        { return errMTPUnsupported }
+func (f *MTPFS) Mkdir(string, string) error          { return errMTPUnsupported }

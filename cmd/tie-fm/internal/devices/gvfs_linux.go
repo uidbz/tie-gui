@@ -66,16 +66,16 @@ type gvfsVolumeRec struct {
 
 // (ssssbbbbbbbbuasa{ss}sa{sv})
 type gvfsDriveRec struct {
-	ID            string
-	Name          string
-	GIcon         string
-	SymbolicGIcon string
+	ID                             string
+	Name                           string
+	GIcon                          string
+	SymbolicGIcon                  string
 	B1, B2, B3, B4, B5, B6, B7, B8 bool
-	U             uint32
-	VolumeIDs     []string
-	Identifiers   map[string]string
-	SortKey       string
-	Expansion     map[string]dbus.Variant
+	U                              uint32
+	VolumeIDs                      []string
+	Identifiers                    map[string]string
+	SortKey                        string
+	Expansion                      map[string]dbus.Variant
 }
 
 // (ssssssbsassa{sv})

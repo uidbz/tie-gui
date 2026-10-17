@@ -442,14 +442,14 @@ type TagSelection struct {
 	// leaves it false so focus is released and window-level gallery hotkeys
 	// keep working after a tag is picked.
 	KeepSearchFocus bool
-	starredSet   map[string]bool // tags whose star button shows ★
-	tags         *tagindex.Index
-	selectedList *AutoExpandingList
-	quickPickList *AutoExpandingList
-	listLabel     *widget.Label
-	content       fyne.CanvasObject
-	search        *SearchItem
-	window        fyne.Window
+	starredSet      map[string]bool // tags whose star button shows ★
+	tags            *tagindex.Index
+	selectedList    *AutoExpandingList
+	quickPickList   *AutoExpandingList
+	listLabel       *widget.Label
+	content         fyne.CanvasObject
+	search          *SearchItem
+	window          fyne.Window
 
 	// OnMinSizeChanged, when non-nil, is called on the UI goroutine whenever
 	// the widget's MinSize may have changed (search dropdown opened/closed,

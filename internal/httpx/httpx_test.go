@@ -23,7 +23,7 @@ func TestTimeoutsAreSet(t *testing.T) {
 	}{
 		{"Small", Small(host), SmallTimeout},
 		{"Bulk", Bulk(host), BulkTimeout},
-		{"WithTimeout", WithTimeout(host, 3 * time.Second), 3 * time.Second},
+		{"WithTimeout", WithTimeout(host, 3*time.Second), 3 * time.Second},
 	} {
 		if tc.c.Timeout != tc.want {
 			t.Errorf("%s: Timeout = %v, want %v", tc.name, tc.c.Timeout, tc.want)

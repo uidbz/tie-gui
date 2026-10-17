@@ -49,10 +49,10 @@ type Video struct {
 	// new state back via SetFullscreen.
 	OnFullscreen func()
 
-	stop         chan struct{}
-	seeking      bool          // true while the user drags the slider, to suppress feedback
-	settingSeek  bool          // true while the ticker programmatically updates the slider
-	frameReady   chan struct{} // signals when a new frame is ready for display
+	stop        chan struct{}
+	seeking     bool          // true while the user drags the slider, to suppress feedback
+	settingSeek bool          // true while the ticker programmatically updates the slider
+	frameReady  chan struct{} // signals when a new frame is ready for display
 }
 
 // NewVideo returns a Video widget backed by the given controller.

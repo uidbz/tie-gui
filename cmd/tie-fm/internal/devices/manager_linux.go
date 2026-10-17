@@ -17,10 +17,10 @@ const mtpPoll = 2 * time.Second
 
 // Manager coalesces udisks2 block devices and MTP devices into one live list.
 type Manager struct {
-	mtp     *fs.MTPManager
-	udisks  *udisksClient
-	udErr   error
-	gvfs    *gvfsClient
+	mtp      *fs.MTPManager
+	udisks   *udisksClient
+	udErr    error
+	gvfs     *gvfsClient
 	OnChange func()
 
 	mu         sync.Mutex

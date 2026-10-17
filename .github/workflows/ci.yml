@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Every job below is the cheapest possible version of what docs/code-review.md
+# found: none of the CRITICAL or HIGH issues (uidbz/tie-gui#2-#10) would have
+# survived `make check`.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Fyne's GL/X11 backend plus the libmpv headers mpvplayer links against.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev xorg-dev libxkbcommon-dev libmpv-dev
+
+      - run: make vet
+      - run: make fmtcheck
+      - run: make race
+
+  # The apps build without libmpv too (video falls back to external players);
+  # keep that configuration compiling.
+  nompv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev xorg-dev libxkbcommon-dev
+      - run: go build -tags nompv ./...
+      - run: go test -tags nompv ./...

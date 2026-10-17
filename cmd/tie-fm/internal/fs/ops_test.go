@@ -3,9 +3,9 @@ package fs
 import (
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"io/fs"
 	"strings"
 	"sync"
 	"testing"
