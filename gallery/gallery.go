@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mholt/archives"
 
@@ -139,10 +140,22 @@ type Gallery struct {
 	scroll            *container.Scroll
 	savedScrollOffset fyne.Position
 	hotkeys           []Hotkey
-	loading           sync.WaitGroup
-	galleryLoaded     bool
-	config            Config
-	bottomBar         *fyne.Container
+	// fetchMu guards fetchCount and fetchIdle, which track in-flight listing
+	// reads (ReadCustom, ReadImageDir, ReadImageArchive and ReadCustomAsync's
+	// fetch). A sync.WaitGroup would express the same thing, but its rule that
+	// Add must not race with a Wait at a zero counter is easy to break here:
+	// the waits now run on background goroutines while the Adds stay on the UI
+	// goroutine.
+	fetchMu    sync.Mutex
+	fetchCount int
+	fetchIdle  []chan struct{}
+	// placeSeq numbers page placements. A LoadGallery that has already been
+	// superseded by a newer one skips its placement entirely instead of
+	// laying out a page the user has moved past.
+	placeSeq      atomic.Uint64
+	galleryLoaded bool
+	config        Config
+	bottomBar     *fyne.Container
 	// bottomRow is the bottom bar composed with its side buttons, and
 	// mainBorder the Border giving it its space: a single-page gallery hides
 	// the pagination links, and the whole row when no side buttons remain,
@@ -653,26 +666,113 @@ func (viewer *Gallery) ToggleLabels() {
 	}
 }
 
+// beginFetch and endFetch bracket a listing read. Every read builds its list
+// locally and swaps it in, so a concurrent reader never sees a half-built list;
+// the count exists so a page placement can wait for the read it depends on.
+func (viewer *Gallery) beginFetch() {
+	viewer.fetchMu.Lock()
+	viewer.fetchCount++
+	viewer.fetchMu.Unlock()
+}
+
+func (viewer *Gallery) endFetch() {
+	viewer.fetchMu.Lock()
+	viewer.fetchCount--
+	if viewer.fetchCount == 0 {
+		for _, ch := range viewer.fetchIdle {
+			close(ch)
+		}
+		viewer.fetchIdle = nil
+	}
+	viewer.fetchMu.Unlock()
+}
+
+// fetchPending reports whether a listing read is in flight. The answer is a
+// moment stale by nature; it only selects the fast path from the slow one.
+func (viewer *Gallery) fetchPending() bool {
+	viewer.fetchMu.Lock()
+	defer viewer.fetchMu.Unlock()
+	return viewer.fetchCount > 0
+}
+
+// waitFetches blocks until no listing read is in flight. It must not run on
+// the UI goroutine — that is the whole point of it.
+func (viewer *Gallery) waitFetches() {
+	viewer.fetchMu.Lock()
+	if viewer.fetchCount == 0 {
+		viewer.fetchMu.Unlock()
+		return
+	}
+	ch := make(chan struct{})
+	viewer.fetchIdle = append(viewer.fetchIdle, ch)
+	viewer.fetchMu.Unlock()
+	<-ch
+}
+
+// LoadGallery lays out the current page of the current image list.
+//
+// It never blocks the caller. A listing fetch that is still in flight
+// (ReadCustomAsync, ReadImageArchive) used to be waited for here with
+// loading.Wait(), and the queue drain below waited for in-flight thumbnail
+// loads — both from the UI goroutine, because LoadGallery is called from click
+// handlers, pagination links and tag selections. One stalled triplestore or
+// filehost therefore froze the window: the click did nothing, repainting
+// stopped, and there was no cancel. Now the waits happen on a helper goroutine
+// and the placement itself on the placement goroutine, so the click returns
+// immediately and the stale page stays on screen until the new one is ready.
 func (viewer *Gallery) LoadGallery() {
-	viewer.loading.Wait()
-	// Snapshot the slice header and page offset on the calling (UI)
-	// goroutine: a later tag query swaps viewer.imageFiles from its own
-	// goroutine and ChangeGallery/ChangePage rewrite layout.offset, so
-	// reading either inside the spawned goroutine would race with them.
-	imageFiles, offset := viewer.imageFiles, viewer.layout.offset
-	viewer.layout.placement.Add(1)
-	go func() {
-		defer viewer.layout.placement.Done()
-		viewer.layout.placeTiles(imageFiles, offset)
-	}()
-	viewer.buildPagination()
-	viewer.galleryLoaded = true
 	// A fresh gallery view (new page, new directory, new query) starts at
 	// the top; showGallery's tile-tracking restore is the only path that
 	// scrolls anywhere else.
 	if viewer.scroll != nil {
 		viewer.scroll.ScrollToOffset(fyne.NewPos(0, 0))
 	}
+	viewer.startPlacement()
+}
+
+// startPlacement queues one page placement, superseding any placement queued
+// by an earlier call.
+func (viewer *Gallery) startPlacement() {
+	seq := viewer.placeSeq.Add(1)
+	if !viewer.fetchPending() {
+		viewer.placeNow(seq)
+		return
+	}
+	// A listing fetch is in flight and its result is the page we want to
+	// place. Waiting for it on this goroutine would freeze the UI, so wait on
+	// a helper and come back on the UI goroutine, where the image list and
+	// page offset are snapshotted — they are only ever written from there.
+	go func() {
+		viewer.waitFetches()
+		fyne.Do(func() { viewer.placeNow(seq) })
+	}()
+}
+
+// placeNow snapshots the page on the UI goroutine and hands the layout work to
+// the placement goroutine. seq is the placement generation this call was
+// queued under.
+func (viewer *Gallery) placeNow(seq uint64) {
+	if seq != viewer.placeSeq.Load() {
+		return // superseded: a newer LoadGallery owns the next placement
+	}
+	// Snapshot the slice header and page offset on the UI goroutine: a later
+	// tag query swaps viewer.imageFiles and ChangeGallery/ChangePage rewrite
+	// layout.offset, so reading either inside the spawned goroutine would
+	// race with them.
+	imageFiles, offset := viewer.imageFiles, viewer.layout.offset
+	viewer.buildPagination()
+	viewer.galleryLoaded = true
+	viewer.layout.placement.Add(1)
+	go func() {
+		defer viewer.layout.placement.Done()
+		// Discard the previous page's queued work and wait for its in-flight
+		// loads. Both used to happen in ChangeGallery/ChangePage, on the UI
+		// goroutine. Here they cost a background goroutine some time, and the
+		// tileUpdater's Info guard drops any late result from the old page.
+		viewer.layout.drainPending()
+		viewer.layout.currentlyLoading.Wait()
+		viewer.layout.placeTiles(imageFiles, offset)
+	}()
 }
 
 // Loaded reports whether the grid has been laid out at least once
@@ -705,16 +805,11 @@ func (viewer *Gallery) RemoveItem(info *ImageInfo) {
 	}
 }
 
+// ChangeGallery re-lays out the grid after the image list was replaced (a new
+// query, a new directory). The previous page's queued and in-flight thumbnail
+// work is discarded by the placement goroutine, not here, so this returns
+// immediately even while a fetch is running.
 func (viewer *Gallery) ChangeGallery() {
-	// empty channel before changing page, then wait for workers to finish.
-	// Each drained item was Add()ed in PlaceTiles, so it must be Done here
-	// (workers never see it).
-	for len(viewer.layout.imagesToLoad) > 0 {
-		<-viewer.layout.imagesToLoad
-		viewer.layout.currentlyLoading.Done()
-	}
-	viewer.layout.currentlyLoading.Wait()
-
 	viewer.currentPage = 0
 	viewer.layout.offset = 0
 	// The image list was replaced; any remembered open entry no longer
@@ -724,19 +819,12 @@ func (viewer *Gallery) ChangeGallery() {
 	viewer.window.SetContent(viewer.Content)
 }
 
+// ChangePage shows page page of the current list. Like ChangeGallery it does
+// not wait for the previous page's transfers.
 func (viewer *Gallery) ChangePage(page int) {
 	if page < 0 || page > viewer.maxPages-1 {
 		return
 	}
-	// empty channel before changing page, then wait for workers to finish.
-	// Each drained item was Add()ed in PlaceTiles, so it must be Done here
-	// (workers never see it).
-	for len(viewer.layout.imagesToLoad) > 0 {
-		<-viewer.layout.imagesToLoad
-		viewer.layout.currentlyLoading.Done()
-	}
-	viewer.layout.currentlyLoading.Wait()
-
 	viewer.currentPage = page
 	viewer.layout.offset = page * viewer.config.General.ImagesPerPage
 	viewer.LoadGallery()
@@ -818,7 +906,9 @@ func (viewer *Gallery) SaveImage() {
 }
 
 func (viewer *Gallery) NextImage() *ImageInfo {
-	viewer.loading.Wait()
+	// No wait for in-flight listing reads: every read builds its list locally
+	// and swaps the slice in, so the list is never half-built. Waiting here
+	// used to freeze the arrow keys and swipes behind a stalled tie query.
 	if len(viewer.imageFiles) == 0 {
 		return nil
 	}
@@ -830,7 +920,6 @@ func (viewer *Gallery) NextImage() *ImageInfo {
 }
 
 func (viewer *Gallery) PrevImage() *ImageInfo {
-	viewer.loading.Wait()
 	if len(viewer.imageFiles) == 0 {
 		return nil
 	}
@@ -1144,8 +1233,8 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 // }
 
 func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
-	viewer.loading.Add(1)
-	defer viewer.loading.Done()
+	viewer.beginFetch()
+	defer viewer.endFetch()
 
 	viewer.currentPath = absolutePath
 	dir, _ := os.ReadDir(absolutePath)
@@ -1336,8 +1425,8 @@ type CoverProvider interface {
 }
 
 func (viewer *Gallery) ReadCustom(readers []CustomReader) {
-	viewer.loading.Add(1)
-	defer viewer.loading.Done()
+	viewer.beginFetch()
+	defer viewer.endFetch()
 
 	// Build into a local slice and swap, so overlapping tie queries can't
 	// interleave appends into viewer.imageFiles (last query wins).
@@ -1381,15 +1470,17 @@ func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 }
 
 // ReadCustomAsync replaces the viewer's images with the readers produced by
-// fetch, which runs in a goroutine. LoadGallery blocks until fetch and the
-// swap have completed. A nil result from fetch (e.g. after it logged an
-// error) leaves the current images untouched.
+// fetch, which runs in a goroutine. A LoadGallery queued right after this call
+// defers its page placement until fetch and the swap have completed, without
+// blocking the caller. A nil result from fetch (e.g. after it logged an error)
+// leaves the current images untouched.
 func (viewer *Gallery) ReadCustomAsync(fetch func() []CustomReader) {
-	// Add before spawning the goroutine so LoadGallery's loading.Wait()
-	// actually blocks until the query results have been turned into images.
-	viewer.loading.Add(1)
+	// Count before spawning the goroutine, so a LoadGallery queued right after
+	// this call knows a listing is on its way and defers its placement until
+	// the query results have been turned into images.
+	viewer.beginFetch()
 	go func() {
-		defer viewer.loading.Done()
+		defer viewer.endFetch()
 		readers := fetch()
 		if readers == nil {
 			return
@@ -1400,8 +1491,8 @@ func (viewer *Gallery) ReadCustomAsync(fetch func() []CustomReader) {
 }
 
 func (viewer *Gallery) ReadImageArchive(zipFile string) {
-	viewer.loading.Add(1)
-	defer viewer.loading.Done()
+	viewer.beginFetch()
+	defer viewer.endFetch()
 
 	// Pass only the filename (nil stream): the library manages its own file
 	// handles, so the returned FS stays usable after this function returns.

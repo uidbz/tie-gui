@@ -181,6 +181,25 @@ func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
 // offset snapshotted on the UI goroutine: layout.offset is written there
 // (ChangeGallery, ChangePage), so reading it here would race a newer
 // placement.
+// drainPending discards the work still queued for a page that has been
+// replaced. Each queued item was Add()ed to currentlyLoading when it was
+// enqueued, so it must be Done() here — the workers will never see it.
+//
+// This is deliberately non-blocking: it only takes what is already sitting in
+// the buffer. Waiting for the loads already in flight is the caller's next
+// step, and it belongs on a background goroutine.
+func (layout *TileLayout) drainPending() {
+	for {
+		select {
+		case <-layout.imagesToLoad:
+			layout.currentlyLoading.Done()
+			continue
+		default:
+			return
+		}
+	}
+}
+
 func (layout *TileLayout) placeTiles(imageFiles []*ImageInfo, offset int) {
 	// Serialize overlapping placements (rapid page taps, re-sorts): the
 	// last placement's install is queued last, so it wins deterministically

@@ -3,8 +3,8 @@ package gallery
 import (
 	"bytes"
 	"encoding/binary"
-	"hash/crc32"
 	"errors"
+	"hash/crc32"
 	"image"
 	"image/png"
 	"testing"
