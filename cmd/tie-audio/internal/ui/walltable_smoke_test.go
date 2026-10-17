@@ -18,6 +18,8 @@ import (
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/uidbz/tie/client"
+
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/widget/tablewidget"
@@ -101,7 +103,7 @@ func ensureSmokeAlbums(t *testing.T, s *data.Session) {
 		t.Fatal("smoke album import:", err)
 	}
 	for _, dir := range []string{one, two} {
-		if err := s.Tie.ImportDir(dir, host, s.Tie.Config.DefaultCollection, "audio-dir", []string{smokeTag}, "", 0); err != nil {
+		if err := s.Tie.ImportDir(dir, host, "audio-dir", []string{smokeTag}, "", client.TieUnknownFile); err != nil {
 			t.Fatal("smoke album import:", err)
 		}
 	}

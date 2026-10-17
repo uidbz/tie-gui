@@ -379,7 +379,7 @@ const (
 // tie-types to unknown-file); the media type is the fallback discriminator
 // for image files without a clean tie-type (see isImageFile).
 func classifyTieRow(row client.Row) tieRowKind {
-	types := client.RowValues(row, client.TieTypeProperty.String())
+	types := client.RowValues(row, client.RelType)
 	if slices.Contains(types, client.TieImageDir.String()) {
 		return tieRowDir
 	}
@@ -388,7 +388,7 @@ func classifyTieRow(row client.Row) tieRowKind {
 			return tieRowArchive
 		}
 	}
-	mediaType := client.RowFirst(row, client.TieMediaType.String())
+	mediaType := client.RowFirst(row, client.RelMediaType)
 	if isRaw(mediaType, client.RowFirst(row, "filename")) {
 		return tieRowSkip
 	}
@@ -412,7 +412,7 @@ func classifyTieRow(row client.Row) tieRowKind {
 func latestFromTie(viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID)) {
 	spec := client.QuerySpec{
 		Terms:   []string{client.TieImageFile.String()},
-		Filter:  client.TieTypeProperty.String(),
+		Filter:  string(client.RelType),
 		Reverse: true,
 		Expand:  true,
 		Limit:   -1,
@@ -596,7 +596,7 @@ type galleryFilter struct {
 func queryGallery(viewer *gallery.Gallery, tc *client.TieClient, gf galleryFilter, browseDir func(client.DirUID)) {
 	spec := client.QuerySpec{Reverse: true, Expand: true, Limit: -1}
 	imageScope := client.TieImageFile.String()
-	tieType := client.TieTypeProperty.String()
+	tieType := string(client.RelType)
 	switch {
 	case gf.untaggedOnly:
 		spec.Terms = []string{imageScope}

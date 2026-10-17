@@ -18,6 +18,7 @@ import (
 	"github.com/disintegration/imaging"
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/io/archivelib"
+	"github.com/uidbz/tie/io/fhclient"
 	"github.com/uidbz/tie/io/putlib"
 	"github.com/uidbz/tie/metadata/tag"
 )
@@ -234,7 +235,7 @@ func ensureBlob(pc putlib.PutConfig, host client.FileHost, hash string, data []b
 	if ok {
 		return nil
 	}
-	item := pc.UploadMultipart(host.URL+"/upload/"+hash, bytes.NewReader(data), len(data), name)
+	item := pc.UploadMultipart(fhclient.New(host.URL, pc.Client), hash, bytes.NewReader(data), len(data), name)
 	if item.ErrorMsg != "" {
 		return errors.New(item.ErrorMsg)
 	}

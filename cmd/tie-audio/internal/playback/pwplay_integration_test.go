@@ -19,6 +19,7 @@ import (
 	"time"
 
 	pwclient "github.com/uidbz/pwplay/client"
+	"github.com/uidbz/tie/io/fhclient"
 	"github.com/uidbz/tie/io/putlib"
 )
 
@@ -60,7 +61,7 @@ func putBlob(t *testing.T, data []byte) string {
 	if resp.StatusCode == http.StatusOK {
 		return hash
 	}
-	item := pc.UploadMultipart(realFilehostURL+"/upload/"+hash, bytes.NewReader(data), len(data), "track")
+	item := pc.UploadMultipart(fhclient.New(realFilehostURL, pc.Client), hash, bytes.NewReader(data), len(data), "track")
 	if item.ErrorMsg != "" {
 		t.Fatal(item.ErrorMsg)
 	}

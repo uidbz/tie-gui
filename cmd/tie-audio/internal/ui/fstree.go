@@ -323,9 +323,9 @@ func (t *tieFSTree) subTitle(uid client.DirUID, fallback string) string {
 	}
 	title := ""
 	if row, err := t.page.session.Tie.Get(string(uid)); err == nil {
-		title = client.RowFirst(row, client.TieAlbum.String())
+		title = client.RowFirst(row, client.RelAlbum)
 		if title == "" {
-			title = client.RowFirst(row, client.TieName.String())
+			title = client.RowFirst(row, client.RelName)
 		}
 	}
 	t.mu.Lock()

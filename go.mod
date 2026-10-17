@@ -1,6 +1,6 @@
 module github.com/uidbz/tie-gui
 
-go 1.25.0
+go 1.27.2
 
 require (
 	fyne.io/fyne/v2 v2.8.0
@@ -14,7 +14,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.1
 	github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6
 	github.com/uidbz/pwplay v0.3.1
-	github.com/uidbz/tie v0.6.0
+	github.com/uidbz/tie v0.7.0
 )
 
 require (
@@ -80,7 +80,7 @@ require (
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

@@ -705,14 +705,14 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			ts.SetListLabel("Loading…")
 		})
 		go func() {
-			row, err := tc.Get(client.TieTags.String())
+			row, err := tc.Get(string(client.RelTags))
 			if err != nil {
 				fmt.Println("Error getting tags:", err)
 				fyne.Do(func() { ts.SetListLabel("Error loading tags") })
 				return
 			}
 			fyne.Do(func() {
-				allTags = client.RowValues(row, client.TieAll.String())
+				allTags = client.RowValues(row, client.RelAll)
 				for _, tag := range allTags {
 					ts.AddTag(tag)
 				}
@@ -720,7 +720,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 				// relation; applyFavoritesView substitutes "every tag" for
 				// the quick-pick list when no favorites are configured, so
 				// the sidebar isn't empty until something is typed.
-				starred = client.RowValues(row, client.TieFavorite.String())
+				starred = client.RowValues(row, client.RelFavorite)
 				sort.Strings(starred)
 				ts.SetStarred(starred)
 				applyFavoritesView()

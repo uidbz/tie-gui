@@ -252,8 +252,8 @@ func (s *Session) memberCoverHash(uid string) string {
 	for _, r := range rows {
 		files = append(files, client.File{
 			Uid:       r.Key,
-			Filename:  client.RowFirst(r, client.TieFilename.String()),
-			MediaType: client.RowFirst(r, client.TieMediaType.String()),
+			Filename:  client.RowFirst(r, client.RelFilename),
+			MediaType: client.RowFirst(r, client.RelMediaType),
 			TieType:   client.StringToTieType(firstImageType(r)),
 		})
 	}
@@ -262,7 +262,7 @@ func (s *Session) memberCoverHash(uid string) string {
 }
 
 func firstImageType(r client.Row) string {
-	if slices.Contains(client.RowValues(r, client.TieTypeProperty.String()), client.TieImageFile.String()) {
+	if slices.Contains(client.RowValues(r, client.RelType), client.TieImageFile.String()) {
 		return client.TieImageFile.String()
 	}
 	return ""
@@ -309,10 +309,10 @@ func firstTrackHash(dir client.Directory) string {
 // isAudioRow reports whether a subject's triples mark it an audio file, using
 // the raw multi-valued tie-type (a collapsed single TieType is unreliable).
 func isAudioRow(row client.Row) bool {
-	if slices.Contains(client.RowValues(row, client.TieTypeProperty.String()), client.TieAudioFile.String()) {
+	if slices.Contains(client.RowValues(row, client.RelType), client.TieAudioFile.String()) {
 		return true
 	}
-	return strings.HasPrefix(client.RowFirst(row, client.TieMediaType.String()), "audio/")
+	return strings.HasPrefix(client.RowFirst(row, client.RelMediaType), "audio/")
 }
 
 // trackEmbeddedCover fetches a track's blob and returns its first embedded
@@ -343,15 +343,15 @@ func isImageFile(f client.File) bool {
 // set. One Get fetches both relations (matching tie-view). A store with no
 // tags yields empty lists, not an error.
 func (s *Session) TagSets() (all, favorites []string, err error) {
-	row, err := s.Tie.Get(client.TieTags.String())
+	row, err := s.Tie.Get(string(client.RelTags))
 	if errors.Is(err, client.ErrNotFound) {
 		return nil, nil, nil
 	}
 	if err != nil {
 		return nil, nil, err
 	}
-	all = client.RowValues(row, client.TieAll.String())
-	favorites = client.RowValues(row, client.TieFavorite.String())
+	all = client.RowValues(row, client.RelAll)
+	favorites = client.RowValues(row, client.RelFavorite)
 	sort.Strings(favorites)
 	return all, favorites, nil
 }
@@ -409,7 +409,7 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 	innerParents := make(map[string][]string)
 	for _, row := range rows {
 		if isPlainDirRow(row) {
-			innerParents[row.Key] = client.RowValues(row, client.TieParent.String())
+			innerParents[row.Key] = client.RowValues(row, client.RelParent)
 		}
 	}
 	for _, row := range rows {
@@ -417,12 +417,12 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 		if !ok {
 			continue
 		}
-		parents := client.RowValues(row, client.TieParent.String())
+		parents := client.RowValues(row, client.RelParent)
 		if a.Kind == AlbumTrack {
 			// member-of names the owning collection directly; disc folders
 			// resolve one level up.
 			parents = append(parents, client.RowValues(row, client.RelMemberOf)...)
-			for _, p := range client.RowValues(row, client.TieParent.String()) {
+			for _, p := range client.RowValues(row, client.RelParent) {
 				parents = append(parents, innerParents[p]...)
 			}
 		}
@@ -430,9 +430,9 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 		switch a.Kind {
 		case AlbumDir, AlbumPlaylist:
 			dirUIDs[a.UID] = true
-			ownAlbum = client.RowFirst(row, client.TieAlbum.String())
+			ownAlbum = client.RowFirst(row, client.RelAlbum)
 		case AlbumTrack:
-			trackAlbum := client.RowFirst(row, client.TieAlbum.String())
+			trackAlbum := client.RowFirst(row, client.RelAlbum)
 			for _, p := range parents {
 				if trackAlbum != "" && childAlbum[p] == "" {
 					childAlbum[p] = trackAlbum
@@ -489,7 +489,7 @@ func (s *Session) LatestAlbumsExcluding(exclude []string) ([]Album, error) {
 	for _, tieType := range []string{client.TieAudioDir.String(), client.TieAudioArchive.String()} {
 		r, _, err := s.Tie.Query(client.QuerySpec{
 			Terms:   []string{tieType},
-			Filter:  client.TieTypeProperty.String(),
+			Filter:  string(client.RelType),
 			Reverse: true,
 			Expand:  true,
 			Limit:   -1,
@@ -519,7 +519,7 @@ func (s *Session) LatestAlbumsExcluding(exclude []string) ([]Album, error) {
 // isPlainDirRow reports whether row is a directory node without a
 // collection label (a disc folder, artwork/, …).
 func isPlainDirRow(row client.Row) bool {
-	types := client.RowValues(row, client.TieTypeProperty.String())
+	types := client.RowValues(row, client.RelType)
 	if !slices.Contains(types, client.TieDirectory.String()) {
 		return false
 	}
@@ -542,27 +542,27 @@ func hasAnyTag(row client.Row, tags []string) bool {
 }
 
 func classifyAlbum(row client.Row) (Album, bool) {
-	types := client.RowValues(row, client.TieTypeProperty.String())
+	types := client.RowValues(row, client.RelType)
 	a := Album{
 		UID: row.Key,
 		Title: firstNonEmpty(
-			client.RowFirst(row, client.TieAlbum.String()),
-			client.RowFirst(row, client.TieName.String()),
-			client.RowFirst(row, client.TieFilename.String()),
+			client.RowFirst(row, client.RelAlbum),
+			client.RowFirst(row, client.RelName),
+			client.RowFirst(row, client.RelFilename),
 		),
 		Artist: firstNonEmpty(
 			client.RowFirst(row, client.RelAlbumArtist),
-			client.RowFirst(row, client.TieArtist.String()),
+			client.RowFirst(row, client.RelArtist),
 		),
-		Year:      client.RowFirst(row, client.TieYear.String()),
+		Year:      client.RowFirst(row, client.RelYear),
 		ThumbHash: client.RowFirst(row, "thumbnail"),
 		Genres:    client.RowValues(row, client.RelGenre),
-		Tags:      client.RowValues(row, client.TieTag.String()),
+		Tags:      client.RowValues(row, client.RelTag),
 		Stats:     client.StatsFromRow(row),
 	}
 	a.AddedAt, _ = client.ParseMediaTime(client.RowFirst(row, client.RelAddedAt))
 	if a.AddedAt.IsZero() {
-		a.AddedAt, _ = client.ParseMediaTime(client.RowFirst(row, client.TieTagDate.String()))
+		a.AddedAt, _ = client.ParseMediaTime(client.RowFirst(row, client.RelTagDate))
 	}
 	a.TrackCount, _ = strconv.Atoi(client.RowFirst(row, client.RelTrackCount))
 	a.Duration, _ = strconv.ParseFloat(client.RowFirst(row, client.RelDuration), 64)
@@ -580,11 +580,11 @@ func classifyAlbum(row client.Row) (Album, bool) {
 	case slices.Contains(types, client.TieAudioFile.String()):
 		a.Kind = AlbumTrack
 		if a.Title == "" {
-			a.Title = client.RowFirst(row, client.TieTitle.String())
+			a.Title = client.RowFirst(row, client.RelTitle)
 		}
 		return a, true
 	}
-	if strings.HasPrefix(client.RowFirst(row, client.TieMediaType.String()), "audio/") {
+	if strings.HasPrefix(client.RowFirst(row, client.RelMediaType), "audio/") {
 		a.Kind = AlbumTrack
 		return a, true
 	}
@@ -775,13 +775,13 @@ func (s *Session) TrackForHash(hash string) (Track, bool) {
 // parent of every track it lists, but not their album).
 func trackFromRow(row client.Row, excludeParent string) Track {
 	t := Track{Hash: row.Key}
-	t.Title = client.RowFirst(row, client.TieTitle.String())
-	t.Artist = client.RowFirst(row, client.TieArtist.String())
-	t.Album = client.RowFirst(row, client.TieAlbum.String())
-	t.Year = client.RowFirst(row, client.TieYear.String())
-	t.Filename = client.RowFirst(row, client.TieFilename.String())
-	t.AlbumUID = trackAlbumUID(client.RowValues(row, client.TieParent.String()), excludeParent)
-	if n, err := strconv.Atoi(client.RowFirst(row, client.TieTrack.String())); err == nil {
+	t.Title = client.RowFirst(row, client.RelTitle)
+	t.Artist = client.RowFirst(row, client.RelArtist)
+	t.Album = client.RowFirst(row, client.RelAlbum)
+	t.Year = client.RowFirst(row, client.RelYear)
+	t.Filename = client.RowFirst(row, client.RelFilename)
+	t.AlbumUID = trackAlbumUID(client.RowValues(row, client.RelParent), excludeParent)
+	if n, err := strconv.Atoi(client.RowFirst(row, client.RelTrack)); err == nil {
 		t.TrackNo = n
 	}
 	if n, err := strconv.Atoi(client.RowFirst(row, client.RelDisc)); err == nil {
@@ -852,8 +852,8 @@ func (s *Session) discFolderAlbum(uid string) string {
 	}
 	s.discMu.Unlock()
 	up := ""
-	if row, err := s.Tie.Get(uid); err == nil && client.RowHas(row, client.TieTypeProperty.String(), client.TypeDisc) {
-		up = client.RowFirst(row, client.TieParent.String())
+	if row, err := s.Tie.Get(uid); err == nil && client.RowHas(row, client.RelType, client.TypeDisc) {
+		up = client.RowFirst(row, client.RelParent)
 	}
 	s.discMu.Lock()
 	if s.discUp == nil {

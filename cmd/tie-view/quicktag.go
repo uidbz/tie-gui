@@ -426,7 +426,7 @@ func (b *quickTagBar) toggle(tag string) {
 		if on {
 			_, err = b.tc.Add(hash, "tag", tag)
 			if err == nil && register {
-				if _, rerr := b.tc.Add(client.TieTags.String(), client.TieAll.String(), tag); rerr != nil {
+				if _, rerr := b.tc.Add(string(client.RelTags), string(client.RelAll), tag); rerr != nil {
 					fmt.Printf("quicktag: error registering tag %q: %v\n", tag, rerr)
 				}
 			}

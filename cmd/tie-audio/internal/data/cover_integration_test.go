@@ -20,7 +20,7 @@ func importCoverFile(t *testing.T, s *Session, cfg client.Config, uid client.Dir
 	if err := os.WriteFile(dst, data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Tie.ImportFile(dst, cfg.FileHosts["default"], cfg.Collection, nil, uid, client.TieUnknownFile); err != nil {
+	if err := s.Tie.ImportFile(dst, cfg.FileHosts["default"], nil, uid, client.TieUnknownFile); err != nil {
 		t.Fatalf("importing %s: %v", name, err)
 	}
 	return hashOf(t, data)

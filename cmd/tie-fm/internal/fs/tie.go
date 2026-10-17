@@ -173,7 +173,7 @@ func (t *TieFS) importFile(destDir, srcPath, name string, tags []string, progres
 	if err != nil {
 		return err
 	}
-	hash, err := t.tc.WriteFileWithProgress(host, "", uid, name, srcPath, tags, progress)
+	hash, err := t.tc.WriteFileWithProgress(host, uid, name, srcPath, tags, progress)
 	if err != nil {
 		return err
 	}
@@ -197,42 +197,42 @@ func writeAudioMetadata(tc *client.TieClient, hash, srcPath string) error {
 	}
 	batch := tc.NewBatch()
 	if m.Title != "" {
-		batch.Add(hash, client.TieTitle.String(), m.Title)
+		batch.Add(hash, string(client.RelTitle), m.Title)
 	}
 	if m.Artist != "" {
-		batch.Add(hash, client.TieArtist.String(), m.Artist)
+		batch.Add(hash, string(client.RelArtist), m.Artist)
 	}
 	if m.AlbumArtist != "" {
 		batch.Add(hash, "album-artist", m.AlbumArtist)
 	}
 	if m.Album != "" {
-		batch.Add(hash, client.TieAlbum.String(), m.Album)
+		batch.Add(hash, string(client.RelAlbum), m.Album)
 	}
 	if m.Year != 0 {
-		batch.Add(hash, client.TieYear.String(), strconv.Itoa(m.Year))
+		batch.Add(hash, string(client.RelYear), strconv.Itoa(m.Year))
 	}
 	if m.Track != 0 {
-		batch.Add(hash, client.TieTrack.String(), strconv.Itoa(m.Track))
+		batch.Add(hash, string(client.RelTrack), strconv.Itoa(m.Track))
 	}
 	if m.Duration > 0 {
 		batch.Add(hash, "duration", strconv.FormatFloat(m.Duration, 'f', 3, 64))
 	}
 	if m.TrackTotal != 0 {
-		batch.Set(hash, client.RelTrackTotal, []string{strconv.Itoa(m.TrackTotal)})
+		batch.Set(hash, string(client.RelTrackTotal), []string{strconv.Itoa(m.TrackTotal)})
 	}
 	if m.Disc != 0 {
-		batch.Set(hash, client.RelDisc, []string{strconv.Itoa(m.Disc)})
+		batch.Set(hash, string(client.RelDisc), []string{strconv.Itoa(m.Disc)})
 	}
 	if m.DiscTotal != 0 {
-		batch.Set(hash, client.RelDiscTotal, []string{strconv.Itoa(m.DiscTotal)})
+		batch.Set(hash, string(client.RelDiscTotal), []string{strconv.Itoa(m.DiscTotal)})
 	}
 	if g := client.SplitGenres(m.Genre); len(g) > 0 {
-		batch.Set(hash, client.RelGenre, g)
+		batch.Set(hash, string(client.RelGenre), g)
 	}
 	if m.Composer != "" {
-		batch.Set(hash, client.RelComposer, []string{m.Composer})
+		batch.Set(hash, string(client.RelComposer), []string{m.Composer})
 	}
-	batch.Set(hash, client.RelMetaVersion, []string{client.MetaVersion})
+	batch.Set(hash, string(client.RelMetaVersion), []string{client.MetaVersion})
 	if _, err := tc.Batch(batch); err != nil {
 		return err
 	}
@@ -303,27 +303,27 @@ func (t *TieFS) LabelDir(dirURI string, label DirLabel) error {
 	}
 	batch := t.tc.NewBatch()
 	if label.Name != "" {
-		batch.Add(string(uid), client.TieFilename.String(), label.Name)
-		batch.Add(string(uid), client.TieName.String(), label.Name)
+		batch.Add(string(uid), string(client.RelFilename), label.Name)
+		batch.Add(string(uid), string(client.RelName), label.Name)
 	}
 	// tag-date is single-valued (the last import/label time); replace the
 	// whole relation so re-labels don't accumulate dates.
-	batch.Set(string(uid), client.TieTagDate.String(), []string{time.Now().Format("2006-01-02 15:04:05.000000")})
+	batch.Set(string(uid), string(client.RelTagDate), []string{time.Now().Format("2006-01-02 15:04:05.000000")})
 	for _, tag := range label.Tags {
 		if tag == "" {
 			continue
 		}
-		batch.Add(string(uid), client.TieTag.String(), tag)
-		batch.Add(client.TieTags.String(), client.TieAll.String(), tag)
+		batch.Add(string(uid), string(client.RelTag), tag)
+		batch.Add(string(client.RelTags), string(client.RelAll), tag)
 	}
 	if label.Artist != "" {
-		batch.Set(string(uid), client.TieArtist.String(), []string{label.Artist})
+		batch.Set(string(uid), string(client.RelArtist), []string{label.Artist})
 	}
 	if label.Album != "" {
-		batch.Set(string(uid), client.TieAlbum.String(), []string{label.Album})
+		batch.Set(string(uid), string(client.RelAlbum), []string{label.Album})
 	}
 	if label.Year != "" {
-		batch.Set(string(uid), client.TieYear.String(), []string{label.Year})
+		batch.Set(string(uid), string(client.RelYear), []string{label.Year})
 	}
 	if _, err := t.tc.Batch(batch); err != nil {
 		return err
@@ -404,7 +404,7 @@ func (t *TieFS) dirPath(uid string) string {
 	if err != nil {
 		return ""
 	}
-	return client.RowFirst(row, client.TiePath.String())
+	return client.RowFirst(row, client.RelPath)
 }
 
 func (t *TieFS) CoTags(include, exclude []string) ([]string, error) {
