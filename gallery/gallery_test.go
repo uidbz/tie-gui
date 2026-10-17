@@ -74,6 +74,10 @@ func setupTestGallery(t *testing.T, dir string, imagesPerPage int, winSize fyne.
 	win.SetContent(viewer.Content)
 	win.Resize(winSize)
 	viewer.LoadGallery()
+	// Settle before the test goroutine starts driving layout itself: the
+	// placement goroutine is still installing this page, and with the software
+	// test driver both touch the widget tree on their own goroutines.
+	settleLayout(viewer)
 	viewer.CreateView()
 	win.SetContent(viewer.Content)
 	settleLayout(viewer)
@@ -84,12 +88,12 @@ func setupTestGallery(t *testing.T, dir string, imagesPerPage int, winSize fyne.
 // thumbnail workers (their cache writes included), and the tile updater's
 // trailing debounce flush.
 func settleLayout(viewer *Gallery) {
-	viewer.layout.placement.Wait()
-	viewer.layout.currentlyLoading.Wait()
-	// The tile updater's trailing flush fires up to flushInterval after the
-	// last loaded tile; wait it out so no goroutine mutates the tile list
-	// while the test inspects it.
-	time.Sleep(2 * flushInterval)
+	// AwaitIdle round-trips through the tile updater. Sleeping out the debounce
+	// interval, as this used to, leaves no happens-before edge between the
+	// goroutine that installs a thumbnail and the test goroutine that inspects
+	// the grid afterwards — which -race correctly reports even when the two are
+	// seconds apart in wall-clock time.
+	viewer.AwaitIdle()
 }
 
 // forceGridLayout simulates the driver's layout cascade, which the test
@@ -428,6 +432,7 @@ func setupRetryGallery(t *testing.T, ft *flakyThumbnailer) *Gallery {
 	win.SetContent(viewer.Content)
 	win.Resize(fyne.NewSize(800, 600))
 	viewer.LoadGallery()
+	settleLayout(viewer)
 	viewer.CreateView()
 	win.SetContent(viewer.Content)
 	settleLayout(viewer)

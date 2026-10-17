@@ -282,6 +282,19 @@ type previewController struct {
 	pane    *fyne.Container // sits in fm.content's center slot while on
 	gallery *gallery.Gallery
 	on      bool
+	// syncPlace is handed to the gallery when it is built. Tests that drive
+	// Fyne layout from their own goroutine need it; see
+	// gallery.SetSyncPlacement.
+	syncPlace bool
+}
+
+// setSyncPlacement makes the preview gallery place pages on the caller's
+// goroutine. Only tests should call it.
+func (p *previewController) setSyncPlacement(on bool) {
+	p.syncPlace = on
+	if p.gallery != nil {
+		p.gallery.SetSyncPlacement(on)
+	}
 }
 
 func newPreviewController(fm *FileManager, cfg gallery.Config, thumb gallery.Thumbnailer) *previewController {
@@ -312,6 +325,7 @@ func (p *previewController) build() {
 	g := gallery.NewGallery(fyne.CurrentApp(), newPaneWindow(p.fm.win, p.pane), cfg,
 		func(t *gallery.Tile) { p.onTileTapped(t) })
 	g.Thumbnailer = p.thumb
+	g.SetSyncPlacement(p.syncPlace)
 	g.Init()
 	// A file-manager grid is name-oriented: start with labels on.
 	g.ToggleLabels()

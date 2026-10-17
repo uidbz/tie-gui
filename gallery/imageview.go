@@ -221,11 +221,7 @@ func (img *ImageInfo) GetReader() (io.ReadSeeker, error) {
 }
 
 func (iv *ImageView) LoadImage() error {
-	reader, err := iv.info.GetReader()
-	if err != nil {
-		return err
-	}
-	img, format, err2 := Decode(reader)
+	img, format, err2 := iv.info.decodedImage()
 	if err2 != nil {
 		return err2
 	}

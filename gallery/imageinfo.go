@@ -1,6 +1,10 @@
 package gallery
 
-import "io/fs"
+import (
+	"image"
+	"io/fs"
+	"sync"
+)
 
 // ImageInfo is the per-item data model for gallery entries (images, videos,
 // directories, or archives). It holds file metadata, display callbacks, and
@@ -53,6 +57,13 @@ type ImageInfo struct {
 	archiveName string
 	archiveFile fs.FS
 	order       int
+
+	// prefetched holds a full-size bitmap decoded ahead of the image view
+	// being built (the next-image prefetch). Written on a background
+	// goroutine, consumed on the UI goroutine, hence the mutex.
+	prefetchMu     sync.Mutex
+	prefetched     image.Image
+	prefetchFormat string
 	// loadAttempts counts thumbnail-load retries (bounded by
 	// maxTileLoadAttempts); PlaceTiles resets it when (re-)enqueueing the
 	// item so a revisited page gets a fresh budget.
@@ -108,4 +119,30 @@ func (info *ImageInfo) PreviewCount() int {
 		return len(info.PreviewPaths)
 	}
 	return len(info.PreviewReaders)
+}
+
+// decodedImage returns the entry's decoded bitmap, taking it from the prefetch
+// slot when the next-image prefetch has already read it. Decoding touches no
+// Fyne object, so this is safe on a background goroutine; attaching the result
+// to an ImageView is not.
+func (info *ImageInfo) decodedImage() (image.Image, string, error) {
+	info.prefetchMu.Lock()
+	img, format := info.prefetched, info.prefetchFormat
+	info.prefetched, info.prefetchFormat = nil, ""
+	info.prefetchMu.Unlock()
+	if img != nil {
+		return img, format, nil
+	}
+	reader, err := info.GetReader()
+	if err != nil {
+		return nil, "", err
+	}
+	return Decode(reader)
+}
+
+// setPrefetched parks a decoded bitmap for the next decodedImage call.
+func (info *ImageInfo) setPrefetched(img image.Image, format string) {
+	info.prefetchMu.Lock()
+	info.prefetched, info.prefetchFormat = img, format
+	info.prefetchMu.Unlock()
 }

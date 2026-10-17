@@ -58,7 +58,7 @@ func TestChangePageDoesNotBlockOnInFlightLoads(t *testing.T) {
 		t.Fatalf("ChangePage blocked %v for the previous page's thumbnail loads", d)
 	}
 	settleLayout(viewer)
-	if got := viewer.layout.offset; got != 8 {
+	if got := viewer.layout.getOffset(); got != 8 {
 		t.Errorf("offset = %d after paging to page 2 of 12 at 4/page, want 8", got)
 	}
 }
@@ -107,7 +107,7 @@ func TestSupersededPlacementIsSkipped(t *testing.T) {
 	}
 	settleLayout(viewer)
 
-	if got := viewer.layout.offset; got != 16 {
+	if got := viewer.layout.getOffset(); got != 16 {
 		t.Errorf("offset = %d, want 16 (page 4 of 20 at 4/page)", got)
 	}
 	if got := len(viewer.layout.tiles); got != 4 {

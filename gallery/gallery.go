@@ -125,7 +125,13 @@ type Gallery struct {
 	// Internal Wiring — Do Not Access Directly
 	// ═══════════════════════════════════════════════════════════════════════
 
-	gallery      *fyne.Container
+	gallery *fyne.Container
+	// filesMu guards imageFiles. Reads come from the UI goroutine (page turns,
+	// next/prev, pagination) and from placement goroutines; writes come from
+	// the UI goroutine (ShowImageDir) and from ReadCustomAsync's fetch
+	// goroutine. The listing is only ever replaced, never edited in place, so
+	// a snapshot taken under filesMu is safely immutable.
+	filesMu      sync.RWMutex
 	imageFiles   []*ImageInfo
 	layout       *TileLayout
 	window       fyne.Window
@@ -152,7 +158,10 @@ type Gallery struct {
 	// placeSeq numbers page placements. A LoadGallery that has already been
 	// superseded by a newer one skips its placement entirely instead of
 	// laying out a page the user has moved past.
-	placeSeq      atomic.Uint64
+	placeSeq atomic.Uint64
+	// syncPlace runs page placement on the caller's goroutine. See
+	// SetSyncPlacement.
+	syncPlace     bool
 	galleryLoaded bool
 	config        Config
 	bottomBar     *fyne.Container
@@ -309,9 +318,9 @@ func (viewer *Gallery) KeyPress(key *fyne.KeyEvent) {
 }
 
 func (viewer *Gallery) ShowImageDir(path string) {
-	viewer.imageFiles = make([]*ImageInfo, 0)
+	viewer.setFiles(nil)
 	viewer.currentPage = 0
-	viewer.layout.offset = 0
+	viewer.layout.setOffset(0)
 	viewer.openedInfo = nil
 	viewer.ReadImageDir(path, nil)
 	viewer.LoadGallery()
@@ -319,9 +328,9 @@ func (viewer *Gallery) ShowImageDir(path string) {
 }
 
 func (viewer *Gallery) ShowImageArchive(path string) {
-	viewer.imageFiles = make([]*ImageInfo, 0)
+	viewer.setFiles(nil)
 	viewer.currentPage = 0
-	viewer.layout.offset = 0
+	viewer.layout.setOffset(0)
 	viewer.openedInfo = nil
 	viewer.ReadImageArchive(path)
 	viewer.LoadGallery()
@@ -730,10 +739,38 @@ func (viewer *Gallery) LoadGallery() {
 	viewer.startPlacement()
 }
 
+// SetSyncPlacement runs page placement on the caller's goroutine instead of a
+// background one.
+//
+// It exists for tests. The software test driver has no UI goroutine: it runs
+// fyne.Do inline on whichever goroutine called it, so a gallery worker and a
+// test that drives layout itself (CreateView, Resize, Tap) mutate the widget
+// tree concurrently, which -race reports even when the two are ordered by
+// AwaitIdle. Placing on the caller's goroutine removes the second writer.
+//
+// Production code must not call it: placement waits for the previous page's
+// thumbnail loads, and putting that back on the caller is the freeze
+// LoadGallery exists to avoid.
+func (viewer *Gallery) SetSyncPlacement(on bool) {
+	viewer.syncPlace = on
+	if viewer.layout != nil {
+		viewer.layout.syncUI = on
+	}
+}
+
 // startPlacement queues one page placement, superseding any placement queued
 // by an earlier call.
 func (viewer *Gallery) startPlacement() {
 	seq := viewer.placeSeq.Add(1)
+	if viewer.syncPlace {
+		// The caller owns the widget tree in this mode, so waiting for the
+		// listing here is both safe and required: placeNow publishes the
+		// pagination widgets, and doing that on a helper goroutine would put
+		// a second writer on them.
+		viewer.waitFetches()
+		viewer.placeNow(seq)
+		return
+	}
 	if !viewer.fetchPending() {
 		viewer.placeNow(seq)
 		return
@@ -742,9 +779,18 @@ func (viewer *Gallery) startPlacement() {
 	// place. Waiting for it on this goroutine would freeze the UI, so wait on
 	// a helper and come back on the UI goroutine, where the image list and
 	// page offset are snapshotted — they are only ever written from there.
+	//
+	// The placement WaitGroup is raised here, before the helper starts, and
+	// released when the hand-over completes: a caller waiting for the grid to
+	// settle then also waits for this queued placement, and the count never
+	// drops to zero between the helper and the placement it starts.
+	viewer.layout.placement.Add(1)
 	go func() {
 		viewer.waitFetches()
-		fyne.Do(func() { viewer.placeNow(seq) })
+		fyne.Do(func() {
+			defer viewer.layout.placement.Done()
+			viewer.placeNow(seq)
+		})
 	}()
 }
 
@@ -756,15 +802,33 @@ func (viewer *Gallery) placeNow(seq uint64) {
 		return // superseded: a newer LoadGallery owns the next placement
 	}
 	// Snapshot the slice header and page offset on the UI goroutine: a later
-	// tag query swaps viewer.imageFiles and ChangeGallery/ChangePage rewrite
+	// tag query swaps viewer.files() and ChangeGallery/ChangePage rewrite
 	// layout.offset, so reading either inside the spawned goroutine would
 	// race with them.
-	imageFiles, offset := viewer.imageFiles, viewer.layout.offset
+	imageFiles, offset := viewer.files(), viewer.layout.getOffset()
 	viewer.buildPagination()
 	viewer.galleryLoaded = true
+	if viewer.syncPlace {
+		viewer.layout.placeMu.Lock()
+		viewer.layout.drainPending()
+		viewer.layout.currentlyLoading.Wait()
+		viewer.layout.placeTiles(imageFiles, offset)
+		viewer.layout.placeMu.Unlock()
+		// Synchronous mode means the caller owns the widget tree, so the page
+		// is not finished until the thumbnail workers' write-backs have landed
+		// too. AwaitIdle also gives them the happens-before edge a test needs
+		// before it inspects or resizes the grid.
+		viewer.AwaitIdle()
+		return
+	}
 	viewer.layout.placement.Add(1)
 	go func() {
 		defer viewer.layout.placement.Done()
+		// One placement at a time: the drain and the wait below touch the
+		// same queue and counter as the previous placement, and placeTiles
+		// assumes it holds the lock.
+		viewer.layout.placeMu.Lock()
+		defer viewer.layout.placeMu.Unlock()
 		// Discard the previous page's queued work and wait for its in-flight
 		// loads. Both used to happen in ChangeGallery/ChangePage, on the UI
 		// goroutine. Here they cost a background goroutine some time, and the
@@ -786,20 +850,59 @@ func (viewer *Gallery) CurrentImageInfo() *ImageInfo {
 	return viewer.CurrentImageView.info
 }
 
+// files returns the current listing. Treat the result as read-only: a later
+// listing read replaces the slice rather than editing it.
+func (viewer *Gallery) files() []*ImageInfo {
+	viewer.filesMu.RLock()
+	defer viewer.filesMu.RUnlock()
+	return viewer.imageFiles
+}
+
+// setFiles publishes a finished listing in one step.
+func (viewer *Gallery) setFiles(files []*ImageInfo) {
+	viewer.filesMu.Lock()
+	viewer.imageFiles = files
+	viewer.filesMu.Unlock()
+}
+
+// AwaitIdle blocks until the gallery's background work — page placement,
+// thumbnail loads and the widget write-backs they queue — has been applied.
+//
+// Embedding apps do not need it: in production every write-back runs on the
+// one UI goroutine, in order. Tests that inspect or resize the grid from their
+// own goroutine do, because the software test driver executes fyne.Do inline
+// on the calling goroutine, so the gallery's workers touch the widget tree
+// concurrently with the test.
+func (viewer *Gallery) AwaitIdle() {
+	if viewer.layout == nil {
+		return
+	}
+	viewer.layout.placement.Wait()
+	viewer.layout.currentlyLoading.Wait()
+	viewer.layout.uiSync()
+}
+
 // ImageCount reports how many images the viewer currently holds.
 func (viewer *Gallery) ImageCount() int {
-	return len(viewer.imageFiles)
+	return len(viewer.files())
 }
 
 // RemoveItem removes info from the viewer's image list and fixes the order
 // indices of remaining items. Call ChangeGallery afterwards to refresh the UI.
 func (viewer *Gallery) RemoveItem(info *ImageInfo) {
+	viewer.filesMu.Lock()
+	defer viewer.filesMu.Unlock()
 	for i, item := range viewer.imageFiles {
 		if item == info {
-			viewer.imageFiles = append(viewer.imageFiles[:i], viewer.imageFiles[i+1:]...)
-			for j := i; j < len(viewer.imageFiles); j++ {
-				viewer.imageFiles[j].order = j
+			// Copy rather than splice in place: a placement goroutine may be
+			// holding a snapshot of this same slice.
+			next := make([]*ImageInfo, 0, len(viewer.imageFiles)-1)
+			next = append(next, viewer.imageFiles[:i]...)
+			next = append(next, viewer.imageFiles[i+1:]...)
+			for j := i; j < len(next); j++ {
+				next[j].order = j
 			}
+			viewer.imageFiles = next
 			return
 		}
 	}
@@ -811,7 +914,7 @@ func (viewer *Gallery) RemoveItem(info *ImageInfo) {
 // immediately even while a fetch is running.
 func (viewer *Gallery) ChangeGallery() {
 	viewer.currentPage = 0
-	viewer.layout.offset = 0
+	viewer.layout.setOffset(0)
 	// The image list was replaced; any remembered open entry no longer
 	// applies to it.
 	viewer.openedInfo = nil
@@ -826,9 +929,31 @@ func (viewer *Gallery) ChangePage(page int) {
 		return
 	}
 	viewer.currentPage = page
-	viewer.layout.offset = page * viewer.config.General.ImagesPerPage
+	viewer.layout.setOffset(page * viewer.config.General.ImagesPerPage)
 	viewer.LoadGallery()
 	viewer.window.SetContent(viewer.Content)
+}
+
+// prefetchImage decodes the next image on a background goroutine and parks the
+// result on its ImageInfo, where ImageView.LoadImage picks it up.
+//
+// It used to call LoadImageToCache directly. That builds an ImageView: it reads
+// the canvas size and creates or refreshes a canvas.Image, while showGallery
+// frees the current view's bitmap on the UI goroutine — so the two wrote the
+// same canvas.Image from different goroutines. Decoding is pure; attaching the
+// pixels to a widget is not.
+func (viewer *Gallery) prefetchImage(info *ImageInfo) {
+	viewer.cacheMu.Lock()
+	_, built := viewer.cache[info.Path]
+	viewer.cacheMu.Unlock()
+	if built {
+		return // the view already exists; decoding again would be wasted
+	}
+	img, format, err := info.decodedImage()
+	if err != nil || img == nil {
+		return
+	}
+	info.setPrefetched(img, format)
 }
 
 func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
@@ -909,28 +1034,30 @@ func (viewer *Gallery) NextImage() *ImageInfo {
 	// No wait for in-flight listing reads: every read builds its list locally
 	// and swaps the slice in, so the list is never half-built. Waiting here
 	// used to freeze the arrow keys and swipes behind a stalled tie query.
-	if len(viewer.imageFiles) == 0 {
+	files := viewer.files()
+	if len(files) == 0 {
 		return nil
 	}
 	nextImg := viewer.currentIndex + 1
-	if nextImg >= len(viewer.imageFiles) {
-		nextImg = len(viewer.imageFiles) - 1
+	if nextImg >= len(files) {
+		nextImg = len(files) - 1
 	}
-	return viewer.imageFiles[nextImg]
+	return files[nextImg]
 }
 
 func (viewer *Gallery) PrevImage() *ImageInfo {
-	if len(viewer.imageFiles) == 0 {
+	files := viewer.files()
+	if len(files) == 0 {
 		return nil
 	}
 	nextImg := viewer.currentIndex - 1
 	if nextImg < 0 {
 		nextImg = 0
 	}
-	if nextImg >= len(viewer.imageFiles) {
-		nextImg = len(viewer.imageFiles) - 1
+	if nextImg >= len(files) {
+		nextImg = len(files) - 1
 	}
-	return viewer.imageFiles[nextImg]
+	return files[nextImg]
 }
 
 func (viewer *Gallery) InitHotkeys() {
@@ -1064,11 +1191,12 @@ func (viewer *Gallery) showGallery() {
 	// The entry may have moved to a different page while it was open (next/
 	// prev navigation, or a resized window re-slicing the pages).
 	pageBefore := viewer.currentPage
-	if viewer.openedInfo != nil && len(viewer.imageFiles) > 0 {
+	if viewer.openedInfo != nil {
+		files := viewer.files()
 		idx := viewer.openedInfo.order
-		if idx < 0 || idx >= len(viewer.imageFiles) || viewer.imageFiles[idx] != viewer.openedInfo {
+		if idx < 0 || idx >= len(files) || files[idx] != viewer.openedInfo {
 			idx = -1
-			for i, item := range viewer.imageFiles {
+			for i, item := range files {
 				if item == viewer.openedInfo {
 					idx = i
 					break
@@ -1078,7 +1206,7 @@ func (viewer *Gallery) showGallery() {
 		if idx >= 0 {
 			if ipp := viewer.config.General.ImagesPerPage; ipp > 0 {
 				viewer.currentPage = idx / ipp
-				viewer.layout.offset = viewer.currentPage * ipp
+				viewer.layout.setOffset(viewer.currentPage * ipp)
 			}
 		}
 	}
@@ -1089,7 +1217,7 @@ func (viewer *Gallery) showGallery() {
 		// page's tiles are positioned. Must be set before LoadGallery
 		// spawns the placement goroutine.
 		if viewer.openedInfo != nil && viewer.layout != nil {
-			if idx := viewer.openedInfo.order - viewer.layout.offset; idx >= 0 {
+			if idx := viewer.openedInfo.order - viewer.layout.getOffset(); idx >= 0 {
 				viewer.layout.pendingReveal = idx
 			}
 		}
@@ -1102,7 +1230,7 @@ func (viewer *Gallery) showGallery() {
 	// opened tile into view directly (re-laying out first in case the
 	// window was resized while the image was open).
 	if !reloaded && viewer.scroll != nil && viewer.openedInfo != nil && viewer.layout != nil {
-		idx := viewer.openedInfo.order - viewer.layout.offset
+		idx := viewer.openedInfo.order - viewer.layout.getOffset()
 		if idx >= 0 && idx < len(viewer.layout.tiles) {
 			viewer.layout.relayoutGrid()
 			tile := viewer.layout.tiles[idx]
@@ -1200,9 +1328,9 @@ func (viewer *Gallery) ChangeImage(info *ImageInfo) {
 	// Prefetch the next image off-thread. NextImage is evaluated here, on
 	// the calling (UI) goroutine, after currentIndex is updated: reading
 	// imageFiles/currentIndex from a background goroutine races with tag
-	// queries swapping viewer.imageFiles and can index out of range.
+	// queries swapping viewer.files() and can index out of range.
 	if next := viewer.NextImage(); next != nil && !next.InputIsVideo {
-		go func() { viewer.LoadImageToCache(next) }()
+		go viewer.prefetchImage(next)
 	}
 	viewer.Content.Objects = []fyne.CanvasObject{viewer.CurrentImage}
 	// Float the ☰ menu button over the image so the gallery menu (image
@@ -1238,6 +1366,9 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 
 	viewer.currentPath = absolutePath
 	dir, _ := os.ReadDir(absolutePath)
+	// Build locally and swap once, the way ReadCustom does: a tag query or
+	// a page read must never see a half-filled listing.
+	var imageFiles []*ImageInfo
 	i := 0
 	for _, x := range dir {
 		fullPath := filepath.Join(absolutePath, x.Name())
@@ -1261,7 +1392,7 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 				info.DirPath = subDirAbsPath
 				info.PreviewPaths = previews
 				info.DisplayName = x.Name()
-				viewer.imageFiles = append(viewer.imageFiles, info)
+				imageFiles = append(imageFiles, info)
 				i++
 			}
 
@@ -1302,7 +1433,7 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 				info.ShowArchive = true
 				info.DisplayName = filepath.Base(fullPath)
 				info.PreviewPaths = previews
-				viewer.imageFiles = append(viewer.imageFiles, info)
+				imageFiles = append(imageFiles, info)
 				i++
 			}
 
@@ -1311,7 +1442,7 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 			info.InputIsVideo = true
 			info.DirPath = absolutePath
 			info.DisplayName = x.Name()
-			viewer.imageFiles = append(viewer.imageFiles, info)
+			imageFiles = append(imageFiles, info)
 			i++
 
 		case IsImageFromPath(fullPath):
@@ -1320,12 +1451,12 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 				selected.DirPath = absolutePath
 				selected.DisplayName = x.Name()
 				viewer.currentIndex = i
-				viewer.imageFiles = append(viewer.imageFiles, selected)
+				imageFiles = append(imageFiles, selected)
 			} else {
 				info := NewImageInfo(i, fullPath)
 				info.DirPath = absolutePath
 				info.DisplayName = x.Name()
-				viewer.imageFiles = append(viewer.imageFiles, info)
+				imageFiles = append(imageFiles, info)
 			}
 			i++
 		}
@@ -1333,16 +1464,17 @@ func (viewer *Gallery) ReadImageDir(absolutePath string, selected *ImageInfo) {
 
 	// Sort: primary key = DirPath (groups subdirs and archives together),
 	// secondary key = filename (alphabetical within each group).
-	sort.Slice(viewer.imageFiles, func(i, j int) bool {
-		a, b := viewer.imageFiles[i], viewer.imageFiles[j]
+	sort.Slice(imageFiles, func(i, j int) bool {
+		a, b := imageFiles[i], imageFiles[j]
 		if a.DirPath != b.DirPath {
 			return a.DirPath < b.DirPath
 		}
 		return filepath.Base(a.Path) < filepath.Base(b.Path)
 	})
-	for i := range viewer.imageFiles {
-		viewer.imageFiles[i].order = i
+	for i := range imageFiles {
+		imageFiles[i].order = i
 	}
+	viewer.setFiles(imageFiles)
 }
 
 type CustomReader interface {
@@ -1429,7 +1561,7 @@ func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 	defer viewer.endFetch()
 
 	// Build into a local slice and swap, so overlapping tie queries can't
-	// interleave appends into viewer.imageFiles (last query wins).
+	// interleave appends into viewer.files() (last query wins).
 	imageFiles := make([]*ImageInfo, 0, len(readers))
 	for i, r := range readers {
 		info := NewImageInfoCustomReader(i, r)
@@ -1466,7 +1598,13 @@ func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 		}
 		imageFiles = append(imageFiles, info)
 	}
+	// Publish the readers and the listing together: two overlapping async
+	// fetches must not leave CustomReaders from one query paired with the
+	// images of another.
+	viewer.filesMu.Lock()
+	viewer.CustomReaders = readers
 	viewer.imageFiles = imageFiles
+	viewer.filesMu.Unlock()
 }
 
 // ReadCustomAsync replaces the viewer's images with the readers produced by
@@ -1485,7 +1623,6 @@ func (viewer *Gallery) ReadCustomAsync(fetch func() []CustomReader) {
 		if readers == nil {
 			return
 		}
-		viewer.CustomReaders = readers
 		viewer.ReadCustom(readers)
 	}()
 }
@@ -1532,5 +1669,5 @@ func (viewer *Gallery) ReadImageArchive(zipFile string) {
 	for i := range imageFiles {
 		imageFiles[i].order = i
 	}
-	viewer.imageFiles = imageFiles
+	viewer.setFiles(imageFiles)
 }

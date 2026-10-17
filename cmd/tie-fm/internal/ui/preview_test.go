@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
@@ -16,6 +15,15 @@ import (
 	"github.com/uidbz/tie-gui/gallery"
 )
 
+// settle waits for the preview gallery's background work to land before the
+// test inspects or resizes the grid. Sleeping out a debounce interval, as this
+// file used to, establishes no happens-before edge with the goroutine that
+// installs thumbnails, which -race reports even when the two are seconds apart.
+func settle(fm *FileManager) {
+	if fm.preview.gallery != nil {
+		fm.preview.gallery.AwaitIdle()
+	}
+}
 func writeTestJPEG(t *testing.T, path string) {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 120, 90))
@@ -98,6 +106,9 @@ func TestPreviewToggle(t *testing.T) {
 	galCfg := testGalleryConfig()
 	galCfg.General.ThumbnailDir = t.TempDir()
 	fm.InitPreview(galCfg, nil)
+	// The software test driver has no UI goroutine, so the gallery's placement
+	// goroutine would write to the widget tree concurrently with this test.
+	fm.preview.setSyncPlacement(true)
 
 	// Preview off: the table holds the pane's center slot, keys pass through.
 	if fm.content.Objects[0] != fm.table.Instance {
@@ -108,6 +119,7 @@ func TestPreviewToggle(t *testing.T) {
 	}
 
 	fm.preview.toggle()
+	settle(fm)
 	if !fm.preview.on {
 		t.Fatal("preview did not turn on")
 	}
@@ -124,11 +136,6 @@ func TestPreviewToggle(t *testing.T) {
 	if got := fm.preview.gallery.ImageCount(); got != 2 {
 		t.Fatalf("ImageCount = %d, want 2 (pic.jpg + sub/)", got)
 	}
-	// Let tile placement and the thumbnail workers settle before teardown:
-	// the test driver runs fyne.Do inline, so worker write-backs would
-	// otherwise race the next test.
-	time.Sleep(500 * time.Millisecond)
-
 	// Escape on the grid backs out of preview mode.
 	if !fm.PreviewHandlesKey(&fyne.KeyEvent{Name: fyne.KeyEscape}) {
 		t.Fatal("Escape was not consumed while preview is on")
@@ -142,10 +149,10 @@ func TestPreviewToggle(t *testing.T) {
 
 	// Toggling back on re-feeds the gallery from the (unchanged) listing.
 	fm.preview.toggle()
+	settle(fm)
 	if got := fm.preview.gallery.ImageCount(); got != 2 {
 		t.Fatalf("ImageCount after re-toggle = %d, want 2", got)
 	}
-	time.Sleep(500 * time.Millisecond)
 }
 
 // TestPreviewTapAssociation checks that tapping an image or video tile in
@@ -167,7 +174,11 @@ func TestPreviewTapAssociation(t *testing.T) {
 	galCfg := testGalleryConfig()
 	galCfg.General.ThumbnailDir = t.TempDir()
 	fm.InitPreview(galCfg, nil)
+	// The software test driver has no UI goroutine, so the gallery's placement
+	// goroutine would write to the widget tree concurrently with this test.
+	fm.preview.setSyncPlacement(true)
 	fm.preview.setOn(true)
+	settle(fm)
 
 	pic := fs.Entry{Name: "pic.jpg", Path: filepath.Join(dir, "pic.jpg")}
 	tile := func(e fs.Entry) *gallery.Tile {
@@ -181,6 +192,7 @@ func TestPreviewTapAssociation(t *testing.T) {
 	// materialized (here: already local) path and does not open the image.
 	cfg.SetApp("jpg", config.AppAssoc{Command: "img-open %f"})
 	fm.preview.onTileTapped(tile(pic))
+	settle(fm)
 	if got := targets(); len(got) != 1 || got[0] != pic.Path {
 		t.Fatalf("tap with association launched %v, want [%s]", got, pic.Path)
 	}
@@ -191,6 +203,7 @@ func TestPreviewTapAssociation(t *testing.T) {
 	// Without an association the built-in image view opens.
 	cfg.SetApp("jpg", config.AppAssoc{})
 	fm.preview.onTileTapped(tile(pic))
+	settle(fm)
 	if got := targets(); len(got) != 1 {
 		t.Fatalf("tap without association launched %v, want no new launch", got)
 	}
@@ -198,6 +211,7 @@ func TestPreviewTapAssociation(t *testing.T) {
 		t.Fatal("tap without association should open the built-in image view")
 	}
 	fm.preview.gallery.ShowGrid()
+	settle(fm)
 
 	// A video tile with an association launches the app instead of the
 	// in-pane player.
@@ -206,10 +220,11 @@ func TestPreviewTapAssociation(t *testing.T) {
 	vt := tile(clip)
 	vt.Info.InputIsVideo = true
 	fm.preview.onTileTapped(vt)
+	settle(fm)
 	if got := targets(); len(got) != 2 || got[1] != clip.Path {
 		t.Fatalf("video tap with association launched %v, want the clip path appended", got)
 	}
 
 	fm.preview.setOn(false)
-	time.Sleep(300 * time.Millisecond)
+	settle(fm)
 }

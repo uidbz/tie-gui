@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -11,18 +12,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-
-	// "path/filepath"
-	// "archive/zip"
-	"bytes"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "embed"
 
 	"fyne.io/fyne/v2"
-
-	"sync"
 
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/widget"
@@ -41,25 +38,75 @@ const labelHeight = float32(22)
 // (CustomReader != nil). Items without a CustomReader (plain local files)
 // are always thumbnailed from the image content and cached in the directory
 // given by GeneralConfig.ThumbnailDir, regardless of the Thumbnailer.
+// inflight counts outstanding background jobs and lets a caller wait for them.
+// It replaces sync.WaitGroup for the thumbnail loads because a WaitGroup
+// forbids Add concurrent with a Wait at a zero counter, and the gallery hits
+// exactly that: a worker re-queues a failed thumbnail (Add) while a page
+// placement waits for the previous page's loads to drain, and two placements
+// can queue behind each other. The counter plus a broadcast channel has no
+// such rule.
+type inflight struct {
+	mu     sync.Mutex
+	count  int
+	idleCh []chan struct{}
+}
+
+func (w *inflight) Add(n int) {
+	w.mu.Lock()
+	w.count += n
+	w.mu.Unlock()
+}
+
+func (w *inflight) Done() {
+	w.mu.Lock()
+	w.count--
+	if w.count <= 0 {
+		for _, ch := range w.idleCh {
+			close(ch)
+		}
+		w.idleCh = nil
+	}
+	w.mu.Unlock()
+}
+
+// Wait blocks until the count reaches zero.
+func (w *inflight) Wait() {
+	w.mu.Lock()
+	if w.count <= 0 {
+		w.mu.Unlock()
+		return
+	}
+	ch := make(chan struct{})
+	w.idleCh = append(w.idleCh, ch)
+	w.mu.Unlock()
+	<-ch
+}
+
 type Thumbnailer interface {
 	GetThumbnail(info *ImageInfo) (io.ReadSeeker, error)
 }
 
 type TileLayout struct {
-	tiles            []*Tile
-	wg               sync.WaitGroup
-	minHeight        float32
-	imagesToLoad     chan *ImageInfo
-	results          chan loadedTile
+	tiles        []*Tile
+	wg           sync.WaitGroup
+	minHeight    float32
+	imagesToLoad chan *ImageInfo
+	// results is the grid's work queue; the tileUpdater is its only consumer,
+	// which makes that goroutine the single owner of every grid mutation the
+	// gallery's background goroutines want to make.
+	results          chan uiJob
 	tabFn            func(t *Tile)
 	grid             *fyne.Container
 	hotkeys          []Hotkey
 	config           Config
 	window           fyne.Window
 	app              fyne.App
-	viewer           *Gallery // TODO Phase 3: remove this back-reference
-	offset           int
-	currentlyLoading sync.WaitGroup
+	viewer           *Gallery     // TODO Phase 3: remove this back-reference
+	offset           atomic.Int64 // page start index into the listing
+	currentlyLoading inflight
+	// uiCtl round-trips a message through the tileUpdater goroutine; see
+	// uiSync.
+	uiCtl chan chan struct{}
 	// placement tracks a running PlaceTiles call: Add(1) before spawning,
 	// Done when it returns. Tests Wait on it to observe page placement
 	// (with the test driver, PlaceTiles' fyne.Do blocks run inline before
@@ -67,9 +114,16 @@ type TileLayout struct {
 	placement  sync.WaitGroup
 	thumbCache *thumbnailCache
 	showLabels bool
-	// placeMu serializes overlapping PlaceTiles calls (rapid page changes,
+	// syncUI runs posted grid mutations on the caller's goroutine instead of
+	// handing them to the tileUpdater. Only set in synchronous-placement mode;
+	// see Gallery.SetSyncPlacement.
+	syncUI bool
+	// placeMu serializes overlapping placements (rapid page changes,
 	// re-sorts): the last placement must win deterministically — its tile
-	// install is queued last and its results land on its own tiles.
+	// install is queued last and its results land on its own tiles. It is held
+	// across the whole placement — drain, wait for the previous page's loads,
+	// build and install — so two placements never drain the same queue or
+	// wait on the same counter at the same time.
 	placeMu sync.Mutex
 	// Direct access to avoid back-reference through viewer
 	thumbnailer   Thumbnailer
@@ -88,6 +142,19 @@ type TileLayout struct {
 type loadedTile struct {
 	info *ImageInfo
 	tile *Tile
+}
+
+// uiJob is one unit of work for the tileUpdater. Keeping whole-page installs
+// and incremental thumbnail write-backs in one channel is what makes them land
+// in production order: a page's placeholder tiles must be installed before
+// that page's finished thumbnails are written back, or the write-back's Info
+// guard compares against the previous page's tiles, drops the result as stale,
+// and the tile stays a placeholder forever.
+type uiJob struct {
+	// install replaces the grid's contents wholesale (a new page).
+	install func()
+	// tiles are thumbnails finished for the current page.
+	tiles []loadedTile
 }
 
 const (
@@ -147,13 +214,15 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 		wg:            sync.WaitGroup{},
 		minHeight:     0,
 		imagesToLoad:  imagesToLoad,
-		results:       make(chan loadedTile, batchSize),
+		results:       make(chan uiJob, batchSize),
+		uiCtl:         make(chan chan struct{}),
 		tabFn:         tabFn,
 		config:        config,
 		window:        window,
 		app:           app,
 		viewer:        viewer,
 		thumbCache:    newThumbnailCache(maxCacheBytes),
+		syncUI:        viewer.syncPlace,
 		showLabels:    showLabels,
 		thumbnailer:   viewer.Thumbnailer,
 		refreshThumbs: viewer.refreshThumbs,
@@ -168,19 +237,22 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 	return layout
 }
 
-func (layout *TileLayout) Clear() {
-	layout.tiles = make([]*Tile, 0)
-	layout.offset = 0
-}
-
-func (layout *TileLayout) PlaceTiles(imageFiles []*ImageInfo) {
-	layout.placeTiles(imageFiles, layout.offset)
-}
-
 // placeTiles places the page starting at offset. Background callers pass an
 // offset snapshotted on the UI goroutine: layout.offset is written there
 // (ChangeGallery, ChangePage), so reading it here would race a newer
 // placement.
+//
+// The caller must hold placeMu: the drain, the wait for the previous page's
+// loads and this build are one critical section, and two overlapping
+// placements would otherwise drain the same queue and re-arm the same counter.
+// getOffset and setOffset read and write the page start index. ChangePage and
+// ChangeGallery write it on the UI goroutine while the tileUpdater reads it to
+// map a finished thumbnail back to its slot, so it is atomic rather than a
+// plain field.
+func (layout *TileLayout) getOffset() int { return int(layout.offset.Load()) }
+
+func (layout *TileLayout) setOffset(o int) { layout.offset.Store(int64(o)) }
+
 // drainPending discards the work still queued for a page that has been
 // replaced. Each queued item was Add()ed to currentlyLoading when it was
 // enqueued, so it must be Done() here — the workers will never see it.
@@ -201,12 +273,6 @@ func (layout *TileLayout) drainPending() {
 }
 
 func (layout *TileLayout) placeTiles(imageFiles []*ImageInfo, offset int) {
-	// Serialize overlapping placements (rapid page taps, re-sorts): the
-	// last placement's install is queued last, so it wins deterministically
-	// and its results land on its own tiles.
-	layout.placeMu.Lock()
-	defer layout.placeMu.Unlock()
-
 	// Decode the placeholder image once and share it across all placeholder
 	// tiles on this page (previously each tile decoded loading.png again
 	// because the shared reader was consumed after the first decode).
@@ -236,7 +302,7 @@ func (layout *TileLayout) placeTiles(imageFiles []*ImageInfo, offset int) {
 	// first, install after) let fast cache-hit flushes run against the
 	// previous page's tile list and drop the new page's results as
 	// "stale", leaving permanent placeholder tiles.
-	fyne.Do(func() {
+	layout.postUI(func() {
 		layout.tiles = newTiles
 		layout.grid.Objects = make([]fyne.CanvasObject, 0, len(newTiles))
 		for _, tile := range newTiles {
@@ -262,7 +328,7 @@ func (layout *TileLayout) placeTiles(imageFiles []*ImageInfo, offset int) {
 	}
 
 	if currentPage < maxPages-1 {
-		fyne.Do(func() {
+		layout.postUI(func() {
 			// Widget creation and mutation belong on the UI goroutine: the
 			// enclosing PlaceTiles runs on a background goroutine.
 			if layout.nextPageButton == nil {
@@ -288,7 +354,7 @@ func (layout *TileLayout) placeTiles(imageFiles []*ImageInfo, offset int) {
 	// This is critical for the first page load when scroll offset is 0.
 	// relayoutGrid positions tiles without invalidating any textures
 	// (unlike grid.Refresh, which recursively refreshes all children).
-	fyne.Do(func() {
+	layout.postUI(func() {
 		layout.relayoutGrid()
 		// A pending reveal (returning from the single-image view to a
 		// freshly placed page) scrolls the target tile into view now that
@@ -482,9 +548,30 @@ func (layout *TileLayout) ToggleLabels() {
 			}
 		}
 	}
-	fyne.Do(func() {
+	layout.postUI(func() {
 		layout.relayoutGrid()
 	})
+}
+
+// postUI hands a grid mutation to the tileUpdater.
+//
+// Every background goroutine in the gallery used to call fyne.Do itself. In
+// production that is fine — the app driver runs the tasks on one goroutine, in
+// the order they arrive — but nothing inside the gallery then orders a page
+// install against a thumbnail write-back, and under the software test driver
+// (which runs fyne.Do inline on the calling goroutine) the two mutate the
+// widget tree concurrently. Routing them through one consumer gets that order
+// inside the gallery itself instead of relying on an assumption about the
+// driver.
+func (layout *TileLayout) postUI(fn func()) {
+	if layout.syncUI {
+		fn()
+		return
+	}
+	select {
+	case layout.results <- uiJob{install: fn}:
+	case <-time.After(10 * time.Second):
+	}
 }
 
 // bitmapFromCache returns a decoded thumbnail already in the cache.
@@ -538,7 +625,7 @@ func (layout *TileLayout) imageLoader() {
 		// Every slot gets its own Tile around the shared bitmap: two entries
 		// with the same content hash must be two independent widgets.
 		tile := layout.newImageTileFromImage(bitmap, tc, layout.tabFn)
-		layout.results <- loadedTile{info: tc, tile: tile}
+		layout.results <- uiJob{tiles: []loadedTile{{info: tc, tile: tile}}}
 		layout.currentlyLoading.Done()
 	}
 }
@@ -574,7 +661,7 @@ func (layout *TileLayout) tileUpdater() {
 		fyne.Do(func() {
 			changed := false
 			for _, r := range batch {
-				idx := r.info.order - layout.offset
+				idx := r.info.order - int(layout.offset.Load())
 				// r.info may belong to a page that has since been replaced;
 				// only write back when its slot still exists AND still
 				// holds the placeholder created for this exact ImageInfo.
@@ -595,8 +682,16 @@ func (layout *TileLayout) tileUpdater() {
 
 	for {
 		select {
-		case r := <-layout.results:
-			pending = append(pending, r)
+		case job := <-layout.results:
+			if job.install != nil {
+				// A page replacement: apply the thumbnails already in hand
+				// first, then install, so the two never interleave.
+				flush()
+				stopTimer()
+				fyne.Do(job.install)
+				continue
+			}
+			pending = append(pending, job.tiles...)
 			stopTimer()
 			if len(pending) >= flushBatchSize {
 				flush()
@@ -605,7 +700,43 @@ func (layout *TileLayout) tileUpdater() {
 			}
 		case <-timer.C:
 			flush()
+		case ack := <-layout.uiCtl:
+			// Drain everything the workers have already handed over before
+			// answering, so the caller cannot be told "settled" while a
+			// result is still sitting in the channel.
+		drain:
+			for {
+				select {
+				case job := <-layout.results:
+					if job.install != nil {
+						fyne.Do(job.install)
+					} else {
+						pending = append(pending, job.tiles...)
+					}
+				default:
+					break drain
+				}
+			}
+			flush()
+			close(ack)
 		}
+	}
+}
+
+// uiSync blocks until every write-back queued before the call has been applied
+// to the grid.
+//
+// The workers finishing does not imply their results have landed: the updater
+// debounces them, and a caller that then touches the widget tree has no
+// happens-before edge with the goroutine that installs them. Under -race that
+// is a data race even when the two happen seconds apart in wall-clock time,
+// which is why waiting for the workers and then sleeping was never enough.
+func (layout *TileLayout) uiSync() {
+	ack := make(chan struct{})
+	select {
+	case layout.uiCtl <- ack:
+		<-ack
+	case <-time.After(10 * time.Second):
 	}
 }
 
@@ -1242,7 +1373,7 @@ func (t *Tile) cyclePreview(delta int) {
 			return
 		}
 		rgba := toRGBA(decoded)
-		fyne.Do(func() {
+		t.layout.postUI(func() {
 			if t.Info != info {
 				return // tile was replaced while loading
 			}

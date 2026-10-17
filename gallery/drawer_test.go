@@ -208,6 +208,7 @@ func TestTagFilterChips(t *testing.T) {
 func TestBottomRowSinglePage(t *testing.T) {
 	viewer := newDrawerTestGallery(t, true)
 	viewer.LoadGallery()
+	settleLayout(viewer)
 	viewer.CreateView()
 	if viewer.bottomBar.Visible() {
 		t.Error("pagination links visible on a single-page gallery")

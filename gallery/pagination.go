@@ -95,8 +95,9 @@ func (viewer *Gallery) buildPagination() {
 	if imagesPerPage <= 0 {
 		imagesPerPage = 1
 	}
-	viewer.maxPages = len(viewer.imageFiles) / imagesPerPage
-	if len(viewer.imageFiles)%imagesPerPage != 0 {
+	total := len(viewer.files())
+	viewer.maxPages = total / imagesPerPage
+	if total%imagesPerPage != 0 {
 		viewer.maxPages++
 	}
 	if viewer.maxPages < 1 {
@@ -119,7 +120,7 @@ func (viewer *Gallery) buildPagination() {
 		start := i*imagesPerPage + 1
 		end := start + imagesPerPage - 1
 		if i == viewer.maxPages-1 {
-			end = len(viewer.imageFiles)
+			end = total
 		}
 		page := widget.NewHyperlink(strconv.Itoa(start)+"-"+strconv.Itoa(end), nil)
 		page.OnTapped = func() {
