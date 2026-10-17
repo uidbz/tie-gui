@@ -97,6 +97,7 @@ static void set_update_callback(mpv_render_context *ctx, uintptr_t go_ctx) {
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"runtime/cgo"
 	"strconv"
@@ -108,14 +109,28 @@ import (
 // MPVPlayer drives a libmpv instance and renders its video into an OpenGL FBO
 // via the Render API. It implements canvas.GLVideoRenderer.
 type MPVPlayer struct {
+	// mu guards the two C objects below. Renders happen on Fyne's GL goroutine,
+	// commands and property reads on the UI goroutine, and Close on the UI
+	// goroutine too — so Close takes the write lock and waits for in-flight
+	// renders instead of freeing an mpv_render_context that a paint is still
+	// using.
+	mu     sync.RWMutex
 	mpv    *C.mpv_handle
 	render *C.mpv_render_context
+
+	// closed is set before Close starts tearing C objects down. Every entry
+	// point checks it, so a paint or a command queued behind a window close
+	// returns instead of dereferencing a freed handle.
+	closed atomic.Bool
 
 	initOnce sync.Once
 	initErr  error
 
 	needsPaint atomic.Bool
-	onUpdate   func()
+	// onUpdate is written on the UI goroutine and called on an mpv thread from
+	// the render update callback, so it is stored as a pointer to a function
+	// value rather than a plain field.
+	onUpdate atomic.Pointer[func()]
 
 	self cgo.Handle
 	file string
@@ -124,6 +139,9 @@ type MPVPlayer struct {
 	stopOnce sync.Once
 	done     chan struct{}
 }
+
+// errMPVClosed is returned by the render path once Close has begun.
+var errMPVClosed = errors.New("mpv player closed")
 
 // NewMPVPlayer creates a new libmpv player that will play file (path or URL).
 func NewMPVPlayer(file string) (*MPVPlayer, error) {
@@ -178,10 +196,30 @@ func (p *MPVPlayer) eventLoop() {
 	}
 }
 
-func (p *MPVPlayer) SetOnUpdate(fn func()) { p.onUpdate = fn }
+// SetOnUpdate installs the callback mpv's render-update notification invokes on
+// the mpv thread when a new video frame is ready. Store nil to clear it. Safe
+// to call while renders are in flight.
+func (p *MPVPlayer) SetOnUpdate(fn func()) {
+	if fn == nil {
+		p.onUpdate.Store(nil)
+		return
+	}
+	p.onUpdate.Store(&fn)
+}
 
 func (p *MPVPlayer) ensureRender() error {
 	p.initOnce.Do(func() {
+		if p.closed.Load() {
+			p.initErr = errMPVClosed
+			return
+		}
+		// Write lock: this creates the render context Close later frees.
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.mpv == nil {
+			p.initErr = errMPVClosed
+			return
+		}
 		// Keep the cgo.Handle in a C scalar (uintptr_t); storing it in a Go
 		// unsafe.Pointer across the cgo call below aborts on the GL thread.
 		handle := C.uintptr_t(p.self)
@@ -196,18 +234,34 @@ func (p *MPVPlayer) ensureRender() error {
 		}
 		p.render = rctx
 		C.set_update_callback(rctx, handle)
-		p.command("loadfile", p.file)
+		p.commandLocked("loadfile", p.file)
 	})
 	return p.initErr
 }
 
+// RenderInto draws the current frame into fbo. It runs on Fyne's GL goroutine,
+// which is not the goroutine that closes the player, so both the closed flag
+// and the render pointer are re-checked under the lock: a paint that was
+// already queued when the window closed must return rather than render into a
+// freed mpv_render_context.
 func (p *MPVPlayer) RenderInto(fbo uint32, width, height int) {
+	if p.closed.Load() {
+		return
+	}
 	if err := p.ensureRender(); err != nil {
 		return
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.render == nil {
+		return // Close freed the context while this paint was queued
 	}
 	p.needsPaint.Store(false)
 	C.render_to_fbo(p.render, C.int(fbo), C.int(width), C.int(height))
 }
+
+// Closed reports whether Close has begun.
+func (p *MPVPlayer) Closed() bool { return p.closed.Load() }
 
 func (p *MPVPlayer) NeedsPaint() bool { return p.needsPaint.Load() }
 
@@ -259,11 +313,21 @@ func (p *MPVPlayer) SeekTo(seconds float64) {
 	p.command("seek", strconv.FormatFloat(seconds, 'f', 3, 64), "absolute")
 }
 
+// Close tears the player down. It is safe to call more than once, and safe to
+// call while paints are in flight: the write lock waits for any render already
+// under way to return before anything is freed.
 func (p *MPVPlayer) Close() {
+	p.closed.Store(true)
 	if p.stop != nil {
 		p.stopOnce.Do(func() { close(p.stop) })
 		<-p.done
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Order matters. The render context holds a reference to the mpv core, so
+	// it is freed first; freeing it also unregisters the update callback, so no
+	// mpv thread reaches for the cgo handle afterwards — which is why the
+	// handle is deleted last.
 	if p.render != nil {
 		C.mpv_render_context_free(p.render)
 		p.render = nil
@@ -279,8 +343,10 @@ func (p *MPVPlayer) Close() {
 }
 
 func (p *MPVPlayer) getPropertyDouble(name string) (float64, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if p.mpv == nil {
-		return 0, fmt.Errorf("mpv closed")
+		return 0, errMPVClosed
 	}
 	cn := C.CString(name)
 	defer C.free(unsafe.Pointer(cn))
@@ -292,8 +358,10 @@ func (p *MPVPlayer) getPropertyDouble(name string) (float64, error) {
 }
 
 func (p *MPVPlayer) getPropertyFlag(name string) (bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if p.mpv == nil {
-		return false, fmt.Errorf("mpv closed")
+		return false, errMPVClosed
 	}
 	cn := C.CString(name)
 	defer C.free(unsafe.Pointer(cn))
@@ -305,6 +373,8 @@ func (p *MPVPlayer) getPropertyFlag(name string) (bool, error) {
 }
 
 func (p *MPVPlayer) setPropertyFlag(name string, value bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if p.mpv == nil {
 		return
 	}
@@ -317,7 +387,21 @@ func (p *MPVPlayer) setPropertyFlag(name string, value bool) {
 	C.mpv_set_property(p.mpv, cn, C.MPV_FORMAT_FLAG, unsafe.Pointer(&val))
 }
 
+// command runs an mpv command. It is a no-op once the player is closed: the
+// UI can easily issue one behind a window close.
 func (p *MPVPlayer) command(args ...string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.mpv == nil {
+		return
+	}
+	p.commandLocked(args...)
+}
+
+// commandLocked issues the command. The caller must hold mu (read or write)
+// and have checked that p.mpv is non-nil; ensureRender uses this while holding
+// the write lock, which is why it does not take the lock itself.
+func (p *MPVPlayer) commandLocked(args ...string) {
 	cargs := make([]*C.char, len(args)+1)
 	for i, a := range args {
 		cargs[i] = C.CString(a)
@@ -374,7 +458,9 @@ func goGetProcAddress(ctx unsafe.Pointer, name *C.char) unsafe.Pointer {
 func goRenderUpdate(ctx unsafe.Pointer) {
 	p := cgo.Handle(uintptr(ctx)).Value().(*MPVPlayer)
 	p.needsPaint.Store(true)
-	if p.onUpdate != nil {
-		p.onUpdate()
+	// Runs on an mpv thread; SetOnUpdate writes from the UI goroutine, hence
+	// the atomic pointer.
+	if fn := p.onUpdate.Load(); fn != nil {
+		(*fn)()
 	}
 }
