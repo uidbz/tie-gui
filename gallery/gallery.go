@@ -1410,7 +1410,10 @@ func (viewer *Gallery) ReadImageArchive(zipFile string) {
 		// Archive cannot be opened; imageFiles stays empty
 		return
 	}
-	i := 0
+	// Build into a local slice and swap, the way ReadCustom does: calling this
+	// twice (or an archive after a directory) replaces the listing instead of
+	// appending duplicates with stale order indices.
+	var imageFiles []*ImageInfo
 	fs.WalkDir(fsys, ".", func(path string, x fs.DirEntry, err error) error {
 		if x.IsDir() {
 			return nil
@@ -1420,20 +1423,23 @@ func (viewer *Gallery) ReadImageArchive(zipFile string) {
 			// Skip files that can't be opened
 			return nil
 		}
+		// One handle per member: without this the walk relied on the os.File
+		// finalizer to close them, and a large archive reached EMFILE first.
 		if IsImage(file) {
-			info := NewImageInfo(i, path)
+			info := NewImageInfo(len(imageFiles), path)
 			info.InputIsArchive = true
 			info.archiveName = filepath.Base(zipFile)
 			info.archiveFile = fsys
-			viewer.imageFiles = append(viewer.imageFiles, info)
-			i++
+			imageFiles = append(imageFiles, info)
 		}
+		file.Close()
 		return nil
 	})
-	sort.Slice(viewer.imageFiles, func(i, j int) bool {
-		return viewer.imageFiles[i].Path < viewer.imageFiles[j].Path
+	sort.Slice(imageFiles, func(i, j int) bool {
+		return imageFiles[i].Path < imageFiles[j].Path
 	})
-	for i, _ := range viewer.imageFiles {
-		viewer.imageFiles[i].order = i
+	for i := range imageFiles {
+		imageFiles[i].order = i
 	}
+	viewer.imageFiles = imageFiles
 }
