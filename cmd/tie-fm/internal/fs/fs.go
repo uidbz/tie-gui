@@ -6,6 +6,8 @@ package fs
 
 import (
 	"io"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -207,6 +209,40 @@ func NewRegistry(local, tie FileSystem) *Registry {
 // SetTie replaces the provider serving tie: paths (used when the user selects a
 // different tie config at runtime).
 func (r *Registry) SetTie(tie FileSystem) { r.tie = tie }
+
+// Close releases whatever the providers hold that outlives a request — today,
+// the tie provider's download cache. Providers that do not hold such state
+// need not implement it.
+func (r *Registry) Close() {
+	for _, p := range []FileSystem{r.local, r.tie, r.mtp} {
+		if c, ok := p.(io.Closer); ok {
+			c.Close()
+		}
+	}
+}
+
+// SafeName reduces a name that arrived from a remote store to a single safe
+// path component.
+//
+// tie's filename triple is a plain string: nothing constrains it to a basename,
+// so a store written by restore, by another client, or by anyone who can write
+// one triple can carry "../.bashrc", an absolute path, or embedded separators.
+// Anywhere such a name becomes a path — a temp file, a virtual tie: URI
+// component, an extracted member — run it through this first. An unusable name
+// falls back to the caller's substitute (usually the content hash) rather than
+// to the empty string, so the entry stays addressable.
+func SafeName(name, fallback string) string {
+	n := path.Base(strings.ReplaceAll(name, "\x00", ""))
+	n = strings.ReplaceAll(n, "/", "")
+	switch n {
+	case "", ".", "..":
+		return fallback
+	}
+	if strings.ContainsRune(n, filepath.Separator) {
+		return fallback
+	}
+	return n
+}
 
 // SetMTP sets the provider serving mtp: paths (connected phones/media devices).
 func (r *Registry) SetMTP(mtp FileSystem) { r.mtp = mtp }

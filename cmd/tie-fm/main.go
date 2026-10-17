@@ -382,6 +382,10 @@ func main() {
 	mainWin.Resize(fyne.NewSize(1100, 700))
 	mainWin.SetMaster()
 	mainWin.ShowAndRun()
+
+	// Materialized downloads exist only to feed a transfer or an external
+	// program; nothing outlives the session that made them.
+	registry.Close()
 }
 
 // homeStart returns the path the panels should open on: the first non-tie
