@@ -1,5 +1,7 @@
 package gallery
 
+import "io"
+
 // Extension Interfaces — Gallery Library API
 //
 // This file documents the stable extension contract for the gallery package.
@@ -183,3 +185,82 @@ package gallery
 //
 // Internal gallery types (TileLayout, ImageView, Region, etc.) are not part of
 // the stable API. Applications should not depend on their internals.
+
+type CustomReader interface {
+	GetReader() (io.ReadSeeker, error)
+	Path() string // Used for caching and identification
+}
+
+// DisplayNamer is an optional CustomReader interface for entries that have a
+// display-friendly name (e.g. a URI that knows its original filename). When
+// not implemented, filepath.Base(Path()) is used as a fallback.
+type DisplayNamer interface {
+	DisplayName() string
+}
+
+// Subtitler is an optional CustomReader interface for entries that have a
+// secondary label line (e.g. an album's artist under its title). When it
+// returns a non-empty string, the tile shows two rows: DisplayName in bold on
+// top and the subtitle in normal weight below.
+type Subtitler interface {
+	Subtitle() string
+}
+
+// Openable is an optional CustomReader behavior for entries that are not
+// viewable images (e.g. a directory): Open replaces the default image
+// display when the entry is opened.
+type Openable interface {
+	Open()
+}
+
+// VideoFile is an optional CustomReader interface. When a reader implements
+// it and returns true, the gallery shows a video-placeholder thumbnail and
+// the tile click handler is expected to open a video player instead of
+// trying to decode the content as an image.
+type VideoFile interface {
+	IsVideo() bool
+}
+
+// VideoStreamer is an optional CustomReader interface for video entries that
+// can be played or thumbnailed directly from an HTTP URL (no download
+// required). When implemented, GetThumbnail passes StreamURL to the libmpv
+// extractor instead of reading the full content through GetReader.
+type VideoStreamer interface {
+	StreamURL() string
+}
+
+// DimensionProvider is an optional CustomReader behavior for entries whose
+// original pixel dimensions are known before the thumbnail blob is fetched.
+// ReadCustom uses these to pre-populate ImageInfo.SetDimensions,
+// so placeholder tiles carry the correct aspect ratio from the first layout
+// pass and no reflow occurs as thumbnails arrive.
+type DimensionProvider interface {
+	Dimensions() (width, height int)
+}
+
+// PreviewProvider is an optional CustomReader behavior for entries that
+// represent a browsable collection of images (e.g. a tie directory or an
+// archive blob). Previews returns readers for the collection's images; the
+// gallery tile shows one as its thumbnail (badged with a folder icon) and
+// horizontal swipes cycle through them. It is called lazily from loader
+// goroutines, so network I/O is acceptable. An error or empty result falls
+// back to the caller's Thumbnailer (e.g. a static folder icon).
+type PreviewProvider interface {
+	Previews() ([]CustomReader, error)
+}
+
+// CoverProvider is an optional CustomReader behavior for collection entries
+// (directories, archives) that can supply a ready-made cover thumbnail
+// WITHOUT enumerating the collection — e.g. a server-cached cover for a tie
+// archive, which avoids downloading the whole archive blob just to thumbnail
+// its tile. The gallery uses the cover only for previewIndex 0 (the tile's
+// initial view); swipe cycling still goes through PreviewProvider.
+//
+// CoverThumbnail returns a ready-scaled thumbnail JPEG or an error. On error
+// the gallery falls back to the PreviewProvider path, and after generating
+// the first preview itself it calls StoreCoverThumbnail with the plain
+// (pre-badge) JPEG so the cover is cached for next time.
+type CoverProvider interface {
+	CoverThumbnail() (io.ReadSeeker, error)
+	StoreCoverThumbnail(jpegBytes []byte)
+}
