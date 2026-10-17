@@ -170,12 +170,36 @@ func ReadDir(imgPath string) (string, []fs.DirEntry, int) {
 
 // IsImage reports whether the reader contains an image, detected by reading
 // the file header.
+// sniffHead reads the first bytes used to identify a file by content.
+//
+// A single Read is not enough: io.Reader may return fewer bytes than asked, and
+// an archive member reader returns the whole (small) member together with
+// io.EOF. Treating that error as a failure made every image inside a zip look
+// like a non-image, so archive browsing listed nothing.
+func sniffHead(r io.Reader) ([]byte, error) {
+	head := make([]byte, sniffBytes)
+	n, err := io.ReadFull(r, head)
+	switch err {
+	case nil, io.EOF, io.ErrUnexpectedEOF:
+		// A short read still gives the magic bytes.
+	default:
+		return nil, err
+	}
+	if n == 0 {
+		return nil, io.EOF
+	}
+	return head[:n], nil
+}
+
+// sniffBytes is the header window filetype.Match inspects.
+const sniffBytes = 261
+
+// IsImage reports whether r's content looks like an image.
 func IsImage(file io.Reader) bool {
-	head := make([]byte, 261)
-	if _, err := file.Read(head); err != nil {
+	head, err := sniffHead(file)
+	if err != nil {
 		return false
 	}
-
 	return filetype.IsImage(head)
 }
 
@@ -183,10 +207,10 @@ func IsImage(file io.Reader) bool {
 // reading the file header.
 func IsImageFromPath(path string) bool {
 	file, err := os.Open(path)
-	defer file.Close()
 	if err != nil {
 		return false
 	}
+	defer file.Close()
 	return IsImage(file)
 }
 
@@ -208,10 +232,10 @@ func IsArchiveFromPath(path string) bool {
 	if err != nil {
 		return false
 	}
-	head := make([]byte, 261)
-	if _, err := file.Read(head); err != nil {
+	defer file.Close()
+	head, err := sniffHead(file)
+	if err != nil {
 		return false
 	}
-
 	return filetype.IsArchive(head)
 }
