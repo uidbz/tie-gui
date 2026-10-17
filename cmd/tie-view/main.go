@@ -23,6 +23,7 @@ import (
 	"github.com/uidbz/tie-gui/tagselection"
 	"github.com/uidbz/tie-gui/tagselection/tagindex"
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tielog"
 	"github.com/uidbz/tie-gui/tiethumb"
 	// "github.com/pkg/profile"
 )
@@ -36,7 +37,20 @@ func main() {
 	tieTag := flag.String("tag", "favorite", "Show images with tag")
 	tieConfigName := gallery.ConfigFlag("Tie config file to load: a name searched in tie's config dirs (like `tie -c`), or a file path (default: config.toml from the user config dir)")
 	flag.StringVar(&tieHostName, "host", "", "Fetch content from this filehost named in the tie config (default: \"fast\" when configured, else the first DefaultFileHosts entry)")
+	var logOpts tielog.Options
+	logOpts.App = "tie-view"
+	logOpts.AddFlags(flag.CommandLine)
 	flag.Parse()
+
+	// One logger for the whole app: stderr plus
+	// $XDG_STATE_HOME/tie/tie-view.log. The libraries get it too, because a
+	// thumbnail upload that failed against a remote filehost is exactly the
+	// thing a user needs to be able to find out afterwards.
+	appLog, closeLog := tielog.Setup(logOpts)
+	defer closeLog()
+	log = appLog
+	tieconfig.SetLogger(appLog)
+	mpvplayer.SetLogger(appLog)
 
 	// The first positional argument opens content at startup: a tie: URL
 	// (tie:<hash> for a single subject, tie:/path for a virtual-filesystem
@@ -120,7 +134,8 @@ func main() {
 			t.Viewer.ChangeImage(t.Info)
 		}
 	})
-	viewer.Thumbnailer = tiethumb.New(
+	viewer.SetLogger(appLog)
+	th := tiethumb.New(
 		func() *client.TieClient { return tieClient },
 		func() client.FileHost { return tieFileHost(tieClient) },
 		int(config.General.TileWidth),
@@ -133,6 +148,8 @@ func main() {
 			info.SetThumbnailScaled(true)
 			return folderIcon(int(config.General.TileWidth) * 2), nil
 		})
+	th.Logger = appLog
+	viewer.Thumbnailer = th
 	toggleTagger := func() {
 		if tagger.hash == "" {
 			// Local image: it has no tie subject, so there is nothing to
@@ -658,8 +675,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 				err = tc.UnregisterFavorite(tag)
 			}
 			if err != nil {
-				fmt.Printf("sidebar: failed to %s tag %q: %v\n",
-					map[bool]string{true: "star", false: "unstar"}[isStarred], tag, err)
+				log.Error("sidebar: star change", "tag", tag, "star", isStarred, "err", err)
 				fyne.Do(func() { setStarred(tag, !isStarred) })
 			}
 		}()
@@ -708,7 +724,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 		go func() {
 			row, err := tc.Get(string(client.RelTags))
 			if err != nil {
-				fmt.Println("Error getting tags:", err)
+				log.Error("getting tags", "err", err)
 				fyne.Do(func() { ts.SetListLabel("Error loading tags") })
 				return
 			}
@@ -785,7 +801,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			}
 			coTags, err := tc.CoTagsForQueryExcludingInput(inSnap, exSnap, "")
 			if err != nil {
-				fmt.Println("Error getting co-tags:", err)
+				log.Error("co-tag query", "err", err)
 				return
 			}
 			index := tagindex.New()
@@ -820,7 +836,7 @@ func openTieVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 		// Fallback: download the blob to a temp file.
 		r, err := info.CustomReader.GetReader()
 		if err != nil {
-			fmt.Println("Error reading video:", err)
+			log.Error("reading video", "err", err)
 			return
 		}
 		tmp, err := os.CreateTemp("", "imgview-tie-vid-*")
@@ -837,7 +853,7 @@ func openTieVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 
 	player, err := mpvplayer.NewMPVPlayer(src)
 	if err != nil {
-		fmt.Println("Error starting video player:", err)
+		log.Error("starting video player", "err", err)
 		if tmpFile != "" {
 			os.Remove(tmpFile)
 		}

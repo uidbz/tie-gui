@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -19,10 +20,16 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/disintegration/imaging"
+	"github.com/uidbz/tie-gui/tielog"
 )
 
 type ImageView struct {
 	widget.BaseWidget
+
+	// log reports the failures this view cannot show: a full-resolution
+	// re-decode that threw, a panic on the goroutine doing it. Set by the
+	// gallery that built the view; nil falls back to discard.
+	log *slog.Logger
 
 	fyneImage         *canvas.Image
 	raster            *canvas.Raster
@@ -266,6 +273,7 @@ func (iv *ImageView) applyZoomQuality() {
 		}
 		iv.loadingFull = true
 		go func() {
+			defer tielog.Recover(iv.logger(), "gallery.decodeFullImage")
 			full := iv.decodeFullImage()
 			fyne.Do(func() {
 				iv.loadingFull = false
@@ -358,8 +366,18 @@ func (iv *ImageView) setImage(img image.Image) {
 // loadOrPlaceholder loads the view's image, falling back to the loading
 // placeholder on decode failure so fyneImage is never nil (the renderer's
 // Layout would panic on a nil image).
+// logger returns the view's logger, so an ImageView built directly (not
+// through Gallery.LoadImageToCache) is still usable.
+func (iv *ImageView) logger() *slog.Logger {
+	if iv.log == nil {
+		return tielog.Discard()
+	}
+	return iv.log
+}
+
 func (iv *ImageView) loadOrPlaceholder() {
 	if err := iv.LoadImage(); err != nil {
+		iv.logger().Warn("gallery: image load failed", "path", iv.info.Path, "err", err)
 		if img, _, perr := Decode(bytes.NewReader(loading)); perr == nil {
 			iv.setImage(img)
 		}
@@ -795,7 +813,6 @@ func (iv *ImageView) Scrolled(ev *fyne.ScrollEvent) {
 	factorY := (newHeight / iv.Size().Height)
 	x := ev.AbsolutePosition.X - (ev.Position.X * factorX)
 	y := ev.AbsolutePosition.Y - (ev.Position.Y * factorY)
-	// fmt.Println("delta", ev.Position.X, ev.Position.Y, x, y)
 	newPos := fyne.NewPos(x, y)
 	iv.pos = newPos
 	iv.size = newSize

@@ -2,7 +2,6 @@ package main
 
 import (
 	_ "embed"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -284,17 +283,17 @@ func loadQuickTagConfig(path string) quickTagConfig {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		if werr := writeFileMkdir(path, []byte(defaultQuickTagTOML)); werr != nil {
-			fmt.Println("quicktag: cannot write default config:", werr)
+			log.Error("quicktag: writing default config", "err", werr)
 		}
 		return defaultQuickTagConfig()
 	}
 	if err != nil {
-		fmt.Println("quicktag: cannot read config:", err)
+		log.Error("quicktag: reading config", "err", err)
 		return defaultQuickTagConfig()
 	}
 	var cfg quickTagConfig
 	if err := toml.Unmarshal(data, &cfg); err != nil {
-		fmt.Printf("quicktag: config error in %s: %v\n", path, err)
+		log.Error("quicktag: config", "path", path, "err", err)
 		return defaultQuickTagConfig()
 	}
 	cfg.migrateLegacy()
@@ -409,6 +408,6 @@ func resolveQuickTagIcon(baseDir, name string) fyne.Resource {
 	if r, ok := builtinQuickTagIcons[name]; ok {
 		return r
 	}
-	fmt.Printf("quicktag: icon %q not found (looked in %s)\n", name, baseDir)
+	log.Warn("quicktag: icon not found", "icon", name, "dir", baseDir)
 	return nil
 }

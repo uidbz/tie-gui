@@ -10,7 +10,6 @@ package main
 // without a tie server.
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +71,7 @@ func classifyLocalInput(arg string) (string, localInput) {
 func openLocalVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 	player, err := mpvplayer.NewMPVPlayer(info.Path)
 	if err != nil {
-		fmt.Println("Error starting video player:", err)
+		log.Error("starting video player", "err", err)
 		return
 	}
 	fyne.Do(func() { viewer.ShowVideo(player, info.DisplayName, nil) })

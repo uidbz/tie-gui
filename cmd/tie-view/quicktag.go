@@ -299,7 +299,7 @@ func (b *quickTagBar) SetImage(r *tieReader) {
 	go func() {
 		row, err := b.tc.Get(hash)
 		if err != nil {
-			fmt.Println("quicktag: error fetching tags:", err)
+			log.Error("quicktag: fetching tags", "err", err)
 			return
 		}
 		tags := client.RowValues(row, "tag")
@@ -427,7 +427,7 @@ func (b *quickTagBar) toggle(tag string) {
 			_, err = b.tc.Add(hash, "tag", tag)
 			if err == nil && register {
 				if _, rerr := b.tc.Add(string(client.RelTags), string(client.RelAll), tag); rerr != nil {
-					fmt.Printf("quicktag: error registering tag %q: %v\n", tag, rerr)
+					log.Error("quicktag: registering tag", "tag", tag, "err", rerr)
 				}
 			}
 		} else {
@@ -436,7 +436,7 @@ func (b *quickTagBar) toggle(tag string) {
 		if err == nil {
 			return
 		}
-		fmt.Printf("quicktag: error writing tag %q: %v\n", tag, err)
+		log.Error("quicktag: writing tag", "tag", tag, "err", err)
 		fyne.Do(func() {
 			if register {
 				b.known[tag] = false
@@ -494,7 +494,7 @@ func (b *quickTagBar) rate(rating int) {
 		if err == nil {
 			return
 		}
-		fmt.Printf("quicktag: error writing rating %d: %v\n", rating, err)
+		log.Error("quicktag: writing rating", "rating", rating, "err", err)
 		fyne.Do(func() {
 			if b.hash != hash {
 				return

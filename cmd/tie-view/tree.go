@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -90,7 +89,7 @@ func (t *tieFSTree) childUIDs(uid widget.TreeNodeID) []widget.TreeNodeID {
 	}
 	dir, err := t.readDir(uid)
 	if err != nil {
-		fmt.Println("Error reading tie dir", uid, ":", err)
+		log.Error("tie tree: read dir", "path", uid, "err", err)
 		return nil
 	}
 
@@ -190,7 +189,7 @@ func (t *tieFSTree) SetShowHidden(show bool) {
 func (t *tieFSTree) showDir(dirPath, selectHash string) {
 	dir, err := t.readDir(dirPath)
 	if err != nil {
-		fmt.Println("Error reading tie dir", dirPath, ":", err)
+		log.Error("tie tree: read dir", "path", dirPath, "err", err)
 		return
 	}
 	t.showListing(dir, selectHash)
@@ -202,7 +201,7 @@ func (t *tieFSTree) showDir(dirPath, selectHash string) {
 func (t *tieFSTree) showDirUID(uid client.DirUID, selectHash string) {
 	dir, err := client.ReadTieDir(t.tie, uid)
 	if err != nil {
-		fmt.Println("Error reading tie dir", uid, ":", err)
+		log.Error("tie tree: read dir", "path", uid, "err", err)
 		return
 	}
 	t.showListing(dir, selectHash)

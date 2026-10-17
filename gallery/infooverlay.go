@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"log/slog"
 	"path/filepath"
 
 	"fyne.io/fyne/v2"
@@ -15,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/dsoprea/go-exif/v3"
+	"github.com/uidbz/tie-gui/tielog"
 )
 
 // infoExifTags lists the EXIF tags shown in the info overlay, in display
@@ -100,7 +102,9 @@ func (o *infoOverlay) setInfo(info *ImageInfo) {
 	}
 	load := o.viewer.infoMetadataFn
 	if load == nil {
-		load = asyncInfoMetadata
+		load = func(info *ImageInfo, apply func(imageMetadata)) {
+			asyncInfoMetadata(info, o.viewer.log(), apply)
+		}
 	}
 	load(info, func(md imageMetadata) {
 		// The image may have changed (or the overlay closed) while loading.
@@ -115,8 +119,9 @@ func (o *infoOverlay) setInfo(info *ImageInfo) {
 // asyncInfoMetadata is the production infoMetadataFn: the metadata load runs
 // on a background goroutine (file read + EXIF parse) and the result is
 // applied on the UI goroutine.
-func asyncInfoMetadata(info *ImageInfo, apply func(imageMetadata)) {
+func asyncInfoMetadata(info *ImageInfo, log *slog.Logger, apply func(imageMetadata)) {
 	go func() {
+		defer tielog.Recover(log, "gallery.asyncInfoMetadata")
 		md := collectImageMetadata(info)
 		fyne.Do(func() { apply(md) })
 	}()

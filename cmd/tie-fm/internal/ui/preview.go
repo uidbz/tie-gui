@@ -11,7 +11,6 @@ package ui
 
 import (
 	"errors"
-	"fmt"
 	"image"
 	"io"
 	"os"
@@ -324,6 +323,7 @@ func (p *previewController) build() {
 
 	g := gallery.NewGallery(fyne.CurrentApp(), newPaneWindow(p.fm.win, p.pane), cfg,
 		func(t *gallery.Tile) { p.onTileTapped(t) })
+	g.SetLogger(log)
 	g.Thumbnailer = p.thumb
 	g.SetSyncPlacement(p.syncPlace)
 	g.Init()
@@ -375,7 +375,7 @@ func (p *previewController) openVideo(e fs.Entry) {
 	if src == "" {
 		path, err := p.fm.registry.For(e.Path).Materialize(e)
 		if err != nil {
-			fmt.Println("Error materializing video:", err)
+			log.Error("preview: materializing video", "path", e.Path, "err", err)
 			return
 		}
 		src = path
@@ -385,7 +385,7 @@ func (p *previewController) openVideo(e fs.Entry) {
 	}
 	player, err := mpvplayer.NewMPVPlayer(src)
 	if err != nil {
-		fmt.Println("Error starting video player:", err)
+		log.Error("preview: starting video player", "path", e.Path, "err", err)
 		if tmpFile != "" {
 			os.Remove(tmpFile)
 		}

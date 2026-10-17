@@ -155,6 +155,6 @@ func showTieSubject(viewer *gallery.Gallery, readers []gallery.CustomReader) {
 // tieURLError reports a tie: URL that could not be loaded, on stderr and in
 // a dialog.
 func tieURLError(window fyne.Window, rawURL string, err error) {
-	fmt.Println("Error loading", rawURL+":", err)
+	log.Error("loading tie URL", "url", rawURL, "err", err)
 	fyne.Do(func() { dialog.ShowError(fmt.Errorf("cannot load %s: %w", rawURL, err), window) })
 }

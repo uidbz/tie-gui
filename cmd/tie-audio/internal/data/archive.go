@@ -224,11 +224,11 @@ func (s *Session) storeArchiveCover(archiveUID string, pc putlib.PutConfig, host
 		return
 	}
 	if err := ensureBlob(pc, host, thumbHash, buf.Bytes(), archiveUID[:8]+"-cover.jpg"); err != nil {
-		fmt.Println("Error uploading archive cover:", err)
+		log.Error("archive cover upload", "archive", archiveUID[:8], "err", err)
 		return
 	}
 	if err := s.Tie.Set(archiveUID, "thumbnail", []string{thumbHash}); err != nil {
-		fmt.Println("Error recording archive cover:", err)
+		log.Error("archive cover mapping", "archive", archiveUID, "err", err)
 	}
 }
 

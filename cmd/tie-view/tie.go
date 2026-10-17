@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -294,7 +293,7 @@ func (t *tieArchiveReader) CoverThumbnail() (io.ReadSeeker, error) {
 func (t *tieArchiveReader) StoreCoverThumbnail(jpegBytes []byte) {
 	thumbHash, err := tiethumb.UploadThumbnail(t.tc, t.host, t.hash, jpegBytes)
 	if err != nil {
-		fmt.Println("Error storing archive cover thumbnail:", err)
+		log.Error("storing archive cover thumbnail", "err", err)
 		return
 	}
 	t.thumbHash = thumbHash
@@ -338,17 +337,17 @@ func browseTieArchive(viewer *gallery.Gallery, host client.FileHost, hash string
 	viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		r, err := getlib.ReadFile(httpx.Bulk(host), host.URL, hash)
 		if err != nil {
-			fmt.Println("Error fetching archive", hash, ":", err)
+			log.Error("fetching archive", "hash", hash, "err", err)
 			return nil
 		}
 		data, err := io.ReadAll(r)
 		if err != nil {
-			fmt.Println("Error reading archive", hash, ":", err)
+			log.Error("reading archive", "hash", hash, "err", err)
 			return nil
 		}
 		members, err := archivelib.List(bytes.NewReader(data))
 		if err != nil {
-			fmt.Println("Error listing archive", hash, ":", err)
+			log.Error("listing archive", "hash", hash, "err", err)
 			return nil
 		}
 		readers := make([]gallery.CustomReader, 0, len(members))
@@ -421,7 +420,7 @@ func latestFromTie(viewer *gallery.Gallery, tc *client.TieClient, browseDir func
 	viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		rows, _, err := tc.Query(spec)
 		if err != nil {
-			fmt.Println("Error happened querying tie:", err)
+			log.Error("tie query", "err", err)
 			return nil
 		}
 		sortRows(rows, sortNewest)
@@ -454,7 +453,7 @@ func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude
 	viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		rows, _, err := tc.Query(spec)
 		if err != nil {
-			fmt.Println("Error happened querying tie:", err)
+			log.Error("tie query", "err", err)
 			return nil
 		}
 		return buildReaders(viewer, tc, rows, browseDir)
@@ -628,7 +627,7 @@ func queryGallery(viewer *gallery.Gallery, tc *client.TieClient, gf galleryFilte
 	viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		rows, _, err := tc.Query(spec)
 		if err != nil {
-			fmt.Println("Error happened querying tie:", err)
+			log.Error("tie query", "err", err)
 			return nil
 		}
 		filtered := rows[:0]

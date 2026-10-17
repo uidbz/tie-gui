@@ -10,6 +10,7 @@ import (
 	stdraw "image/draw"
 	"image/jpeg"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/mpvplayer"
+	"github.com/uidbz/tie-gui/tielog"
 )
 
 //go:embed loading.png
@@ -118,6 +120,9 @@ type TileLayout struct {
 	// handing them to the tileUpdater. Only set in synchronous-placement mode;
 	// see Gallery.SetSyncPlacement.
 	syncUI bool
+	// log reports what the grid cannot show on screen: a thumbnail that would
+	// not load, a panic on a loader goroutine. Copied from the Gallery.
+	log *slog.Logger
 	// placeMu serializes overlapping placements (rapid page changes,
 	// re-sorts): the last placement must win deterministically — its tile
 	// install is queued last and its results land on its own tiles. It is held
@@ -223,6 +228,7 @@ func NewTileLayout(config Config, window fyne.Window, app fyne.App, viewer *Gall
 		viewer:        viewer,
 		thumbCache:    newThumbnailCache(maxCacheBytes),
 		syncUI:        viewer.syncPlace,
+		log:           viewer.log(),
 		showLabels:    showLabels,
 		thumbnailer:   viewer.Thumbnailer,
 		refreshThumbs: viewer.refreshThumbs,
@@ -553,6 +559,15 @@ func (layout *TileLayout) ToggleLabels() {
 	})
 }
 
+// logger returns the layout's logger, so a TileLayout built without a Gallery
+// still works.
+func (layout *TileLayout) logger() *slog.Logger {
+	if layout.log == nil {
+		return tielog.Discard()
+	}
+	return layout.log
+}
+
 // postUI hands a grid mutation to the tileUpdater.
 //
 // Every background goroutine in the gallery used to call fyne.Do itself. In
@@ -601,33 +616,49 @@ const maxTileLoadAttempts = 3
 // ChangePage/ChangeGallery if discarded).
 func (layout *TileLayout) imageLoader() {
 	for tc := range layout.imagesToLoad {
-		bitmap, ok := layout.bitmapFromCache(tc.Path)
-		if !ok {
-			thumb, err := layout.GetThumbnail(tc)
-			if err == nil {
-				bitmap, err = decodeThumbnailRGBA(thumb)
-			}
-			if err != nil {
-				// Thumbnail failed (network hiccup, truncated blob, ...):
-				// re-queue with a bounded budget so a transient failure
-				// does not leave a permanent placeholder. Once the budget
-				// is spent the placeholder stays (previous behavior).
-				if tc.loadAttempts() < maxTileLoadAttempts {
-					tc.bumpLoadAttempts()
-					layout.currentlyLoading.Add(1)
-					layout.imagesToLoad <- tc
-				}
-				layout.currentlyLoading.Done()
-				continue
-			}
-			layout.bitmapToCache(tc.Path, bitmap)
-		}
-		// Every slot gets its own Tile around the shared bitmap: two entries
-		// with the same content hash must be two independent widgets.
-		tile := layout.newImageTileFromImage(bitmap, tc, layout.tabFn)
-		layout.results <- uiJob{tiles: []loadedTile{{info: tc, tile: tile}}}
-		layout.currentlyLoading.Done()
+		layout.loadOne(tc)
 	}
+}
+
+// loadOne loads one queued entry. It is a separate call rather than the loop
+// body so that a failure of any kind is contained to this entry: the worker
+// keeps taking from the queue, and the deferred Done always runs, so a page
+// placement waiting on currentlyLoading is never left hanging. A thumbnailer
+// that panics on one blob (a truncated cgo decode, an assertion in a
+// third-party reader) used to take the process down with it.
+func (layout *TileLayout) loadOne(tc *ImageInfo) {
+	defer layout.currentlyLoading.Done()
+	defer tielog.Recover(layout.logger(), "gallery.imageLoader")
+
+	bitmap, ok := layout.bitmapFromCache(tc.Path)
+	if !ok {
+		thumb, err := layout.GetThumbnail(tc)
+		if err == nil {
+			bitmap, err = decodeThumbnailRGBA(thumb)
+		}
+		if err != nil {
+			// Thumbnail failed (network hiccup, truncated blob, ...):
+			// re-queue with a bounded budget so a transient failure
+			// does not leave a permanent placeholder. Once the budget
+			// is spent the placeholder stays (previous behavior).
+			if tc.loadAttempts() < maxTileLoadAttempts {
+				tc.bumpLoadAttempts()
+				layout.logger().Debug("gallery: thumbnail load, retrying",
+					"path", tc.Path, "attempt", tc.loadAttempts(), "err", err)
+				layout.currentlyLoading.Add(1)
+				layout.imagesToLoad <- tc
+			} else {
+				layout.logger().Warn("gallery: thumbnail load failed",
+					"path", tc.Path, "attempts", 1+maxTileLoadAttempts, "err", err)
+			}
+			return
+		}
+		layout.bitmapToCache(tc.Path, bitmap)
+	}
+	// Every slot gets its own Tile around the shared bitmap: two entries
+	// with the same content hash must be two independent widgets.
+	tile := layout.newImageTileFromImage(bitmap, tc, layout.tabFn)
+	layout.results <- uiJob{tiles: []loadedTile{{info: tc, tile: tile}}}
 }
 
 // tileUpdater batches loaded tiles and applies them to the grid in a single
@@ -638,6 +669,7 @@ func (layout *TileLayout) imageLoader() {
 // visible tile textures on the next frame — the main source of scroll jank
 // while a page was loading.
 func (layout *TileLayout) tileUpdater() {
+	defer tielog.Recover(layout.logger(), "gallery.tileUpdater")
 	var pending []loadedTile
 	timer := time.NewTimer(flushInterval)
 	// stopTimer stops the debounce timer and non-blockingly drains any
@@ -1364,8 +1396,10 @@ func (t *Tile) cyclePreview(delta int) {
 	}
 	info.AdvancePreview(delta, n)
 	go func() {
+		defer tielog.Recover(t.layout.logger(), "gallery.cyclePreview")
 		thumb, err := t.layout.GetThumbnail(info)
 		if err != nil {
+			t.layout.logger().Debug("gallery: preview thumbnail", "path", info.Path, "err", err)
 			return
 		}
 		decoded, _, err := Decode(thumb)

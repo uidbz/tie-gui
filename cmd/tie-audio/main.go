@@ -17,6 +17,8 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/mpris"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/ui"
+	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tielog"
 )
 
 func main() {
@@ -33,6 +35,14 @@ func main() {
 		}
 		return
 	}
+
+	// The -control path above is a one-shot CLI call: it reports on stderr and
+	// exits, and deliberately does not open a log file.
+	appLog, closeLog := tielog.Setup(tielog.Options{App: "tie-audio"})
+	defer closeLog()
+	tieconfig.SetLogger(appLog)
+	ui.SetLogger(appLog)
+	data.SetLogger(appLog)
 
 	forceExitOnSignal(3 * time.Second)
 

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -93,7 +92,7 @@ func (t *tieFSTree) childUIDs(uid widget.TreeNodeID) []widget.TreeNodeID {
 	}
 	dir, err := t.readDir(uid)
 	if err != nil {
-		fmt.Println("Error reading tie dir", uid, ":", err)
+		log.Error("tie tree: read dir", "path", uid, "err", err)
 		return nil
 	}
 
@@ -218,7 +217,7 @@ func (t *tieFSTree) openTrack(f tieFSNode) {
 func (t *tieFSTree) showDir(dirPath string) {
 	dir, err := t.readDir(dirPath)
 	if err != nil {
-		fmt.Println("Error reading tie dir", dirPath, ":", err)
+		log.Error("tie tree: read dir", "path", dirPath, "err", err)
 		return
 	}
 	t.mu.Lock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/mpvplayer"
+	"github.com/uidbz/tie-gui/tielog"
 )
 
 type Gallery struct {
@@ -97,6 +99,12 @@ type Gallery struct {
 	// (see GeneralConfig.ThumbnailDir). Plain local files always use the
 	// local thumbnail directory.
 	Thumbnailer Thumbnailer
+	// Logger receives everything the gallery cannot show on screen: a
+	// thumbnail that failed to load, a listing fetch that threw, a panic on a
+	// loader goroutine. Defaults to discard — the gallery is a library and must
+	// not write to stdout or stderr, which on Android do not exist. Apps pass
+	// their tielog logger with SetLogger.
+	Logger *slog.Logger
 	// Sidebar, when non-nil, is shown left of the gallery (e.g. a tag
 	// selector) instead of a plain full-width gallery.
 	Sidebar fyne.CanvasObject
@@ -248,9 +256,31 @@ func NewGallery(app fyne.App, window fyne.Window, config Config, tileOnclick fun
 		config:        config,
 		tileOnclick:   tileOnclick,
 		refreshThumbs: false,
+		Logger:        tielog.Discard(),
 	}
 
 	return iv
+}
+
+// SetLogger installs the logger the gallery and everything it owns report to.
+// Call it before Init so the layout and any thumbnailer pick it up.
+func (viewer *Gallery) SetLogger(l *slog.Logger) {
+	if l == nil {
+		l = tielog.Discard()
+	}
+	viewer.Logger = l
+	if viewer.layout != nil {
+		viewer.layout.log = l
+	}
+}
+
+// log returns the gallery's logger, so a Gallery built by hand without one is
+// still safe to use.
+func (viewer *Gallery) log() *slog.Logger {
+	if viewer.Logger == nil {
+		return tielog.Discard()
+	}
+	return viewer.Logger
 }
 
 // Platform returns the gallery's platform abstraction for mobile vs desktop behavior.
@@ -786,6 +816,7 @@ func (viewer *Gallery) startPlacement() {
 	// drops to zero between the helper and the placement it starts.
 	viewer.layout.placement.Add(1)
 	go func() {
+		defer tielog.Recover(viewer.log(), "gallery.placementHelper")
 		viewer.waitFetches()
 		fyne.Do(func() {
 			defer viewer.layout.placement.Done()
@@ -824,6 +855,7 @@ func (viewer *Gallery) placeNow(seq uint64) {
 	viewer.layout.placement.Add(1)
 	go func() {
 		defer viewer.layout.placement.Done()
+		defer tielog.Recover(viewer.log(), "gallery.placement")
 		// One placement at a time: the drain and the wait below touch the
 		// same queue and counter as the previous placement, and placeTiles
 		// assumes it holds the lock.
@@ -943,6 +975,7 @@ func (viewer *Gallery) ChangePage(page int) {
 // same canvas.Image from different goroutines. Decoding is pure; attaching the
 // pixels to a widget is not.
 func (viewer *Gallery) prefetchImage(info *ImageInfo) {
+	defer tielog.Recover(viewer.log(), "gallery.prefetchImage")
 	viewer.cacheMu.Lock()
 	_, built := viewer.cache[info.Path]
 	viewer.cacheMu.Unlock()
@@ -951,6 +984,9 @@ func (viewer *Gallery) prefetchImage(info *ImageInfo) {
 	}
 	img, format, err := info.decodedImage()
 	if err != nil || img == nil {
+		if err != nil {
+			viewer.log().Debug("gallery: prefetch decode", "path", info.Path, "err", err)
+		}
 		return
 	}
 	info.setPrefetched(img, format)
@@ -973,6 +1009,7 @@ func (viewer *Gallery) LoadImageToCache(info *ImageInfo) *ImageView {
 			info.OnDoubleTapped = viewer.ToggleFullscreen
 		}
 		img := NewImageView(info, viewer.window.Canvas().Size(), true, viewer.window, viewer.window.Canvas().Focus, viewer.platform)
+		img.log = viewer.log()
 		// Update window title when image size changes (zoom, window resize).
 		// Called from ImageLayout.Layout and ImageView zoom methods, which
 		// already run on the UI thread.
@@ -1006,8 +1043,11 @@ func (viewer *Gallery) RunCmdA() {
 	cmd := strings.ReplaceAll(viewer.config.Image.CmdA, "$FILE", viewer.CurrentImageView.info.Path)
 	c := exec.Command("/bin/sh", "-c", cmd)
 	go func() {
+		defer tielog.Recover(viewer.log(), "gallery.runCmdA")
 		// Command runs in background; configure command to show its own output if needed
-		c.Run()
+		if err := c.Run(); err != nil {
+			viewer.log().Warn("gallery: CmdA failed", "cmd", cmd, "err", err)
+		}
 	}()
 }
 
@@ -1619,6 +1659,7 @@ func (viewer *Gallery) ReadCustomAsync(fetch func() []CustomReader) {
 	viewer.beginFetch()
 	go func() {
 		defer viewer.endFetch()
+		defer tielog.Recover(viewer.log(), "gallery.ReadCustomAsync")
 		readers := fetch()
 		if readers == nil {
 			return

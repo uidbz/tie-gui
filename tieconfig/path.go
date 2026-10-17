@@ -105,7 +105,7 @@ func Load(name string) client.Config {
 	c, err := client.LoadConfig(ResolvePath(name))
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Println("Error reading tie config:", err)
+			logger.Error("tieconfig: reading config", "path", ResolvePath(name), "err", err)
 		}
 		return client.DefaultConfig()
 	}

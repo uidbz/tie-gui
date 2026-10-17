@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"image/color"
 	"sort"
@@ -24,11 +25,26 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/ui"
 	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/mpvplayer"
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tielog"
 	"github.com/uidbz/tie-gui/tiethumb"
 )
 
 func main() {
+	var logOpts tielog.Options
+	logOpts.App = "tie-fm"
+	logOpts.AddFlags(flag.CommandLine)
+	flag.Parse()
+
+	// tie-fm spends its life talking to remote stores (tie filehosts, MTP
+	// devices), so the log file is the only way back from "it stopped
+	// working".
+	appLog, closeLog := tielog.Setup(logOpts)
+	defer closeLog()
+	tieconfig.SetLogger(appLog)
+	mpvplayer.SetLogger(appLog)
+
 	application := app.NewWithID("net.sourcehut.tie-fm")
 	mainWin := application.NewWindow("tie-fm")
 
@@ -121,6 +137,8 @@ func main() {
 		int(galCfg.General.TileWidth),
 		nil,
 	)
+	previewThumb.Logger = appLog
+	ui.SetLogger(appLog)
 	left.InitPreview(galCfg, previewThumb)
 	right.InitPreview(galCfg, previewThumb)
 

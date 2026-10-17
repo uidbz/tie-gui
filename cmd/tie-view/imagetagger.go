@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"slices"
 	"strconv"
 
@@ -147,8 +146,7 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 						it.OnStarChanged(tag, !isStarred)
 					}
 					// TODO: Show error dialog to user (requires window reference)
-					fmt.Printf("imageTagger: failed to %s tag %q: %v\n",
-						map[bool]string{true: "star", false: "unstar"}[isStarred], tag, err)
+					log.Error("imageTagger: star change", "tag", tag, "star", isStarred, "err", err)
 				})
 			}
 		}()
@@ -197,12 +195,12 @@ func (it *imageTagger) syncRating(rating int) {
 	go func() {
 		if old != 0 {
 			if _, err := it.tc.Delete(hash, "rating", strconv.Itoa(old)); err != nil {
-				fmt.Printf("imageTagger: error clearing rating: %v\n", err)
+				log.Error("imageTagger: clearing rating", "err", err)
 			}
 		}
 		if rating != 0 {
 			if _, err := it.tc.Add(hash, "rating", strconv.Itoa(rating)); err != nil {
-				fmt.Printf("imageTagger: error setting rating %d: %v\n", rating, err)
+				log.Error("imageTagger: setting rating", "rating", rating, "err", err)
 			}
 		}
 	}()
@@ -295,7 +293,7 @@ func (it *imageTagger) loadCurrentTags() {
 	go func() {
 		row, err := it.tc.Get(hash)
 		if err != nil {
-			fmt.Println("imageTagger: error fetching tags:", err)
+			log.Error("imageTagger: fetching tags", "err", err)
 			return
 		}
 		tags := client.RowValues(row, "tag")
@@ -371,7 +369,7 @@ func (it *imageTagger) syncTags(newTags []string) {
 		var failed, addedOK []string
 		for _, tag := range added {
 			if _, err := it.tc.Add(hash, "tag", tag); err != nil {
-				fmt.Printf("imageTagger: error adding tag %q: %v\n", tag, err)
+				log.Error("imageTagger: adding tag", "tag", tag, "err", err)
 				failed = append(failed, tag)
 				continue
 			}
@@ -379,12 +377,12 @@ func (it *imageTagger) syncTags(newTags []string) {
 			// Register in the global "tags"/"all" index so the tag shows up
 			// in the sidebar and future image-tagger sessions.
 			if _, err := it.tc.Add("tags", "all", tag); err != nil {
-				fmt.Printf("imageTagger: error registering tag %q: %v\n", tag, err)
+				log.Error("imageTagger: registering tag", "tag", tag, "err", err)
 			}
 		}
 		for _, tag := range removed {
 			if _, err := it.tc.Delete(hash, "tag", tag); err != nil {
-				fmt.Printf("imageTagger: error removing tag %q: %v\n", tag, err)
+				log.Error("imageTagger: removing tag", "tag", tag, "err", err)
 				failed = append(failed, tag)
 			}
 		}
@@ -400,7 +398,7 @@ func (it *imageTagger) syncTags(newTags []string) {
 		if len(failed) > 0 {
 			row, err := it.tc.Get(hash)
 			if err != nil {
-				fmt.Printf("imageTagger: failed to reconcile after errors: %v\n", err)
+				log.Error("imageTagger: reconcile after errors", "err", err)
 				return
 			}
 			trueTags := client.RowValues(row, "tag")
@@ -415,7 +413,7 @@ func (it *imageTagger) syncTags(newTags []string) {
 					it.OnTagsChanged(hash, it.appliedTags)
 				}
 				// TODO: Show error dialog to user (requires window reference)
-				fmt.Printf("imageTagger: reconciled after %d failed tag operations\n", len(failed))
+				log.Warn("imageTagger: reconciled after failed tag operations", "count", len(failed))
 			})
 		}
 	}()

@@ -101,9 +101,12 @@ import (
 	"fmt"
 	"runtime/cgo"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/uidbz/tie-gui/tielog"
 )
 
 // MPVPlayer drives a libmpv instance and renders its video into an OpenGL FBO
@@ -172,6 +175,9 @@ func NewMPVPlayer(file string) (*MPVPlayer, error) {
 
 func (p *MPVPlayer) eventLoop() {
 	defer close(p.done)
+	// A panic here would take the app down with the message on a console
+	// nobody sees; mpv's callbacks cross cgo, so this is not hypothetical.
+	defer tielog.Recover(Logger, "mpvplayer.eventLoop")
 	for {
 		select {
 		case <-p.stop:
@@ -186,13 +192,28 @@ func (p *MPVPlayer) eventLoop() {
 		case C.MPV_EVENT_NONE:
 		case C.MPV_EVENT_LOG_MESSAGE:
 			msg := (*C.mpv_event_log_message)(ev.data)
-			fmt.Printf("[mpv/%s] %s: %s",
-				C.GoString(msg.prefix),
-				C.GoString(msg.level),
-				C.GoString(msg.text))
+			logMPV(C.GoString(msg.prefix), C.GoString(msg.level), C.GoString(msg.text))
 		case C.MPV_EVENT_SHUTDOWN:
 			return
 		}
+	}
+}
+
+// logMPV forwards one mpv log line to the app logger. mpv's levels are error,
+// warn, info and v..v; anything unrecognised is kept at debug level so -v still
+// shows it without the console filling up.
+func logMPV(prefix, level, text string) {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return
+	}
+	switch level {
+	case "error":
+		Logger.Error("mpv: "+text, "prefix", prefix)
+	case "warn":
+		Logger.Warn("mpv: "+text, "prefix", prefix)
+	default:
+		Logger.Debug("mpv: "+text, "prefix", prefix, "level", level)
 	}
 }
 

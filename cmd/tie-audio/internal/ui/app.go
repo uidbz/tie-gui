@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"image"
 	"io"
-	"log"
 	"path"
 	"sync/atomic"
 	"time"
@@ -219,9 +218,9 @@ func (a *App) startHistory() {
 	// Convert pre-v0.6 playlists (fake parent edges) once per session.
 	go func() {
 		if n, err := a.live.Load().MigratePlaylists(); err != nil {
-			log.Printf("tie-audio: playlist migration: %v", err)
+			log.Error("playlist migration", "err", err)
 		} else if n > 0 {
-			log.Printf("tie-audio: migrated %d legacy playlists", n)
+			log.Info("migrated legacy playlists", "count", n)
 		}
 	}()
 }
@@ -304,7 +303,7 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	if enableMPRIS && !a.platform.IsMobile() {
 		bridge, err := newMPRISBridge(a.player, win)
 		if err != nil {
-			fmt.Println("tie-audio: MPRIS unavailable:", err)
+			log.Error("MPRIS unavailable", "err", err)
 		} else {
 			a.mpris = bridge
 			a.player.AddView(bridge)
@@ -436,7 +435,7 @@ func closeWithin(d time.Duration, what string, fn func()) bool {
 	case <-done:
 		return true
 	case <-time.After(d):
-		log.Printf("tie-audio: closing %s timed out after %v; exiting anyway", what, d)
+		log.Warn("shutdown step timed out", "step", what, "timeout", d)
 		return false
 	}
 }

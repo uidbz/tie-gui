@@ -42,12 +42,12 @@ func deimportDir(tc *client.TieClient, uid client.DirUID) error {
 
 	for _, f := range dir.Files {
 		if e := deimportFile(tc, f.Uid); e != nil {
-			fmt.Printf("de-import file %q: %v\n", f.Filename, e)
+			log.Error("de-import file", "file", f.Filename, "err", e)
 		}
 	}
 	for _, sub := range dir.SubDirs {
 		if e := deimportDir(tc, sub.Uid); e != nil {
-			fmt.Printf("de-import subdir %s: %v\n", sub.Uid, e)
+			log.Error("de-import subdir", "subdir", sub.Uid, "err", e)
 		}
 	}
 

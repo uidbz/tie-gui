@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"image/jpeg"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -29,6 +30,7 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/internal/httpx"
+	"github.com/uidbz/tie-gui/tielog"
 )
 
 // ThumbReader is the interface between Thumbnailer and a content-addressed
@@ -55,6 +57,12 @@ type Thumbnailer struct {
 	// usable previews). Nil leaves the generic path to error out, which the
 	// gallery treats as "keep the placeholder".
 	fallback func(info *gallery.ImageInfo) (io.ReadSeeker, error)
+	// Logger reports cache and upload failures. A thumbnailer runs on the
+	// gallery's loader goroutines against a network store, so "it failed" is
+	// information the app needs and the library has no business printing to
+	// stdout: the Android builds have no stdout, which is where the network
+	// fails most. Defaults to discard; apps pass their tielog logger.
+	Logger *slog.Logger
 }
 
 // New returns a Thumbnailer caching thumbnails on a tie filehost. tie and
@@ -63,7 +71,22 @@ type Thumbnailer struct {
 // client bound), in which case lookups and uploads are skipped. fallback is
 // optional (see the struct doc).
 func New(tie func() *client.TieClient, host func() client.FileHost, tileWidth int, fallback func(info *gallery.ImageInfo) (io.ReadSeeker, error)) *Thumbnailer {
-	return &Thumbnailer{tie: tie, host: host, tileWidth: tileWidth, fallback: fallback}
+	return &Thumbnailer{
+		tie:       tie,
+		host:      host,
+		tileWidth: tileWidth,
+		fallback:  fallback,
+		Logger:    tielog.Discard(),
+	}
+}
+
+// log returns the configured logger, so a Thumbnailer built by hand without one
+// still works.
+func (t *Thumbnailer) log() *slog.Logger {
+	if t.Logger == nil {
+		return tielog.Discard()
+	}
+	return t.Logger
 }
 
 // FileHost resolves the filehost used to fetch tie content: the "fast" host
@@ -126,7 +149,7 @@ func (t *Thumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker, erro
 			if _, err := UploadThumbnail(tc, t.host(), hash, buf.Bytes()); err == nil {
 				tc.Set(hash, "dimensions", []string{dims})
 			} else {
-				fmt.Println("Error uploading thumbnail:", err)
+				t.log().Error("tiethumb: uploading thumbnail", "hash", hash, "err", err)
 			}
 		}
 	}
@@ -182,11 +205,11 @@ func (t *Thumbnailer) thumbnailReader(tr ThumbReader) (rs io.ReadSeeker, ok bool
 func (t *Thumbnailer) upload(tc *client.TieClient, tr ThumbReader, jpegBytes []byte, dims string) {
 	thumbHash, err := UploadThumbnail(tc, t.host(), tr.Path(), jpegBytes)
 	if err != nil {
-		fmt.Println("Error uploading thumbnail:", err)
+		t.log().Error("tiethumb: uploading thumbnail", "path", tr.Path(), "err", err)
 		return
 	}
 	if err := tc.Set(tr.Path(), "dimensions", []string{dims}); err != nil {
-		fmt.Println("Error saving dimensions:", err)
+		t.log().Error("tiethumb: saving dimensions", "path", tr.Path(), "err", err)
 		return
 	}
 	tr.SetThumbCache(thumbHash, dims)

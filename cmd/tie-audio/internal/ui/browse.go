@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -149,6 +148,7 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 	b.viewer = gallery.NewGallery(app, win, config, func(t *gallery.Tile) {
 		t.Viewer.ChangeImage(t.Info) // Openable → routes to AudioAlbumItem.Open
 	})
+	b.viewer.SetLogger(log)
 	b.viewer.OnTileSecondaryTapped = func(t *gallery.Tile) {
 		if item, ok := t.Info.CustomReader.(*AudioAlbumItem); ok {
 			b.showAlbumMenu(t, item.album)
@@ -349,8 +349,8 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 				err = b.session.UnstarTag(tag)
 			}
 			if err != nil {
-				fmt.Printf("sidebar: failed to %s tag %q: %v\n",
-					map[bool]string{true: "star", false: "unstar"}[starred], tag, err)
+				log.Error("sidebar: tag star change", "tag", tag,
+					"star", starred, "err", err)
 				fyne.Do(func() { b.setStarred(tag, !starred) })
 			}
 		}()
@@ -425,7 +425,7 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		albums, err := b.session.QueryAlbums(include, exclude)
 		if err != nil {
-			fmt.Println("Error querying albums:", err)
+			log.Error("wall: query albums", "err", err)
 			return nil
 		}
 		fyne.Do(func() { b.setWallAlbums(albums) })
@@ -446,7 +446,7 @@ func (b *browsePage) refreshLatest() {
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		albums, err := b.session.LatestAlbumsExcluding(exclude)
 		if err != nil {
-			fmt.Println("Error querying latest albums:", err)
+			log.Error("wall: query latest albums", "err", err)
 			return nil
 		}
 		fyne.Do(func() { b.setWallAlbums(albums) })
@@ -586,7 +586,7 @@ func (b *browsePage) loadTags() {
 			}
 			if err != nil {
 				b.ts.SetListLabel("Error loading tags")
-				fmt.Println("Error loading tags:", err)
+				log.Error("tag list load", "err", err)
 				return
 			}
 			b.allTags = all
@@ -644,7 +644,7 @@ func (b *browsePage) refineTags(include, exclude []string) {
 	}
 	coTags, err := b.session.CoTags(include, exclude)
 	if err != nil {
-		fmt.Println("Error getting co-tags:", err)
+		log.Error("co-tag query", "err", err)
 		return
 	}
 	index := tagindex.New()

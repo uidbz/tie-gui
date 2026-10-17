@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/mpvplayer"
+	"github.com/uidbz/tie-gui/tielog"
 	// "github.com/pkg/profile"
 )
 
@@ -98,7 +98,7 @@ func openLocalVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 	if info.InputIsReader {
 		r, err := info.CustomReader.GetReader()
 		if err != nil {
-			fmt.Println("Error reading video:", err)
+			log.Error("reading video", "err", err)
 			return
 		}
 		tmp, err := os.CreateTemp("", "imgview-vid-*"+filepath.Ext(info.DisplayName))
@@ -115,7 +115,7 @@ func openLocalVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 
 	player, err := mpvplayer.NewMPVPlayer(src)
 	if err != nil {
-		fmt.Println("Error starting video player:", err)
+		log.Error("starting video player", "err", err)
 		if tmpFile != "" {
 			os.Remove(tmpFile)
 		}
@@ -176,7 +176,15 @@ func main() {
 	// defer profile.Start(profile.CPUProfile).Stop()
 	// defer profile.Start().Stop()
 	configPath := gallery.ConfigFlag("imgview config file to load (default: config.toml in user config dir)")
+	var logOpts tielog.Options
+	logOpts.App = "imgview"
+	logOpts.AddFlags(flag.CommandLine)
 	flag.Parse()
+
+	appLog, closeLog := tielog.Setup(logOpts)
+	defer closeLog()
+	log = appLog
+	mpvplayer.SetLogger(appLog)
 
 	myApp, myWindow := gallery.NewApp("sr.ht.uid.imgview", "imgview", icon)
 
@@ -204,6 +212,7 @@ func main() {
 		}
 	})
 
+	viewer.SetLogger(appLog)
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)
 

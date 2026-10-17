@@ -16,11 +16,6 @@ import (
 )
 
 func ScaleImage(img image.Image, w int) (scaledImage image.Image) {
-	// err := rez.Convert(scaledImage, img, rez.NewBicubicFilter())
-	// if err != nil {
-	// 	fmt.Println("Error resizing image:", err)
-	// }
-	// return scaledImage
 	// Linear is dramatically cheaper than Lanczos and visually identical at
 	// thumbnail sizes (~600 px), speeding up the thumbnail miss path.
 	return imaging.Resize(img, w, 0, imaging.Linear)
