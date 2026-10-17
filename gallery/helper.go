@@ -1,6 +1,8 @@
 package gallery
 
 import (
+	"errors"
+	"fmt"
 	"image"
 	"io"
 	"io/fs"
@@ -24,7 +26,74 @@ func ScaleImage(img image.Image, w int) (scaledImage image.Image) {
 	return imaging.Resize(img, w, 0, imaging.Linear)
 }
 
+// Decode limits. A few kilobytes of PNG can declare 40 000 × 40 000 pixels,
+// which is 6.4 GB of RGBA once decoded — enough to have the OOM killer take the
+// whole app down from one hostile archive member or tie blob, with no error
+// dialog and no recovery. The guard reads only the header, which costs no
+// pixel allocation, and the gallery keeps its placeholder when it rejects.
+const (
+	defaultMaxDecodePixels = 80_000_000 // 80 megapixels
+	defaultMaxDecodeDim    = 16_384     // pixels on either side
+)
+
+var (
+	maxDecodePixels = defaultMaxDecodePixels
+	maxDecodeDim    = defaultMaxDecodeDim
+)
+
+// SetDecodeLimits changes the largest image the gallery will decode, in total
+// pixels and pixels on a side. Zero or negative restores the default. Apps can
+// raise it on a memory-rich desktop machine or lower it on a phone; tests use
+// it to exercise the rejection path cheaply.
+func SetDecodeLimits(maxPixels, maxDim int) {
+	if maxPixels <= 0 {
+		maxPixels = defaultMaxDecodePixels
+	}
+	if maxDim <= 0 {
+		maxDim = defaultMaxDecodeDim
+	}
+	maxDecodePixels, maxDecodeDim = maxPixels, maxDim
+}
+
+// ErrImageTooLarge reports an image whose header declares more pixels than the
+// decode limits allow. Callers treat it like any other decode failure: keep the
+// placeholder, move on.
+var ErrImageTooLarge = errors.New("image too large to decode")
+
+// CheckDecodeLimits reads only an image header and reports whether decoding it
+// would exceed the configured limits. It allocates no pixels, so it is cheap to
+// run before every decode of untrusted bytes.
+func CheckDecodeLimits(reader io.ReadSeeker) error {
+	if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	cfg, _, err := image.DecodeConfig(reader)
+	if err != nil {
+		return err
+	}
+	return checkDecodeConfig(cfg)
+}
+
+func checkDecodeConfig(cfg image.Config) error {
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return fmt.Errorf("%w: %d×%d", ErrImageTooLarge, cfg.Width, cfg.Height)
+	}
+	if cfg.Width > maxDecodeDim || cfg.Height > maxDecodeDim {
+		return fmt.Errorf("%w: %d×%d exceeds %d px on a side",
+			ErrImageTooLarge, cfg.Width, cfg.Height, maxDecodeDim)
+	}
+	if pixels := int64(cfg.Width) * int64(cfg.Height); pixels > int64(maxDecodePixels) {
+		return fmt.Errorf("%w: %d×%d is %d MP, over %d MP",
+			ErrImageTooLarge, cfg.Width, cfg.Height, pixels/1e6, maxDecodePixels/1e6)
+	}
+	return nil
+}
+
 func Decode(reader io.ReadSeeker) (image.Image, string, error) {
+	// Guard before allocating: image.Decode would build the whole bitmap first.
+	if err := CheckDecodeLimits(reader); err != nil {
+		return nil, "", err
+	}
 	reader.Seek(0, io.SeekStart)
 	img, fmt, err := image.Decode(reader)
 	if err != nil {

@@ -21,6 +21,8 @@ import (
 	"github.com/uidbz/tie/io/fhclient"
 	"github.com/uidbz/tie/io/putlib"
 	"github.com/uidbz/tie/metadata/tag"
+
+	"github.com/uidbz/tie-gui/gallery"
 )
 
 // archiveCoverEdge is the pixel width a cover extracted from an archive is
@@ -200,6 +202,11 @@ func coverScoreOf(name string) int {
 // and records the (archiveUID, "thumbnail", thumbHash) relation. Every step
 // is best effort: failures are logged and the album simply stays coverless.
 func (s *Session) storeArchiveCover(archiveUID string, pc putlib.PutConfig, host client.FileHost, img []byte) {
+	// The bytes are an archive member: check the header before decoding, so a
+	// crafted member cannot OOM the app while its cover is extracted.
+	if err := gallery.CheckDecodeLimits(bytes.NewReader(img)); err != nil {
+		return
+	}
 	decoded, _, err := image.Decode(bytes.NewReader(img))
 	if err != nil {
 		return
