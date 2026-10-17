@@ -312,7 +312,7 @@ func (layout *TileLayout) placeTiles(imageFiles []*ImageInfo, offset int) {
 
 	// Enqueue the load work; each item gets a fresh retry budget.
 	for i := offset; i < end; i++ {
-		imageFiles[i].loadAttempts = 0
+		imageFiles[i].resetLoadAttempts()
 		layout.currentlyLoading.Add(1)
 		layout.imagesToLoad <- imageFiles[i]
 	}
@@ -612,8 +612,8 @@ func (layout *TileLayout) imageLoader() {
 				// re-queue with a bounded budget so a transient failure
 				// does not leave a permanent placeholder. Once the budget
 				// is spent the placeholder stays (previous behavior).
-				if tc.loadAttempts < maxTileLoadAttempts {
-					tc.loadAttempts++
+				if tc.loadAttempts() < maxTileLoadAttempts {
+					tc.bumpLoadAttempts()
 					layout.currentlyLoading.Add(1)
 					layout.imagesToLoad <- tc
 				}
@@ -755,10 +755,10 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	// code falls through to the Thumbnailer (e.g. folder icon) or the
 	// generic path instead of leaving the tile on the placeholder.
 	_, hasPreviewProvider := info.CustomReader.(PreviewProvider)
-	if len(info.PreviewPaths) > 0 || len(info.PreviewReaders) > 0 || hasPreviewProvider {
+	if len(info.PreviewPaths) > 0 || len(info.PreviewReaders()) > 0 || hasPreviewProvider {
 		data, err := layout.dirPreviewThumbnail(info)
 		if err == nil {
-			info.ThumbnailIsScaled = true
+			info.SetThumbnailScaled(true)
 			return bytes.NewReader(data), nil
 		}
 	}
@@ -802,7 +802,7 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 		if err != nil {
 			return nil, err
 		}
-		info.ThumbnailIsScaled = true
+		info.SetThumbnailScaled(true)
 		return reader, nil
 	} else {
 		err := os.MkdirAll(thumbnailDir, 0755)
@@ -822,7 +822,7 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 				// Write to disk cache; ignore errors (thumbnail still returned in-memory)
 				os.WriteFile(thumbnail, buf.Bytes(), 0755)
 			}
-			info.ThumbnailIsScaled = true
+			info.SetThumbnailScaled(true)
 
 			return bytes.NewReader(buf.Bytes()), nil
 		}
@@ -832,7 +832,7 @@ func (layout *TileLayout) GetThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 }
 
 // dirPreviewThumbnail generates (or retrieves from disk cache) the thumbnail
-// for a directory or archive tile: the preview image at info.previewIndex,
+// for a directory or archive tile: the preview image at info.PreviewIndex(),
 // scaled to 2×tileWidth wide, with a semi-transparent folder icon overlaid in
 // the top-left corner (the same way video tiles get a play icon).
 //
@@ -847,7 +847,7 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 	var scaled image.Image
 
 	if len(info.PreviewPaths) > 0 {
-		idx := info.previewIndex
+		idx := info.PreviewIndex()
 		if idx < 0 || idx >= len(info.PreviewPaths) {
 			idx = 0
 		}
@@ -899,7 +899,7 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 		// tile's initial view WITHOUT enumerating the collection — no
 		// archive download, no directory query.
 		if cp, ok := info.CustomReader.(CoverProvider); ok &&
-			info.previewIndex == 0 && len(info.PreviewReaders) == 0 {
+			info.PreviewIndex() == 0 && len(info.PreviewReaders()) == 0 {
 			cacheKey = readerCacheKey(info.CustomReader.Path())
 			if data, ok := layout.dirPreviewCache(cacheKey); ok {
 				return data, nil
@@ -918,21 +918,21 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 		// Lazily resolve the preview readers (PreviewProvider). This is
 		// where collection enumeration happens — one cheap query for tie
 		// directories, a full blob download for tie archives.
-		if len(info.PreviewReaders) == 0 {
+		if len(info.PreviewReaders()) == 0 {
 			if pp, ok := info.CustomReader.(PreviewProvider); ok {
 				if pr, err := pp.Previews(); err == nil {
-					info.PreviewReaders = pr
+					info.SetPreviewReaders(pr)
 				}
 			}
-			if len(info.PreviewReaders) == 0 {
+			if len(info.PreviewReaders()) == 0 {
 				return nil, errors.New("no previews available")
 			}
 		}
-		idx := info.previewIndex
-		if idx < 0 || idx >= len(info.PreviewReaders) {
+		idx := info.PreviewIndex()
+		if idx < 0 || idx >= len(info.PreviewReaders()) {
 			idx = 0
 		}
-		r := info.PreviewReaders[idx]
+		r := info.PreviewReaders()[idx]
 		cacheKey = readerCacheKey(r.Path())
 		if data, ok := layout.dirPreviewCache(cacheKey); ok {
 			return data, nil
@@ -969,7 +969,7 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 				return nil, err
 			}
 			scaled = ScaleImage(decoded, tileWidth*2)
-			if _, ok := info.CustomReader.(CoverProvider); ok && info.previewIndex == 0 {
+			if _, ok := info.CustomReader.(CoverProvider); ok && info.PreviewIndex() == 0 {
 				buf := &bytes.Buffer{}
 				if err := jpeg.Encode(buf, scaled, &jpeg.Options{Quality: 90}); err == nil {
 					plainJPEG = buf.Bytes()
@@ -978,7 +978,7 @@ func (layout *TileLayout) dirPreviewThumbnail(info *ImageInfo) ([]byte, error) {
 		}
 
 		if cp, ok := info.CustomReader.(CoverProvider); ok &&
-			info.previewIndex == 0 && plainJPEG != nil {
+			info.PreviewIndex() == 0 && plainJPEG != nil {
 			cp.StoreCoverThumbnail(plainJPEG)
 		}
 	}
@@ -1048,13 +1048,13 @@ const videoPreviewFrames = 10
 
 // videoThumbnail generates (or retrieves from disk cache) a thumbnail for a
 // video entry (local file or network-backed CustomReader). It extracts the
-// frame at info.previewIndex (changed by swiping the tile), scales it to
+// frame at info.PreviewIndex() (changed by swiping the tile), scales it to
 // 2×tileWidth wide, and overlays a circular play icon in the top-left corner.
 // On any failure it falls back to the loading placeholder.
 func (layout *TileLayout) videoThumbnail(info *ImageInfo) (io.ReadSeeker, error) {
 	tileW := int(layout.config.General.TileWidth)
 
-	frameIdx := info.previewIndex
+	frameIdx := info.PreviewIndex()
 	if frameIdx < 0 || frameIdx >= videoPreviewFrames {
 		frameIdx = 0
 	}
@@ -1062,7 +1062,7 @@ func (layout *TileLayout) videoThumbnail(info *ImageInfo) (io.ReadSeeker, error)
 	// Check disk cache before running mpv.
 	cachePath := layout.videoThumbnailCachePath(info.Path, frameIdx)
 	if data, err := os.ReadFile(cachePath); err == nil && !layout.refreshThumbs {
-		info.ThumbnailIsScaled = true
+		info.SetThumbnailScaled(true)
 		return bytes.NewReader(data), nil
 	}
 
@@ -1107,7 +1107,7 @@ func (layout *TileLayout) videoThumbnail(info *ImageInfo) (io.ReadSeeker, error)
 		os.WriteFile(cachePath, buf.Bytes(), 0644)
 	}
 
-	info.ThumbnailIsScaled = true
+	info.SetThumbnailScaled(true)
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
@@ -1298,11 +1298,11 @@ func (layout *TileLayout) newImageTileFromImage(decoded image.Image, info *Image
 	img.ScaleMode = canvas.ImageScaleFastest
 	img.FillMode = canvas.ImageFillContain
 	t.Info = info
-	if info.Width > 0 && info.Height > 0 {
+	if w, h := info.Dimensions(); w > 0 && h > 0 {
 		// Use pre-stored original dimensions so placeholder tiles already
 		// carry the correct aspect ratio, avoiding layout reflow on load.
-		t.width = float32(info.Width)
-		t.height = float32(info.Height)
+		t.width = float32(w)
+		t.height = float32(h)
 	} else {
 		t.width = float32(img.Image.Bounds().Max.X)
 		t.height = float32(img.Image.Bounds().Max.Y)
@@ -1362,7 +1362,7 @@ func (t *Tile) cyclePreview(delta int) {
 	if n == 0 || t.layout == nil {
 		return
 	}
-	info.previewIndex = ((info.previewIndex+delta)%n + n) % n
+	info.AdvancePreview(delta, n)
 	go func() {
 		thumb, err := t.layout.GetThumbnail(info)
 		if err != nil {

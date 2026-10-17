@@ -59,7 +59,7 @@ func (t *coverThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker,
 	if !ok {
 		return nil, errors.New("not an audio album item")
 	}
-	info.ThumbnailIsScaled = true
+	info.SetThumbnailScaled(true)
 	// This runs on a gallery loader goroutine, so the blocking store lookup is
 	// fine here; going through the store means the queue's cover column and the
 	// transport reuse this fetch instead of repeating it.

@@ -69,7 +69,7 @@ func setupTestGallery(t *testing.T, dir string, imagesPerPage int, winSize fyne.
 	// Pre-set the (known) dimensions so placeholder tiles have the final
 	// aspect ratio and row positions stay stable when real thumbnails land.
 	for _, info := range viewer.imageFiles {
-		info.Width, info.Height = 120, 90
+		info.SetDimensions(120, 90)
 	}
 	win.SetContent(viewer.Content)
 	win.Resize(winSize)

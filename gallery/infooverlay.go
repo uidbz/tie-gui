@@ -159,9 +159,9 @@ func basicMetadata(info *ImageInfo) imageMetadata {
 	if info.InputIsArchive && info.archiveName != "" {
 		rows = append(rows, infoRow{"Archive", info.archiveName})
 	}
-	if info.Width > 0 && info.Height > 0 {
+	if w, h := info.Dimensions(); w > 0 && h > 0 {
 		rows = append(rows, infoRow{"Dimensions",
-			fmt.Sprintf("%d × %d px", info.Width, info.Height)})
+			fmt.Sprintf("%d × %d px", w, h)})
 	}
 	return imageMetadata{file: rows}
 }
@@ -185,7 +185,7 @@ func collectImageMetadata(info *ImageInfo) imageMetadata {
 		if format != "" {
 			md.file = append(md.file, infoRow{"Format", format})
 		}
-		if cfg.Width > 0 && cfg.Height > 0 && (info.Width == 0 || info.Height == 0) {
+		if iw, ih := info.Dimensions(); cfg.Width > 0 && cfg.Height > 0 && (iw == 0 || ih == 0) {
 			md.file = append(md.file, infoRow{"Dimensions",
 				fmt.Sprintf("%d × %d px", cfg.Width, cfg.Height)})
 		}

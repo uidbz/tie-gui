@@ -130,7 +130,7 @@ func main() {
 			// tile as browsable. When the entry has preview images, the
 			// gallery badges a content thumbnail via PreviewProvider and
 			// never reaches this fallback.
-			info.ThumbnailIsScaled = true
+			info.SetThumbnailScaled(true)
 			return folderIcon(int(config.General.TileWidth) * 2), nil
 		})
 	toggleTagger := func() {

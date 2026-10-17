@@ -90,7 +90,7 @@ func (t *Thumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker, erro
 	}
 	if tr != nil {
 		if rs, ok := t.thumbnailReader(tr); ok {
-			info.ThumbnailIsScaled = true
+			info.SetThumbnailScaled(true)
 			return rs, nil
 		}
 	}
@@ -132,9 +132,8 @@ func (t *Thumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker, erro
 	}
 	// Make dimensions available for the current session without waiting for
 	// the next query to return them.
-	info.Width = origW
-	info.Height = origH
-	info.ThumbnailIsScaled = true
+	info.SetDimensions(origW, origH)
+	info.SetThumbnailScaled(true)
 
 	return bytes.NewReader(buf.Bytes()), nil
 }

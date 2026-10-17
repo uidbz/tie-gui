@@ -377,7 +377,7 @@ func TestDirPreviewThumbnailCoverFallback(t *testing.T) {
 	}
 
 	// Swipe to index 1: per-member path, no cover store.
-	info.previewIndex = 1
+	info.SetPreviewIndex(1)
 	if _, err := layout.dirPreviewThumbnail(info); err != nil {
 		t.Fatal(err)
 	}
@@ -396,10 +396,10 @@ func TestDirPreviewThumbnailReaders(t *testing.T) {
 
 	layout := testDirLayout(filepath.Join(tmp, "cache"))
 	info := NewImageInfoCustomReader(0, memPreviewProvider{memReader{"dir", nil}, nil})
-	info.PreviewReaders = []CustomReader{
+	info.SetPreviewReaders([]CustomReader{
 		memReader{"dir/a.jpg", imgA},
 		memReader{"dir/b.jpg", imgB},
-	}
+	})
 
 	data, err := layout.dirPreviewThumbnail(info)
 	if err != nil {
@@ -413,7 +413,7 @@ func TestDirPreviewThumbnailReaders(t *testing.T) {
 		t.Fatalf("thumbnail size = %dx%d, want 600x450", w, h)
 	}
 
-	info.previewIndex = 1
+	info.SetPreviewIndex(1)
 	dataB, err := layout.dirPreviewThumbnail(info)
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +435,7 @@ func TestDirPreviewThumbnailReadersUsesThumbnailer(t *testing.T) {
 	layout.thumbnailer = th
 
 	info := NewImageInfoCustomReader(0, memPreviewProvider{memReader{"dir", nil}, nil})
-	info.PreviewReaders = []CustomReader{memReader{"dir/a.jpg", rawBytes}}
+	info.SetPreviewReaders([]CustomReader{memReader{"dir/a.jpg", rawBytes}})
 
 	data, err := layout.dirPreviewThumbnail(info)
 	if err != nil {
@@ -478,7 +478,7 @@ func TestPreviewCountAndHasPreviews(t *testing.T) {
 	if tie.PreviewCount() != 0 {
 		t.Fatalf("PreviewCount before lazy load = %d, want 0", tie.PreviewCount())
 	}
-	tie.PreviewReaders = []CustomReader{memReader{"h", nil}}
+	tie.SetPreviewReaders([]CustomReader{memReader{"h", nil}})
 	if tie.PreviewCount() != 1 {
 		t.Fatalf("PreviewCount = %d, want 1", tie.PreviewCount())
 	}
@@ -582,7 +582,7 @@ func TestDirPreviewThumbnailIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info.previewIndex = 1
+	info.SetPreviewIndex(1)
 	dataB, err := layout.dirPreviewThumbnail(info)
 	if err != nil {
 		t.Fatal(err)
@@ -591,7 +591,7 @@ func TestDirPreviewThumbnailIndex(t *testing.T) {
 		t.Fatal("different previews produced identical thumbnails")
 	}
 
-	info.previewIndex = 99 // out of range → clamps to first
+	info.SetPreviewIndex(99) // out of range → clamps to first
 	dataC, err := layout.dirPreviewThumbnail(info)
 	if err != nil {
 		t.Fatal(err)

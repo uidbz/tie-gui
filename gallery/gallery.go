@@ -1594,7 +1594,7 @@ func (viewer *Gallery) ReadCustom(readers []CustomReader) {
 			info.InputIsVideo = true
 		}
 		if dp, ok := r.(DimensionProvider); ok {
-			info.Width, info.Height = dp.Dimensions()
+			info.SetDimensions(dp.Dimensions())
 		}
 		imageFiles = append(imageFiles, info)
 	}
