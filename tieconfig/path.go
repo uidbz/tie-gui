@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/uidbz/conf"
 	"github.com/uidbz/tie/client"
 )
 
@@ -47,6 +48,53 @@ func ResolvePath(name string) string {
 	default:
 		return filepath.Join(Dir(), withTOML(name))
 	}
+}
+
+// SaveConfig writes cfg to the path ResolvePath(name) names, with permissions
+// fit for a file that carries credentials.
+//
+// The tie client config holds plaintext Username/Password for the triplestore
+// and for every filehost. conf.WriteConfig writes with mode 0766, which a
+// normal umask lands as 0744 — world-readable, and executable — so on any
+// shared machine every local user can read the credentials, and with a
+// permissive umask overwrite them.
+//
+// Writing through an unpredictable temp name closes that window: os.CreateTemp
+// creates 0600, conf.WriteConfig's os.WriteFile leaves an existing file's mode
+// alone, and the rename is atomic, so a reader either sees the old config or
+// the new one and never a half-written file. The config directory is 0700 for
+// the same reason.
+func SaveConfig(name string, cfg any) error {
+	return SaveConfigAt(ResolvePath(name), cfg)
+}
+
+// SaveConfigAt is SaveConfig for an explicit file path.
+func SaveConfigAt(path string, cfg any) error {
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	tmp.Close()
+	if err := conf.WriteConfig(tmpName, cfg); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // Load loads the tie client config named by name (see ResolvePath) via

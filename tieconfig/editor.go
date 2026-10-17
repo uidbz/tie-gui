@@ -8,7 +8,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/uidbz/conf"
 	"github.com/uidbz/tie/client"
 )
 
@@ -200,7 +199,7 @@ func Editor(cfg client.Config, savePath, active string, onSelect func(name strin
 			// not touch the shared top-level DefaultFileHosts.
 		}
 
-		if err := conf.WriteConfig(savePath, cfg); err != nil {
+		if err := SaveConfigAt(savePath, cfg); err != nil {
 			status.SetText("Save failed: " + err.Error())
 			return
 		}
