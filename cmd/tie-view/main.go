@@ -72,6 +72,7 @@ func main() {
 	run := appboot.Start(boot)
 	run.MaybeShowConfig()
 	defer run.Close()
+	defer closeVideoCaches()
 	appLog := run.Log
 	// The package logger is what every file in this app reports through; the
 	// libraries get it too, because a thumbnail upload that failed against a
@@ -844,22 +845,35 @@ func openTieVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 		src = vs.StreamURL()
 	}
 	if src == "" {
-		// Fallback: download the blob to a temp file.
-		r, err := info.CustomReader.GetReader()
-		if err != nil {
-			log.Error("reading video", "err", err)
-			return
+		// Fallback: get the blob onto disk. A tie entry downloads straight to
+		// the session cache by content hash; anything else (a local file the
+		// player cannot use, an archive member) is copied out of its reader.
+		if tr, ok := info.CustomReader.(*tieReader); ok {
+			path, err := videoCache(tr.host).Materialize(tr.hash, 0, tr.filename)
+			if err != nil {
+				log.Error("downloading video", "hash", tr.hash, "err", err)
+				return
+			}
+			src = path
+			// Not removed on close: it is the session's cache of that blob, and
+			// closeVideoCaches removes it when the app exits.
+		} else {
+			r, err := info.CustomReader.GetReader()
+			if err != nil {
+				log.Error("reading video", "err", err)
+				return
+			}
+			tmp, err := os.CreateTemp("", "imgview-tie-vid-*")
+			if err != nil {
+				return
+			}
+			if _, err2 := r.Seek(0, io.SeekStart); err2 == nil {
+				_, _ = io.Copy(tmp, r)
+			}
+			tmp.Close()
+			src = tmp.Name()
+			tmpFile = tmp.Name()
 		}
-		tmp, err := os.CreateTemp("", "imgview-tie-vid-*")
-		if err != nil {
-			return
-		}
-		if _, err2 := r.Seek(0, io.SeekStart); err2 == nil {
-			_, _ = io.Copy(tmp, r)
-		}
-		tmp.Close()
-		src = tmp.Name()
-		tmpFile = tmp.Name()
 	}
 
 	player, err := mpvplayer.NewMPVPlayer(src)

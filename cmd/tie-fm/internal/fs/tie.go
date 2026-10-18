@@ -4,38 +4,33 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/metadata"
 
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tiestore"
 )
 
 // TieFS serves the tie tagging filesystem over a tie client. It implements both
 // FileSystem and TagStore.
 type TieFS struct {
 	tc *client.TieClient
-	// download fetches a blob to a local path. It is a field so tests can
-	// inject a downloader that fails or truncates mid-transfer; production uses
-	// the tie client.
-	download func(hash, dest string) error
-	// mu guards tmpDir: Materialize runs on the ops goroutine and the UI
-	// goroutine, and both create the cache lazily.
-	mu     sync.Mutex
-	tmpDir string // lazily created cache for materialized downloads
+	// cache materializes blobs on disk for transfers, previews and external
+	// programs. It is shared with every other tie-gui app through
+	// internal/tiestore: atomic download-then-rename, keyed on the content
+	// hash alone, and removed when the session ends.
+	cache *tiestore.Cache
 }
 
 func NewTieFS(tc *client.TieClient) *TieFS {
 	return &TieFS{
-		tc:       tc,
-		download: func(hash, dest string) error { return tc.Download("", hash, dest) },
+		tc:    tc,
+		cache: tiestore.NewCache("tie-fm-", tiestore.NewDownloader(tc, "")),
 	}
 }
 
@@ -153,70 +148,13 @@ func (t *TieFS) List(uri string) ([]Entry, error) {
 //     Materialize runs on both the ops goroutine and the UI goroutine, and it
 //     was never removed, so every preview and export left its bytes on disk.
 func (t *TieFS) Materialize(e Entry) (string, error) {
-	if e.Hash == "" {
-		return "", errors.New("tie: entry has no content hash: " + e.Name)
-	}
-	if !metadata.IsHexHash(e.Hash) {
-		return "", errors.New("tie: entry has an unusable content hash: " + e.Name)
-	}
-	dir, err := t.cacheDir()
-	if err != nil {
-		return "", err
-	}
-	dest := filepath.Join(dir, e.Hash)
-	if info, err := os.Stat(dest); err == nil && (e.Size <= 0 || info.Size() == e.Size) {
-		return dest, nil // already downloaded, and the size still matches
-	}
-
-	part := dest + ".part"
-	if err := t.download(e.Hash, part); err != nil {
-		os.Remove(part)
-		return "", err
-	}
-	info, err := os.Stat(part)
-	if err != nil {
-		return "", err
-	}
-	if e.Size > 0 && info.Size() != e.Size {
-		os.Remove(part)
-		return "", fmt.Errorf("tie: download of %s is %d bytes, expected %d", e.Name, info.Size(), e.Size)
-	}
-	if err := os.Rename(part, dest); err != nil {
-		os.Remove(part)
-		return "", err
-	}
-	return dest, nil
-}
-
-// cacheDir returns TieFS's download cache directory, creating it on first use.
-// Guarded, because Materialize is called from the ops goroutine and the UI
-// goroutine.
-func (t *TieFS) cacheDir() (string, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.tmpDir == "" {
-		d, err := os.MkdirTemp("", "tie-fm-")
-		if err != nil {
-			return "", err
-		}
-		t.tmpDir = d
-	}
-	return t.tmpDir, nil
+	return t.cache.Materialize(e.Hash, e.Size, e.Name)
 }
 
 // Close removes the download cache. Materialized files exist only to feed a
 // transfer or an external program, so nothing outlives the session that made
 // them. Safe to call more than once.
-func (t *TieFS) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.tmpDir == "" {
-		return nil
-	}
-	err := os.RemoveAll(t.tmpDir)
-	t.tmpDir = ""
-	return err
-}
+func (t *TieFS) Close() error { return t.cache.Close() }
 
 // Import copies a local file into the tie tree under destDir, creating the
 // directory (and any missing ancestors) if needed. The bytes are uploaded and

@@ -25,12 +25,12 @@ import (
 
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/io/fhclient"
-	"github.com/uidbz/tie/io/getlib"
 	"github.com/uidbz/tie/io/putlib"
 
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/internal/httpx"
 	"github.com/uidbz/tie-gui/tielog"
+	"github.com/uidbz/tie-gui/tiestore"
 )
 
 // ThumbReader is the interface between Thumbnailer and a content-addressed
@@ -187,15 +187,13 @@ func (t *Thumbnailer) thumbnailReader(tr ThumbReader) (rs io.ReadSeeker, ok bool
 		// reader can serve DimensionProvider without another Get.
 		tr.SetThumbCache(thumbHash, client.RowFirst(row, "dimensions"))
 	}
-	r, err := getlib.ReadFile(httpx.Small(host), host.URL, thumbHash)
+	// FetchSmall already holds the verified bytes, so the reader it hands back
+	// is the value; no second copy.
+	r, err := tiestore.FetchSmall(host, thumbHash)
 	if err != nil {
 		return nil, false
 	}
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, false
-	}
-	return bytes.NewReader(data), true
+	return r, true
 }
 
 // upload stores jpegBytes on the filehost and records the
@@ -243,7 +241,7 @@ func UploadThumbnail(tc *client.TieClient, host client.FileHost, ownerHash strin
 
 // FetchBlob downloads a blob from the filehost.
 func FetchBlob(host client.FileHost, hash string) ([]byte, error) {
-	r, err := getlib.ReadFile(httpx.Bulk(host), host.URL, hash)
+	r, err := tiestore.Fetch(host, hash)
 	if err != nil {
 		return nil, err
 	}

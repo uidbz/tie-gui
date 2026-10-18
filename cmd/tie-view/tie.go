@@ -4,21 +4,57 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"net/http"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/io/archivelib"
-	"github.com/uidbz/tie/io/getlib"
 
 	"github.com/uidbz/tie-gui/gallery"
-	"github.com/uidbz/tie-gui/internal/httpx"
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tiestore"
 	"github.com/uidbz/tie-gui/tiethumb"
+)
+
+// videoCache returns the on-disk materialization cache for a filehost.
+//
+// libmpv plays a file path, not a reader, and the reader path buffers the
+// whole blob in memory before it is copied out — a multi-gigabyte video became
+// a multi-gigabyte []byte. So the blob is downloaded straight to disk instead,
+// atomically and keyed on its content hash, and replaying the same video reuses
+// the download. The directories are removed when the app exits, and the
+// startup sweep (internal/appboot) recognises the prefix if it does not.
+func videoCache(host client.FileHost) *tiestore.Cache {
+	videoCacheMu.Lock()
+	defer videoCacheMu.Unlock()
+	c, ok := videoCaches[host.URL]
+	if !ok {
+		c = tiestore.NewCache("imgview-tie-vid-",
+			func(hash, dest string) error { return client.DownloadFrom(host, hash, dest) })
+		videoCaches[host.URL] = c
+	}
+	return c
+}
+
+// closeVideoCaches removes every materialized video.
+func closeVideoCaches() {
+	videoCacheMu.Lock()
+	defer videoCacheMu.Unlock()
+	for url, c := range videoCaches {
+		if err := c.Close(); err != nil {
+			log.Warn("removing video cache", "host", url, "err", err)
+		}
+	}
+	videoCaches = map[string]*tiestore.Cache{}
+}
+
+var (
+	videoCaches  = map[string]*tiestore.Cache{}
+	videoCacheMu sync.Mutex
 )
 
 // tieHostName names the filehost to fetch content from, set by the -host
@@ -38,9 +74,7 @@ func tieFileHost(tc *client.TieClient) client.FileHost {
 
 type tieReader struct {
 	seeker io.ReadSeeker
-	data   []byte
 	host   client.FileHost
-	client *http.Client
 	hash   string
 	// thumbHash is the content hash of the filehost-cached thumbnail, learned
 	// from the query's expanded attributes or after uploadTieThumbnail.
@@ -137,26 +171,17 @@ func (t *tieReader) DisplayName() string {
 	return t.hash
 }
 
-func (t *tieReader) httpClient() *http.Client {
-	if t.client == nil {
-		t.client = httpx.Bulk(t.host)
-	}
-	return t.client
-}
-
 func (t *tieReader) GetReader() (io.ReadSeeker, error) {
-	var err error
-	var r io.Reader
 	if t.seeker == nil {
-		r, err = getlib.ReadFile(t.httpClient(), t.host.URL, t.hash)
+		// The blob is verified against its content hash by tie's getlib and
+		// handed back seekable, so there is nothing to copy.
+		r, err := tiestore.Fetch(t.host, t.hash)
 		if err == nil {
-			t.data, err = io.ReadAll(r)
-			if err == nil {
-				t.seeker = bytes.NewReader(t.data)
-			}
+			t.seeker = r
 		}
+		return t.seeker, err
 	}
-	return t.seeker, err
+	return t.seeker, nil
 }
 
 // tieDirReader is the gallery entry for a tagged tie directory (tie-type
@@ -344,7 +369,7 @@ func (a *archiveMemberReader) GetReader() (io.ReadSeeker, error) {
 // once and shared across the member readers.
 func browseTieArchive(viewer *gallery.Gallery, host client.FileHost, hash string) {
 	viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		r, err := getlib.ReadFile(httpx.Bulk(host), host.URL, hash)
+		r, err := tiestore.Fetch(host, hash)
 		if err != nil {
 			log.Error("fetching archive", "hash", hash, "err", err)
 			return nil
