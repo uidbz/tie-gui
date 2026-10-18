@@ -1156,7 +1156,14 @@ Two follow-ups were left open upstream in tie. One has since closed itself:
   hash-only cache path, and the directory's lifetime (`795965e`, on
   `c1c064e`).
 - ⏳ **`client.HTTPClientFor` still sets no `Timeout`** on the `http.Client` it
-  caches, which is why `internal/httpx` exists.
+  caches, and `getlib`/`fhclient` take no `context.Context`, so a transfer can be
+  bounded but never cancelled. Filed upstream as **`uidbz/tie#114`**, which also
+  covers the other half of §3.3 that tie-gui could not fix on its own side:
+  `webservice` already has a 60 s `defaultRequestTimeout` and `CallContext`, but
+  `client.TieClient` exposes neither — no `SetTimeout`, and no context on any of
+  its 75 methods — so an embedder has no lever on the triplestore path at all.
+  Until it lands, `internal/httpx` is the workaround for the filehost path
+  (`b8c59c9`, documented in `cf94714`) and nothing covers the triplestore path.
 
 ---
 
