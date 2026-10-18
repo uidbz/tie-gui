@@ -13,6 +13,12 @@
 //
 // The clients returned here share tie's transport, so they share its connection
 // pool: adding a deadline costs nothing in handshakes.
+//
+// This whole package is a workaround, and the right home for the fix is tie:
+// client.HTTPClientFor should set a ResponseHeaderTimeout on the transport it
+// caches, and getlib/fhclient should take a context so a transfer can be
+// cancelled rather than merely bounded. Tracked as uidbz/tie#114; when that
+// lands, WithTimeout becomes a call into tie and this file shrinks.
 package httpx
 
 import (
