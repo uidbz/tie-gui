@@ -58,8 +58,8 @@ credential-bearing config file**, and **the absence of any timeout or
 cancellation on the store clients**.
 
 **Status at implementation time.** Every item below, and all 20 roadmap issues,
-are implemented on the branch `fix/code-review-2026-10` (23 commits off
-`master`). The "Issue" column names the GitHub issue; the SHA in it is the
+are implemented on the branch `fix/code-review-2026-10` (25 commits off
+`master`, tie pinned at **v0.7.2**). The "Issue" column names the GitHub issue; the SHA in it is the
 commit that closed it. Findings that turned out to be wrong on inspection are
 marked **[corrected during implementation]** in place.
 
@@ -1145,10 +1145,18 @@ ordered list and the Top-12 cross-reference live in the tracking issue #1.
     (`d226313`, `37e21c3`). §7.5 (mpv lifecycle) was already done as #13. → #19
 19. ✅ The non-critical follow-ups of §4.3, §4.9-§4.13, §5.1 and §10. → #20 (`37e21c3`)
 
-Two follow-ups deliberately left open, both upstream in tie: `getlib.DownloadFile`
-is still non-atomic (`uidbz/tie#101`, worked around by `tiestore.Cache`) and
-`client.HTTPClientFor` still sets no `Timeout` on the `http.Client` it caches
-(worked around by `internal/httpx`).
+Two follow-ups were left open upstream in tie. One has since closed itself:
+
+- ✅ **`getlib.DownloadFile` is now atomic** — tie **v0.7.2** stages each file in
+  a sibling temp file, fsyncs it, and renames it into place only once the bytes
+  hash to the address they were fetched under, removing the staged file on every
+  failure path. That is #9's transfer half fixed where it lived, so
+  `tiestore.Cache` dropped its own `.part` staging and kept the half that is
+  still its business: the length check against the size the store recorded, the
+  hash-only cache path, and the directory's lifetime (`795965e`, on
+  `c1c064e`).
+- ⏳ **`client.HTTPClientFor` still sets no `Timeout`** on the `http.Client` it
+  caches, which is why `internal/httpx` exists.
 
 ---
 
