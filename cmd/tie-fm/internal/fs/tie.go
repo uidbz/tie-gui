@@ -129,24 +129,15 @@ func (t *TieFS) List(uri string) ([]Entry, error) {
 // Materialize returns a local path holding e's bytes, downloading them on
 // demand and caching the result for the session.
 //
-// Three things this has to get right, and previously did not:
+// The mechanics live in tiestore.Cache, which owns the three things this used to
+// get wrong: a cached file being complete (the download stages and renames, and
+// the length is checked against the size the store recorded before the file is
+// accepted), the cache path being keyed on the content hash alone rather than on
+// the store's filename triple — which is untrusted text and used to be able to
+// escape the temp directory — and the cache directory having a lifetime.
 //
-//   - Atomicity. getlib.DownloadFile writes straight to the destination with
-//     os.Create + io.Copy — no temp file, no rename. A cancelled export, a
-//     dropped connection or an OOM mid-download used to leave a truncated file
-//     at the cache path, and the "already downloaded" Stat hit meant every
-//     later Materialize handed out the corrupt file with no way to recover. So
-//     download to <hash>.part, check it, then rename into place: a cached file
-//     is now always complete.
-//   - Untrusted names. The cache path used to be hash + "-" + e.Name, where
-//     e.Name is the store's filename triple, copied verbatim out of the
-//     database. Nothing constrains it to a basename, so a filename of
-//     "../../.bashrc" made filepath.Join escape tmpDir and the download wrote
-//     wherever the user's process could write. Keying on the content hash alone
-//     removes the untrusted component entirely.
-//   - Lifetime. tmpDir was assigned lazily without synchronisation while
-//     Materialize runs on both the ops goroutine and the UI goroutine, and it
-//     was never removed, so every preview and export left its bytes on disk.
+// e.Name therefore reaches only error messages, never a path. Safe to call from
+// the ops goroutine and the UI goroutine at the same time.
 func (t *TieFS) Materialize(e Entry) (string, error) {
 	return t.cache.Materialize(e.Hash, e.Size, e.Name)
 }

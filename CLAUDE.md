@@ -41,12 +41,16 @@ Fyne fork — hence the monorepo.
 | `tieconfig/` | Shared tie client config: Android-safe path resolution (`Dir`/`ResolvePath`/`Load`), the `[Collections.*]` connection editor (`Editor`), and per-app collection resolution (`AppCollection`) |
 | `tielog/` | One `slog` setup per app: stderr plus `$XDG_STATE_HOME/tie/<app>.log` (rotated), `-v`/`-q`/`-no-log` flags, `Recover` for long-lived goroutines, logcat mirroring on Android. Libraries take a `*slog.Logger` and never print on their own |
 | `internal/appboot/` | Shared startup sequence for the four apps: logging, tie config load, `-conf-show`, signal handling, and the sweep of scratch files a killed run left in the temp dir |
+| `tiestore/` | Shared blob access: `Fetch`/`FetchSmall` for a verified blob in memory, and `Cache`, a session's on-disk materialization — hash-keyed, size-checked, removed at exit. What `gallery.Thumbnailer` and `fs.FileSystem` implementations call |
 | `internal/httpx/` | Shared `http.Client` for tie's filehost/collection calls: pooled transport with a small request timeout and a long bulk-transfer timeout |
 | `tiethumb/` | Shared filehost-backed `gallery.Thumbnailer` (tie relation `(hash, "thumbnail", thumbHash)` + `dimensions`), used by tie-view and tie-fm's preview grid; the tie client and filehost resolve per call so collection/config switches need no rewiring |
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
 The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
-Go module proxy; no local checkout is needed (v0.7.0 is the floor: it carries the media
+Go module proxy; no local checkout is needed (v0.7.2 is the floor: it makes
+`getlib.DownloadFile` atomic — stage in a sibling temp file, fsync, rename only once
+the bytes hash to the address they were fetched under — which is what lets
+`tiestore.Cache` keep only the size check; and v0.7.0 carries the media
 model — collection contract, playlists, play history — that tie-audio
 needs). (It was resolved via a `replace` directive to a sibling `../tie`
 checkout until v0.4.2, and again while the media model was unreleased

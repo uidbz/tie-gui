@@ -57,9 +57,18 @@ func FetchSmall(host client.FileHost, hash string) (io.ReadSeeker, error) {
 	return getlib.ReadBytes(httpx.Small(host), host.URL, hash)
 }
 
-// Downloader fetches hash into dest, where dest is a file path that does not
-// exist yet. Production passes (*client.TieClient).Download("", hash, dest);
-// tests pass a stub that fails or truncates mid-transfer.
+// Downloader fetches hash into dest, a file path that does not exist yet.
+//
+// The contract is that a failure leaves nothing at dest. The cache publishes an
+// entry by the file's existence, so a partial file sitting at the final path
+// poisons the cache for the rest of the session. Production passes
+// (*client.TieClient).Download("", hash, dest), which honours the contract since
+// tie v0.7.2: getlib.DownloadFile stages each file in a sibling temp file and
+// renames it into place only once the bytes hash to the address they were
+// fetched under, removing the staged file on any failure.
+//
+// Materialize also removes dest on its error paths, so a downloader that breaks
+// the contract costs one wasted re-download rather than a corrupt cache.
 type Downloader func(hash, dest string) error
 
 // NewDownloader returns the production downloader for a tie client and
@@ -73,12 +82,15 @@ func NewDownloader(tc *client.TieClient, hostName string) Downloader {
 //
 // Three things it exists to get right, each of which was once wrong:
 //
-//   - Atomicity. getlib.DownloadFile writes straight to its destination with
-//     os.Create + io.Copy. A cancelled export or a dropped connection left a
-//     truncated file at the cache path, and the "already downloaded" Stat hit
-//     meant every later call handed out the corrupt file with no way back. So
-//     download to <hash>.part, verify it, then rename: a cached file is always
-//     complete.
+//   - A cached file being what it claims to be. A cancelled export or a dropped
+//     connection used to leave a truncated file at the cache path, and the
+//     "already downloaded" Stat hit meant every later call handed out the
+//     corrupt file with no way back. The transfer half of that is fixed
+//     upstream: since tie v0.7.2 the download itself stages and renames (see
+//     Downloader). What the cache adds is the other half — the length is
+//     checked against the size the store recorded before the file is accepted,
+//     and anything rejected is removed instead of left there to be served next
+//     time.
 //   - Untrusted names. The cache path used to be hash + "-" + name, where name
 //     is the store's filename triple copied verbatim out of the database.
 //     Nothing constrains it to a basename, so "../../.bashrc" escaped the
@@ -144,27 +156,22 @@ func (c *Cache) Materialize(hash string, expectedSize int64, name string) (strin
 		return dest, nil // already downloaded, and the size still matches
 	}
 
-	// The .part suffix is inside the cache directory and keyed on the hash, so
-	// two concurrent Materialize calls for the same blob write the same temp
-	// file and the rename is idempotent.
-	part := dest + ".part"
-	if err := c.download(hash, part); err != nil {
-		os.Remove(part)
+	// The downloader is responsible for making dest appear complete or not at
+	// all; the removals here are the belt to that braces, because a stale
+	// partial file is exactly the failure this cache exists to prevent.
+	if err := c.download(hash, dest); err != nil {
+		os.Remove(dest)
 		return "", err
 	}
-	info, err := os.Stat(part)
+	info, err := os.Stat(dest)
 	if err != nil {
-		os.Remove(part)
+		os.Remove(dest)
 		return "", err
 	}
 	if expectedSize > 0 && info.Size() != expectedSize {
-		os.Remove(part)
+		os.Remove(dest)
 		return "", fmt.Errorf("tiestore: download of %s is %d bytes, expected %d",
 			display(name, hash), info.Size(), expectedSize)
-	}
-	if err := os.Rename(part, dest); err != nil {
-		os.Remove(part)
-		return "", err
 	}
 	return dest, nil
 }

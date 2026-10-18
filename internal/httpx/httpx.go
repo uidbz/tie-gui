@@ -3,7 +3,8 @@
 // tie's client.HTTPClientFor is the right place to get a client from — it owns
 // the TLS and basic-auth handling and, since tie v0.7.0, caches one client per
 // (URL, credentials, insecure) so connections are reused. What it does not set
-// is any timeout on the http.Client itself. A filehost that accepts the TCP
+// is any timeout on the http.Client itself — still true in v0.7.2, which is
+// otherwise the release that made downloads atomic. A filehost that accepts the TCP
 // connection and then never answers — a half-dead tie-filehost, a captive
 // portal, an NFS-backed store on a sleeping server — leaves the request parked
 // forever, and with it the gallery loader worker or the ops goroutine that made

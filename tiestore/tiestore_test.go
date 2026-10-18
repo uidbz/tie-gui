@@ -18,10 +18,12 @@ const (
 )
 
 // TestMaterializeRejectsPartialDownload is the regression for review §3.4 /
-// issue #9. getlib.DownloadFile writes straight to its destination, so a
-// cancelled or interrupted transfer left a truncated file at the cache path —
-// and the "already downloaded" Stat meant every later Materialize handed the
-// corrupt file back with no way to recover.
+// issue #9. A cancelled or interrupted transfer used to leave a truncated file
+// at the cache path, and the "already downloaded" Stat meant every later
+// Materialize handed the corrupt file back with no way to recover. tie v0.7.2
+// fixed the transfer half; this pins the cache half, and pins it against a stub
+// that is worse than the real downloader so the property does not depend on
+// which Downloader is plugged in.
 func TestMaterializeRejectsPartialDownload(t *testing.T) {
 	const full = "complete contents"
 
@@ -29,7 +31,10 @@ func TestMaterializeRejectsPartialDownload(t *testing.T) {
 	c := NewCache("tiestore-test-", func(h, dest string) error {
 		attempts++
 		if attempts == 1 {
-			// Simulate an interrupted transfer: bytes written, then failure.
+			// Simulate an interrupted transfer: bytes written, then failure. A
+			// real downloader (tie >= v0.7.2) leaves nothing at dest in this
+			// case; this stub is deliberately worse, to pin what Materialize
+			// does when the Downloader contract is broken.
 			if err := os.WriteFile(dest, []byte("com"), 0o600); err != nil {
 				return err
 			}
@@ -41,6 +46,16 @@ func TestMaterializeRejectsPartialDownload(t *testing.T) {
 
 	if _, err := c.Materialize(hash1, int64(len(full)), "song.mp3"); err == nil {
 		t.Fatal("a truncated download was accepted")
+	}
+
+	// The failed attempt must leave nothing that a later call could mistake for
+	// a cached copy.
+	dir, err := c.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Errorf("the failed attempt left %v in the cache dir (%v)", entries, err)
 	}
 
 	path, err := c.Materialize(hash1, int64(len(full)), "song.mp3")
@@ -58,13 +73,11 @@ func TestMaterializeRejectsPartialDownload(t *testing.T) {
 		t.Errorf("materialized content = %q, want %q", got, full)
 	}
 
-	dir, err := c.Dir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// No .part file left behind.
-	if leftovers, _ := filepath.Glob(filepath.Join(dir, "*.part")); len(leftovers) > 0 {
-		t.Errorf("leftover partial files: %v", leftovers)
+	// And the directory ends up holding exactly the one completed blob: no
+	// staging file, no orphan.
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 ||
+		entries[0].Name() != hash1 || entries[0].IsDir() {
+		t.Errorf("cache dir holds %v, want exactly the completed blob (%v)", entries, err)
 	}
 }
 
