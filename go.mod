@@ -14,7 +14,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.1
 	github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6
 	github.com/uidbz/pwplay v0.3.1
-	github.com/uidbz/tie v0.7.0
+	github.com/uidbz/tie v0.7.2
 )
 
 require (

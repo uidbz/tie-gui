@@ -3,7 +3,7 @@
   Name = "tie-audio"
   ID = "github.com.uidbz.tieaudio"
   Version = "1.0.0"
-  Build = 40
+  Build = 41
 
 [Migrations]
   fyneDo = true
