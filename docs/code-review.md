@@ -30,11 +30,14 @@ possible the recommended one is marked **(recommended)**.
   ("tile and grid state is touched only on the UI goroutine") is enforced by
   nothing, and the genuine races in
   [§4.1](#41-the-imageinfo-threading-contract-is-unenforced) live in the same
-  code. See [§10](#10-tooling-and-process).
+  code. See [§10](#10-tooling-and-process). *Update:* `go test -race ./...` is
+  clean on `fix/code-review-2026-10` and is a CI gate (`dce953e`, `e0f97f8`).
 - The apps pin `github.com/uidbz/tie` **v0.6.0** and `github.com/uidbz/pwplay`
   **v0.3.1**. Several findings are *inherited* from those modules but land on
   tie-gui users, and several have a tie-gui-side mitigation; each is marked
-  **(inherits: tie)** where the root fix belongs upstream.
+  **(inherits: tie)** where the root fix belongs upstream. *Update:* the branch
+  pins tie **v0.7.0** (`c0af20b`), which closes #8 (the 1000-child truncation)
+  and part of #11 (per-host client caching) outright.
 
 ---
 
@@ -54,22 +57,28 @@ progress-state races), **the gallery's UI-thread/network coupling**, **the
 credential-bearing config file**, and **the absence of any timeout or
 cancellation on the store clients**.
 
+**Status at implementation time.** Every item below, and all 20 roadmap issues,
+are implemented on the branch `fix/code-review-2026-10` (23 commits off
+`master`). The "Issue" column names the GitHub issue; the SHA in it is the
+commit that closed it. Findings that turned out to be wrong on inspection are
+marked **[corrected during implementation]** in place.
+
 ### Top 12, in priority order
 
 | # | Sev | Finding | Where | Issue |
 |---|-----|---------|-------|-------|
-| 1 | CRITICAL | Moving a directory into one of its own subdirectories **deletes the whole tree and reports success** **[reproduced]** | `cmd/tie-fm/internal/fs/ops.go:788-811`, `966-1016` | #2 |
-| 2 | CRITICAL | The tag trie allocates a 256-way node per character: **20k tags → 386k nodes → 901 MB**, rebuilt on the UI goroutine on every tag click **[reproduced]** | `tagselection/trie/trie.go:37-40,62-86`; `tagselection/tagselection.go:662-674`; `cmd/tie-view/main.go:716-718,769-771` | #7 |
-| 3 | CRITICAL | `KeysWithPrefix` rebuilds keys with `%c` on a **byte**, so every non-ASCII tag is mangled — `café` → `cafÃ©`, `日本語` → mojibake — displayed that way and written back to the store **[reproduced]** | `tagselection/trie/trie.go:113`; `tagselection/tagselection.go:128-135` | #3 |
-| 4 | HIGH | `Operations.Active()` is read by the UI while the ops goroutine appends to and `slices.Delete`s the same slice **[reproduced]** | `cmd/tie-fm/internal/fs/ops.go:99,113,120,125` | #10 |
-| 5 | HIGH | The settings editor writes the tie config — plaintext filehost and triplestore **passwords** — with mode `0744`: world-readable, and executable **[reproduced]** | `tieconfig/editor.go:203` → `uidbz/conf` `conf.go:207` | #5 |
-| 6 | HIGH | `LoadGallery`/`ChangePage` **block the UI goroutine on network I/O**, and no store client anywhere has a timeout or context: a stalled triplestore or filehost freezes the app with no way out **[code-read]** | `gallery/gallery.go:657,716,738`; `tie/client/tie.go:297-309` (no `Timeout`) | #11, 12 |
-| 7 | HIGH | `TieFS.Materialize` treats a **partially downloaded** temp file as complete (the download is not atomic) and never cleans the temp dir; `tmpDir` itself is written from several goroutines **[code-read]** | `cmd/tie-fm/internal/fs/tie.go:114-133`; `tie/io/getlib/getlib.go:92-111` | #9 |
-| 8 | HIGH | `Materialize` builds its temp path from a **store-supplied filename**: `filepath.Join(tmpDir, hash+"-"+e.Name)` — a `filename` triple containing `../` writes outside the temp dir **[code-read]** | `cmd/tie-fm/internal/fs/tie.go:125` | #9 |
-| 9 | HIGH | Directory listings silently truncate at **1000 children**: `ReadTieDir` issues a query with no `Limit`, which tie v0.6.0 caps at 1000, and discards `TotalCount` so the GUI cannot even detect it **[code-read]** (inherits: tie) | `tie/client/tag.go:1033` + `tie/tiedb/collection.go:808`; callers `cmd/tie-view/tree.go:203,271`, `cmd/tie-fm/internal/fs/tie.go:69`, `cmd/tie-audio/internal/data/albums.go:200,683,706` | #8 |
-| 10 | HIGH | `gallery.Decode` has **no size or dimension limit**: one crafted archive member or tie blob (a 40 000×40 000 PNG) OOM-kills the viewer while thumbnailing **[code-read]** | `gallery/helper.go:27-59`; `gallery/tilelayout.go:1093-1101` | #4 |
-| 11 | HIGH | The tile cache is keyed by `Path`, so two entries with the **same content hash** get the *same* `*Tile` widget installed in two grid slots — one Fyne object, two parents **[code-read]** | `gallery/tilelayout.go:494-495,559-561` | #14 |
-| 12 | HIGH | `mpvplayer`: `Close()` frees the render context and mpv handle while the GL thread can be inside `RenderInto`, and `RenderInto`/`command` do not check for a closed handle → segfault on window close **[code-read]** | `mpvplayer/mpv.go:204-210,262-279,320-330` | #13 |
+| 1 | CRITICAL | Moving a directory into one of its own subdirectories **deletes the whole tree and reports success** **[reproduced]** | `cmd/tie-fm/internal/fs/ops.go:788-811`, `966-1016` | #2 → `6f68ea5` |
+| 2 | CRITICAL | The tag trie allocates a 256-way node per character: **20k tags → 386k nodes → 901 MB**, rebuilt on the UI goroutine on every tag click **[reproduced]** | `tagselection/trie/trie.go:37-40,62-86`; `tagselection/tagselection.go:662-674`; `cmd/tie-view/main.go:716-718,769-771` | #7 → `6d9ed74` |
+| 3 | CRITICAL | `KeysWithPrefix` rebuilds keys with `%c` on a **byte**, so every non-ASCII tag is mangled — `café` → `cafÃ©`, `日本語` → mojibake — displayed that way and written back to the store **[reproduced]** | `tagselection/trie/trie.go:113`; `tagselection/tagselection.go:128-135` | #3 → `6d9ed74` |
+| 4 | HIGH | `Operations.Active()` is read by the UI while the ops goroutine appends to and `slices.Delete`s the same slice **[reproduced]** | `cmd/tie-fm/internal/fs/ops.go:99,113,120,125` | #10 → `5f801a7` |
+| 5 | HIGH | The settings editor writes the tie config — plaintext filehost and triplestore **passwords** — with mode `0744`: world-readable, and executable **[reproduced]** | `tieconfig/editor.go:203` → `uidbz/conf` `conf.go:207` | #5 → `017bfcf` |
+| 6 | HIGH | `LoadGallery`/`ChangePage` **block the UI goroutine on network I/O**, and no store client anywhere has a timeout or context: a stalled triplestore or filehost freezes the app with no way out **[code-read]** | `gallery/gallery.go:657,716,738`; `tie/client/tie.go:297-309` (no `Timeout`) | #11, 12 → `b8c59c9 + b796fcd` |
+| 7 | HIGH | `TieFS.Materialize` treats a **partially downloaded** temp file as complete (the download is not atomic) and never cleans the temp dir; `tmpDir` itself is written from several goroutines **[code-read]** | `cmd/tie-fm/internal/fs/tie.go:114-133`; `tie/io/getlib/getlib.go:92-111` | #9 → `22663c1` |
+| 8 | HIGH | `Materialize` builds its temp path from a **store-supplied filename**: `filepath.Join(tmpDir, hash+"-"+e.Name)` — a `filename` triple containing `../` writes outside the temp dir **[code-read]** | `cmd/tie-fm/internal/fs/tie.go:125` | #9 → `22663c1` |
+| 9 | HIGH | Directory listings silently truncate at **1000 children**: `ReadTieDir` issues a query with no `Limit`, which tie v0.6.0 caps at 1000, and discards `TotalCount` so the GUI cannot even detect it **[code-read]** (inherits: tie) | `tie/client/tag.go:1033` + `tie/tiedb/collection.go:808`; callers `cmd/tie-view/tree.go:203,271`, `cmd/tie-fm/internal/fs/tie.go:69`, `cmd/tie-audio/internal/data/albums.go:200,683,706` | #8 → `c0af20b` |
+| 10 | HIGH | `gallery.Decode` has **no size or dimension limit**: one crafted archive member or tie blob (a 40 000×40 000 PNG) OOM-kills the viewer while thumbnailing **[code-read]** | `gallery/helper.go:27-59`; `gallery/tilelayout.go:1093-1101` | #4 → `71259b1` |
+| 11 | HIGH | The tile cache is keyed by `Path`, so two entries with the **same content hash** get the *same* `*Tile` widget installed in two grid slots — one Fyne object, two parents **[code-read]** | `gallery/tilelayout.go:494-495,559-561` | #14 → `455adad` |
+| 12 | HIGH | `mpvplayer`: `Close()` frees the render context and mpv handle while the GL thread can be inside `RenderInto`, and `RenderInto`/`command` do not check for a closed handle → segfault on window close **[code-read]** | `mpvplayer/mpv.go:204-210,262-279,320-330` | #13 → `6a7f88f` |
 
 The rest of the document expands on these and on ~50 further findings, followed
 by a desktop-app conventions review ([§6](#6-desktop-app-conventions-review)),
@@ -595,6 +604,10 @@ package, matching `tagselection/`) and reconcile the two variants into options
 on the widget. Start by porting tie-fm's `sort_test.go` to tie-audio's copy to
 find where behaviour has already drifted, then merge.
 
+*Done* (`9fb5e71`), and the drift turned out to be one-directional: tie-audio's
+copy was a strict superset, so the merge is a promotion of it and no options
+struct was needed. See §7.6.
+
 ### 4.7 Local thumbnail generation reads each file into RAM two or three times
 
 `gallery/tilelayout.go:619-675`: `GetThumbnail` does `io.ReadAll(r)` to hash the
@@ -649,7 +662,7 @@ shadowing is already invisible-but-load-bearing: the first person to write
 `max(a, b)` in `gallery` gets a type error at best, or a silently wrong constant
 after a refactor. Rename to `dirLevels`/`cacheDirWidth` and use the builtin.
 
-### 4.12 Short reads in the type sniffers
+### 4.12 Short reads in the type sniffers  **[reproduced]**
 
 `gallery/helper.go:104-111` and `:137-148` fill a 261-byte buffer with a single
 `file.Read(head)`. `io.Reader` may return fewer bytes; for a pipe, a network
@@ -657,13 +670,24 @@ backed file, or a `fs.FS` member this routinely returns a short prefix, and
 `filetype.IsImage`/`IsArchive` then answer `false` for a real image. Use
 `io.ReadFull`.
 
-### 4.13 `TileLayout.Clear` is dead, and `Gallery.RemoveItem` has no caller
+Worse in the archive case, which is what reproduces it: an archive member reader
+returns the whole (small) member **together with `io.EOF`**, and both helpers
+treat any error as failure — so *every* image inside a zip looked like a
+non-image and archive browsing listed nothing. Fixed in `6b8a0c8` with one
+`sniffHead` helper that accepts `EOF`/`ErrUnexpectedEOF` when at least one byte
+arrived; `d226313` then collapsed the two duplicated callers into one
+`sniffFile` (S5), which is why both had the same bug.
+
+### 4.13 `TileLayout.Clear` is dead  **[corrected during implementation]**
 
 `gallery/tilelayout.go:171-174` (`Clear`) is exported and never called; it also
 mutates `layout.tiles` **off** the UI-thread contract (no `fyne.Do`), so leaving
-it around invites exactly the race §4.1 describes. `Gallery.RemoveItem`
-(`gallery.go:696-706`) is likewise unused in-tree. Delete both, or make them
-correct and used.
+it around invites exactly the race §4.1 describes. Deleted in `dce953e`.
+
+*Correction:* the original claim that `Gallery.RemoveItem` has no caller is
+wrong — `cmd/tie-view/main.go:328` calls it. It was kept, and `0a43ad2` made it
+safe by construction (it now goes through the `files()`/`setFiles()` accessors
+that guard `imageFiles`).
 
 ### 4.14 tie-audio's settle-waits can block a caller goroutine for a second
 
@@ -749,6 +773,13 @@ discard) plus the typed callbacks that already exist for progress. Each `main`
 wires a stderr handler and honours `-q`/`-v`. On Android, route the same logger
 to `__android_log_print`.
 
+*Done* (`c96217b`). `grep -rn "fmt.Print"` now returns nothing outside tests and
+`third_party/`. `Gallery.SetLogger`, `tiethumb.Thumbnailer.Logger`,
+`mpvplayer.SetLogger` and `tieconfig.SetLogger` all default to a discard logger;
+the Android mirror is `tielog/logcat_android.go` behind `//go:build android`
+(compile-gated, and **not yet built** here — the local NDK is a stub, so it
+needs a `build-android.sh` run to confirm).
+
 ### 6.2 No logging, no crash surface
 
 There is no log file, no structured logging, and no recovered panic anywhere in
@@ -758,6 +789,15 @@ a console that a desktop launcher user never sees. **Recommendation:** one
 helper), writing to `$XDG_STATE_HOME/tie/<app>.log` with rotation, plus a
 `recover()` at the top of every long-lived goroutine that logs and reports a
 toast rather than dying.
+
+*Done* (`c96217b`, new `tielog`). One handler writes stderr plus
+`$XDG_STATE_HOME/tie/<app>.log`, rotated at 1 MiB, with `-v`/`-q`/`-no-log`.
+`tielog.Recover(log, "where")` guards the placement helper, the async fetch,
+prefetch, the tile updater, the full-res decode, metadata loading, preview
+cycling, Cmd-A and the mpv event loop. In the gallery the recovery is **per
+entry**, not per worker: recovering at the top of `imageLoader` would stop that
+worker permanently and leave a placement waiting on a count it never released,
+so one bad blob would hang the gallery instead of costing one tile.
 
 ### 6.3 Config: writes on read paths, and no way to see what was resolved
 
@@ -773,6 +813,17 @@ continue with defaults) from "unreadable config" (fail). Add a
 URL, collection and config path — the single most useful debugging command for
 this project — and mask passwords in it.
 
+*Done* (`a4fd91a`): every app takes `-conf-show`, implemented in
+`internal/appboot`. It prints the resolved triple, the config path, TLS
+settings and every filehost the bound collection names, with passwords masked
+to first-and-last character, an explicit line for a filehost that the collection
+names but the config does not define, and a warning when a filehost URL carries
+credentials in its userinfo (those URLs become media-player stream URLs — see
+the `tieconfig.HostURLUserinfo` guard added in `37e21c3`). It mirrors
+`client.Config.ResolveCollection`'s own name resolution, so it reports the entry
+actually used rather than the one asked for. The silent-defaults-on-unreadable
+part is now at least logged at WARN rather than printed to stdout (`c96217b`).
+
 ### 6.4 Exit codes and signals
 
 The GUI apps have no non-zero exit path for a failed start that a script or a
@@ -780,6 +831,14 @@ desktop launcher can see (a failed tie connection is logged and the app opens
 empty). **Recommendation:** exit `2` for a usage/config error and `4` for an
 unreachable store when a `--check` (or `-version`-style probe) flag is given, so
 a session manager can tell "misconfigured" from "server down".
+
+*Partly done.* Signal handling is now shared (`appboot.HandleSignals`,
+`a4fd91a`): the first SIGINT/SIGTERM lets Fyne's own queued `Quit` shut the app
+down, and a grace window (5 s desktop, 3 s tie-audio) plus a second signal force
+the process out if the UI goroutine is blocked — the hang tie-audio once hit in
+the playback engine's `Close`. tie-audio's local `forceExitOnSignal` is gone.
+A `-check` probe with the `2`/`4` exit codes was **not** implemented; it needs a
+store connection at startup, which every app currently defers deliberately.
 
 ### 6.5 Small things that are already right and worth keeping
 
@@ -820,6 +879,23 @@ triple. That is why the §3.6 truncation, the §3.4/§3.5 materialize bugs, and 
 - **Option B.** Fix each site in place. Cheaper now, but the next app repeats
   the mistake.
 
+*Done as a narrower Option A* (`6837610`). `tiestore` owns `Fetch` /
+`FetchSmall` / `FetchWithTimeout` and a `Cache` type implementing the atomic,
+hash-keyed, session-lifetime materialization of §3.4/§3.5; tie-fm's `TieFS`,
+`tiethumb` and tie-view's blob and archive paths all call it. Two of the four
+proposed members were left out on purpose:
+
+- `Client(host)` — tie v0.7.0 already caches one client per
+  (URL, credentials, insecure), and `internal/httpx` (`b8c59c9`) wraps that with
+  the two deadlines. A second wrapper would have added a layer and no reuse.
+- `ReadDir(ctx, tc, uid)` — the truncation was a tie bug, fixed upstream in
+  v0.7.0 (`c0af20b`). The remaining duplication is the row→entry mapping, and
+  the three apps map to genuinely different types.
+
+`Fetcher` with context cancellation also did not land: it would change
+`gallery.Thumbnailer`, which this section says to leave alone, and the deadline
+bounds the damage. See the roadmap note in §11.
+
 ### 7.2 `gallery`: split the state and make the threading explicit
 
 `gallery/gallery.go` (1439 lines) and `gallery/tilelayout.go` (1494 lines) mix
@@ -833,6 +909,14 @@ widget construction, page state, the loader pipeline and the cache.
   part, and one documented rule at the top of the package — *"grid and tile
   objects are touched only inside `fyne.Do`"* — enforced by the race-clean test
   suite (§10) rather than by comment.
+
+*Done* (`7d4a04e`, pure move; §4.1 in `0a43ad2`; the rule in `dce953e`). The
+files are `page.go`, `single.go`, `hotkeys.go`, `chrome.go` out of `gallery.go`
+(1714 → 297 lines) and `loader.go`, `thumbsource.go`, `tile.go` out of
+`tilelayout.go` (1704 → 437); the nine `CustomReader`-family interfaces moved to
+`extension.go`, where their documentation already lived. The enforceable version
+of the rule is stronger than "`fyne.Do`": the `tileUpdater` goroutine is the
+single owner of every grid mutation, and everything else posts a `uiJob` to it.
 
 ### 7.3 `Operations`: make the engine's state safe by construction
 
@@ -867,6 +951,19 @@ discipline into the player.
 See §4.6. One package, options struct for the divergences, tests for both
 consumers.
 
+*Done* (`9fb5e71`). The two copies were compared file by file: `tabledata.go` was
+byte-identical, `img/` identical, and tie-audio's copy a strict superset — it
+carried double-tap activation, column reorder and the drop line, plus a
+`headerBgColor` fix tie-fm was missing. So the merge is a promotion rather than
+a reconciliation: tie-audio's copy moved to a top-level `tablewidget/`, both
+`cmd/*/internal/widget/tablewidget` trees were deleted, and no options struct
+was needed. Tests came with it: numeric sort keys, row-tuple alignment under
+sort, empty cells last in both directions, the multi-select rules (plain /
+ctrl / shift / shift+ctrl, anchor retention, `RowSelectable` rejection) and the
+filter-row→table-row mapping. The select rules became testable by splitting
+`applySelection` into `applySelection`/`selectRow(row, mods)`, because the Fyne
+software test driver reports no keyboard.
+
 ### 7.7 App bootstrap: one place for flags, logging, config and cleanup
 
 The four `main`s each re-parse flags, load config, adjust for mobile, wire
@@ -874,6 +971,19 @@ hotkeys and set up the window. `gallery/apphelper.go` exists but is thin.
 Extend it (or a new `internal/app`) to own: flag parsing, `tieconfig` load +
 `conf show`, the §6.2 logger, signal handling, and temp-dir cleanup (which today
 nobody does — §3.4).
+
+*Done* (`a4fd91a`, new `internal/appboot`). One `Start` call gives an app its
+logger, the tie config, the stale-temp sweep and the signal backstop;
+`AddFlags` registers `-v`/`-q`/`-no-log`/`-conf-show` so every app takes the same
+switches. Mobile adjustment and hotkey wiring stayed in the apps — they are the
+parts that genuinely differ. `appboot` deliberately does not import `mpvplayer`,
+so `go build ./cmd/tie-audio` still works where libmpv headers are absent.
+
+The sweep is the part with an immediately visible effect: scratch files an
+interrupted run leaves in `os.TempDir()` — downloaded videos, MTP and archive
+staging directories, materialized blobs, and the MPRIS bridge's per-album cover
+PNGs — are gigabytes-scale and nothing else removed them. The first run on a
+real machine reclaimed 43 MB of cover art.
 
 ---
 
@@ -886,7 +996,7 @@ Concrete deletions and collapses, each small enough for one commit.
 | S1 | `trie/` → sorted-slice tag index (§2.2, §7.4) | ~120 lines of trie, 900 MB at 20k tags, the UTF-8 corruption (§2.3) | Low; one consumer, keep the API |
 | S2 | `tiestore.ReadDir` replacing the four `ReadTieDir` call sites (§3.6, §7.1) | the 1000-child truncation, three copies of row→entry mapping | Low; covered by new tests |
 | S3 | `tiestore.Materialize` replacing `TieFS.Materialize` (§3.4, §3.5) | the partial-download cache, the untrusted-name path join, the leaked temp dir | Low |
-| S4 | Delete `TileLayout.Clear` and `Gallery.RemoveItem` (§4.13) | 20 lines and two threading violations | None (no callers) |
+| S4 | Delete `TileLayout.Clear` (§4.13) — `Gallery.RemoveItem` turned out to have a caller and was guarded instead | 20 lines and one threading violation | None |
 | S5 | Delete the `IsImageFromPath`/`IsArchiveFromPath` duplication in favour of one `sniff(path)` using `io.ReadFull` (§4.12, L9) | ~25 lines | None |
 | S6 | One `SafeName` helper for every store-supplied name used as a path (§3.5) | the traversal class | Low |
 | S7 | Merge the two `tablewidget` packages (§4.6) | ~600 duplicated lines | Low; port `sort_test.go` first |
@@ -920,11 +1030,15 @@ Concrete deletions and collapses, each small enough for one commit.
   finding in §2 and §3 would have been caught by a job running
   `go build ./... && go vet ./... && go test -race ./...`. Add one for Linux
   (the CGo/GL deps need `libgl1-mesa-dev xorg-dev libmpv-dev`) and keep the
-  Android build as a separate job.
+  Android build as a separate job. *Done:* `.github/workflows/ci.yml` and the
+  `check`/`vet`/`race`/`fmtcheck` Makefile targets, `e0f97f8`.
 - **`go test -race` is red today** (§ "How to read this"): 39 races in
   `gallery`, one test in `cmd/tie-fm/internal/ui`. Fix the harness first
   (drive layout through the driver queue, not `forceGridLayout`), then make
-  `-race` the default in the `test` target rather than an opt-in.
+  `-race` the default in the `test` target rather than an opt-in. *Done:*
+  `dce953e` fixed the genuine races and gave the gallery happens-before edges
+  (`AwaitIdle`, `uiSync`, `SetSyncPlacement`); `go test -race ./...` is now
+  clean and is a CI gate.
 - **The Makefile has `test` but no `vet`, `lint` or `race` target**, and no
   `check` aggregate. Add:
   ```make
@@ -935,10 +1049,17 @@ Concrete deletions and collapses, each small enough for one commit.
 - **No linter is installed or configured** (`staticcheck`, `golangci-lint` both
   absent). Several findings here are one-line linter catches (unused `Clear`,
   shadowed builtin `max`, `defer` before error check, `os.WriteFile` mode).
-- **The build scripts have no failure discipline.** None of the nine `*.sh`
-  scripts sets `set -euo pipefail`; `vendor-android-libs.sh:66` runs
-  `rm -rf "$ABI_DIR" "$DST/include"` after unguarded downloads, so a failed
-  fetch can delete the vendored libs it was about to refresh.
+- **The build scripts have no failure discipline.** *Correction during
+  implementation:* this was overstated — 8 of the 12 tracked `*.sh` scripts
+  already set `set -euo pipefail`, including `vendor-android-libs.sh`. The two
+  that lacked it and are not sourced helpers were `push-to-repo.sh` and
+  `release_version.sh`; both now have it (`e0f97f8`). `android-env.sh` and
+  `cmd/tie-audio/test-env/env.sh` are sourced libraries, where `set -e` would
+  be wrong. What was real in `vendor-android-libs.sh` is the second half of the
+  claim: its `rm -rf "$ABI_DIR" "$DST/include"` throws away the only copy of
+  the vendored `.so` files (they are not committed) before the `cp` calls that
+  can fail on an unexpanded glob. Everything is now checked before anything is
+  deleted (`37e21c3`).
 - **`push-to-repo.sh` is `git add -A && git commit -m "$@" && git push`.** It
   commits anything untracked (scratch builds, `.build/`, APKs before the
   gitignore covers them) and mangles multi-argument messages. Replace with an
@@ -948,7 +1069,10 @@ Concrete deletions and collapses, each small enough for one commit.
 - **Docs drift.** CLAUDE.md calls the tile cache "LRU" (it is FIFO, §4.5),
   places the memory budget in tile counts (it is not byte-bounded), and does not
   mention that `LoadGallery`/`ChangePage` block on the network (§3.3). Update
-  after the fixes, and add the threading rule from §7.2.
+  after the fixes, and add the threading rule from §7.2. *Done:* `37e21c3`
+  rewrote the cache, threading-model and navigation sections, documented the
+  `tileUpdater` single-owner rule, and added the `tablewidget`, `tielog`,
+  `appboot`, `httpx` and `tagindex` rows to the layout table.
 - **Scratch hygiene.** `git status` is clean at review time, but `.build/`,
   `package/` and `fyne-cross/` are gitignored while ad-hoc `*.apk.idsig` and
   test binaries are not consistently covered; keep the ignore list current so
@@ -956,16 +1080,24 @@ Concrete deletions and collapses, each small enough for one commit.
 
 ### Test gaps worth closing first
 
-1. tie-fm transfers: move/copy a directory into itself (§2.1); a partial
-   download followed by a second `Materialize` (§3.4); `Active()` polled during
-   ops under `-race` (§3.1).
-2. tagselection: Unicode tag round-trip (§2.3); a 20k-tag memory budget
-   assertion (§2.2); search results equal a naive filter's results (fuzz).
-3. gallery: two entries with the same hash render separately (§3.8); a
-   decompression-bomb member is refused (§3.7); `ReadImageArchive` twice does not
-   duplicate (§4.4); the whole package under `-race` (§10).
-4. tieconfig: the saved config's mode is `0600` (§3.2).
-5. mpvplayer: close while repainting (§3.9).
+All six areas below now have tests on `fix/code-review-2026-10`; the numbers in
+parentheses are the commits that added them.
+
+1. tie-fm transfers: move/copy a directory into itself (§2.1, `6f68ea5`); a
+   partial download followed by a second `Materialize` (§3.4, `22663c1`, now in
+   `tiestore/tiestore_test.go` via `6837610`); `Active()` polled during
+   ops under `-race` (§3.1, `5f801a7`).
+2. tagselection: Unicode tag round-trip (§2.3, `6d9ed74`); a 20k-tag memory
+   budget assertion (§2.2, `6d9ed74`); search results equal a naive filter's
+   results (`tagindex` property test, `6d9ed74`).
+3. gallery: two entries with the same hash render separately (§3.8, `455adad`);
+   a decompression-bomb member is refused (§3.7, `71259b1`); `ReadImageArchive`
+   twice does not duplicate (§4.4, `636103b`); the whole package under `-race`
+   (§10, `dce953e`).
+4. tieconfig: the saved config's mode is `0600` (§3.2, `017bfcf`).
+5. mpvplayer: use-after-close is inert, and `Close` races the command path and
+   the `OnUpdate` callback (§3.9, `6a7f88f`). A real close-while-repainting test
+   needs a GL context, which the test driver does not provide.
 
 ---
 
@@ -976,39 +1108,47 @@ behaviour is fixed first. Every item is a GitHub issue in `uidbz/tie-gui`; the
 ordered list and the Top-12 cross-reference live in the tracking issue #1.
 
 **Week 1 — data loss and crashes (small diffs, high value)**
-1. §2.1 containment guard in the transfer engine + regression tests. → #2
-2. §2.3 trie UTF-8 fix (stop reconstructing keys) + Unicode tests. → #3
-3. §3.7 decode-size guard (decompression bomb). → #4
-4. §3.2 config file mode `0600` + directory `0700` + upstream issue to `conf`. → #5
-5. §4.4 `ReadImageArchive`: clear the list, close the handles. → #6
+1. ✅ §2.1 containment guard in the transfer engine + regression tests. → #2 (`6f68ea5`)
+2. ✅ §2.3 trie UTF-8 fix (stop reconstructing keys) + Unicode tests. → #3 (`6d9ed74`)
+3. ✅ §3.7 decode-size guard (decompression bomb). → #4 (`71259b1`)
+4. ✅ §3.2 config file mode `0600` + directory `0700` + upstream issue to `conf`. → #5 (`017bfcf`, upstream `uidbz/conf#1`)
+5. ✅ §4.4 `ReadImageArchive`: clear the list, close the handles. → #6 (`636103b`)
 
 **Week 2 — the tag index and the store layer**
-6. §2.2 / §7.4 / S1: sorted-slice tag index, rebuilt off the UI goroutine. → #7
-7. §3.6 / S2: `ReadDir` with `Limit: -1` and a truncation assertion. → #8
-8. §3.4 / §3.5 / S3 / S6: atomic, hash-keyed, sanitized `Materialize` + temp-dir
-   cleanup. → #9
-9. §3.1 ops state: mutex + copied `Active()` + atomic progress fields. → #10
+6. ✅ §2.2 / §7.4 / S1: sorted-slice tag index, rebuilt off the UI goroutine. → #7 (`6d9ed74`, new `tagselection/tagindex`)
+7. ✅ §3.6 / S2: `ReadDir` with `Limit: -1` and a truncation assertion. → #8 (closed by the tie v0.7.0 upgrade, `c0af20b`; upstream `uidbz/tie#100`)
+8. ✅ §3.4 / §3.5 / S3 / S6: atomic, hash-keyed, sanitized `Materialize` + temp-dir
+   cleanup. → #9 (`22663c1`; later moved into `tiestore.Cache`, `6837610`)
+9. ✅ §3.1 ops state: mutex + copied `Active()` + atomic progress fields. → #10 (`5f801a7`)
 
 **Week 3 — responsiveness and lifetimes**
-10. §3.3 timeouts, connection pooling and context cancellation through the
-    thumbnail pipeline. → #11
-11. §3.3 never wait for the network on the UI goroutine (`LoadGallery`,
-    `ChangePage`). → #12
-12. §3.9 `mpvplayer` lifecycle lock and closed checks. → #13
-13. §4.5 byte-budgeted LRU tile cache; §3.8 cache bitmaps, not widgets. → #14
+10. ✅ §3.3 timeouts, connection pooling and context cancellation through the
+    thumbnail pipeline. → #11 (`b8c59c9`, new `internal/httpx`; pooling came from
+    tie v0.7.0's cached clients). Context cancellation through the pipeline did
+    **not** land: it would change `gallery.Thumbnailer`, which §7.1 says to leave
+    alone, and the deadline bounds the damage anyway. Tracked as a known limit.
+11. ✅ §3.3 never wait for the network on the UI goroutine (`LoadGallery`,
+    `ChangePage`). → #12 (`b796fcd`)
+12. ✅ §3.9 `mpvplayer` lifecycle lock and closed checks. → #13 (`6a7f88f`)
+13. ✅ §4.5 byte-budgeted LRU tile cache; §3.8 cache bitmaps, not widgets. → #14 (`455adad`)
 
 **Week 4 — make the safety enforceable**
-14. §10 CI workflow; make `go test -race` green (fix the `gallery` harness,
-    §4.1); add `make check`. → #15
-15. §4.1 `ImageInfo` immutable-core split. → #16
-16. §4.6 / S7 merge the `tablewidget` forks. → #17
-17. §6.1 / §6.2 logger everywhere; remove library stdout writes (S8). → #18
+14. ✅ §10 CI workflow; make `go test -race` green (fix the `gallery` harness,
+    §4.1); add `make check`. → #15 (`dce953e`, CI in `e0f97f8`)
+15. ✅ §4.1 `ImageInfo` immutable-core split. → #16 (`0a43ad2`)
+16. ✅ §4.6 / S7 merge the `tablewidget` forks. → #17 (`9fb5e71`, top-level `tablewidget/`)
+17. ✅ §6.1 / §6.2 logger everywhere; remove library stdout writes (S8). → #18 (`c96217b`, new `tielog`)
 
 **Later — structure**
-18. §7.1 `tiestore` package, §7.2 `gallery` file split, §7.5 mpv lifecycle,
-    §7.7 app bootstrap, plus the remaining S-items. Each is mechanical, its own
-    commit, behaviour unchanged and tests green before and after. → #19
-19. The non-critical follow-ups of §4.3, §4.9-§4.13, §5.1 and §10. → #20
+18. ✅ §7.1 `tiestore` package (`6837610`), §7.2 `gallery` file split (`7d4a04e`),
+    §7.7 app bootstrap with `-conf-show` (`a4fd91a`), plus S5/S9/S10/S11/S12
+    (`d226313`, `37e21c3`). §7.5 (mpv lifecycle) was already done as #13. → #19
+19. ✅ The non-critical follow-ups of §4.3, §4.9-§4.13, §5.1 and §10. → #20 (`37e21c3`)
+
+Two follow-ups deliberately left open, both upstream in tie: `getlib.DownloadFile`
+is still non-atomic (`uidbz/tie#101`, worked around by `tiestore.Cache`) and
+`client.HTTPClientFor` still sets no `Timeout` on the `http.Client` it caches
+(worked around by `internal/httpx`).
 
 ---
 
