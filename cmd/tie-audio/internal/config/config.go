@@ -48,9 +48,10 @@ type AppConfig struct {
 	// table, configured independently of AlbumColumns. Empty means the default.
 	QueueColumns []string
 	// BrowseView selects how the browse wall renders its albums: BrowseCovers
-	// (the cover grid) or BrowseTable (a sortable table listing the same
-	// albums). Empty means BrowseCovers. Toggled from the gallery ☰ menu and
-	// the table view's own button row.
+	// (the cover grid), BrowseTable (a sortable table listing the same
+	// albums), or BrowseNowPlaying (a large view of the current track's
+	// cover). Empty means BrowseCovers. Switched from the desktop view tabs,
+	// the gallery ☰ menu, and the table view's own button row.
 	BrowseView string
 	// WallColumns is the ordered set of visible column keys for the browse
 	// wall's table view (e.g. "cover", "title", "artist", "year", "kind").
@@ -161,8 +162,9 @@ const (
 
 // BrowseView values for AppConfig.BrowseView.
 const (
-	BrowseCovers = "covers" // cover grid (the default)
-	BrowseTable  = "table"  // sortable table of the same albums
+	BrowseCovers     = "covers"     // cover grid (the default)
+	BrowseTable      = "table"      // sortable table of the same albums
+	BrowseNowPlaying = "nowplaying" // large cover of the current track
 )
 
 // Default returns the built-in defaults used before any config file exists.

@@ -13,14 +13,11 @@ import (
 )
 
 // compactForWidth decides the layout from the user's preference and the window
-// width. An explicit preference wins outright; "auto" defers to
-// gallery.Platform.CompactLayout, which is width-based and only ever compact on
-// touch devices.
-//
-// The override exists because width alone cannot classify a tablet reliably:
-// the same device is ~800dp in portrait and ~1280dp in landscape, dp values
-// vary with the vendor's density bucket, and whether a split layout is
-// *wanted* on a 10" screen is a matter of taste rather than geometry.
+// width. An explicit preference wins outright; "auto" keeps touch devices in
+// the compact layout at every orientation. A phone rotated to landscape is
+// still a phone: switching it to the split desktop layout makes the panes
+// finger-hostile, and the Now Playing page adapts to the wide shape itself
+// (cover left, controls right). Desktop windows remain regular unless pinned.
 func compactForWidth(pref string, platform *gallery.Platform, width float32) bool {
 	switch pref {
 	case config.LayoutCompact:
@@ -30,6 +27,9 @@ func compactForWidth(pref string, platform *gallery.Platform, width float32) boo
 	}
 	if platform == nil {
 		return false
+	}
+	if platform.IsMobile() {
+		return true
 	}
 	return platform.CompactLayout(width)
 }

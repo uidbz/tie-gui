@@ -351,6 +351,7 @@ func (b *browsePage) showHomeView() {
 	if b.home == nil {
 		b.home = newHomeView(b)
 	}
+	b.setViewTabsEnabled(false)
 	b.win.SetContent(b.homeRoot())
 	b.home.ensure()
 	if b.onFeedChanged != nil {

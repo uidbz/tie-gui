@@ -2,6 +2,7 @@ package fs
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -259,6 +260,233 @@ func (t *TieFS) Mkdir(parent, name string) error {
 	dirPath := path.Join(tiePath(parent), name)
 	_, err := t.tc.MkTieDirAll(client.FileURIScheme + dirPath)
 	return err
+}
+
+// Remove deletes a tie entry by unlinking its tree triples. It never touches
+// the filehost: a file's blob stays content-addressed, and when the last parent
+// edge is gone the unlink drops the per-hash metadata while the blob remains
+// governed by the filehost's retention/reaper. Directories are removed
+// recursively (children first), because a standard file-manager Delete on a
+// non-empty folder is expected to work; an empty-directory delete is the
+// client's own model. Implements Remover.
+//
+// Entries from a tag-query listing carry a synthetic "/<name>" path (a query
+// has no containing directory), so the parents recorded on the subject are
+// used when the path's parent is not among them. A normal directory listing
+// deletes just that one parent edge, preserving the entry in other folders.
+func (t *TieFS) Remove(e Entry) error {
+	if e.Hash == "" {
+		return fmt.Errorf("tie: cannot delete %q without a key", e.Name)
+	}
+	if !e.IsDir {
+		return t.removeFile(e)
+	}
+	return t.removeDirEntry(e)
+}
+
+func (t *TieFS) removeFile(e Entry) error {
+	parents, err := t.parentUIDs(e.Hash)
+	if err != nil {
+		return err
+	}
+	if parent, err := t.parentUID(e.Path); err == nil && parent != "" && containsDir(parents, parent) {
+		return t.detachChild(e.Hash, parent)
+	}
+	if len(parents) == 0 {
+		return fmt.Errorf("tie: no parent directory recorded for %q", e.Name)
+	}
+	// A tag-query result: unlink the item from every location it appears in.
+	for _, parent := range parents {
+		if err := t.detachChild(e.Hash, parent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *TieFS) removeDirEntry(e Entry) error {
+	uid := client.DirUID(e.Hash)
+	parents, err := t.parentUIDs(e.Hash)
+	if err != nil {
+		return err
+	}
+	targets := parents
+	if parent, err := t.parentUID(e.Path); err == nil && parent != "" && containsDir(parents, parent) {
+		targets = []client.DirUID{parent}
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("tie: no parent directory recorded for %q", e.Name)
+	}
+	if err := t.removeDirContents(uid); err != nil {
+		return err
+	}
+	for _, parent := range targets {
+		if err := t.deleteDir(uid, parent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeDirContents recursively unlinks every file, archive and subdirectory
+// below uid. Subdirectories are unlinked from uid only, so a child linked under
+// another directory survives there.
+func (t *TieFS) removeDirContents(uid client.DirUID) error {
+	dir, err := client.ReadTieDir(t.tc, uid)
+	if err != nil {
+		return err
+	}
+	for _, f := range dir.Files {
+		if err := t.detachChild(f.Uid, uid); err != nil {
+			return err
+		}
+	}
+	for _, a := range dir.Archives {
+		if err := t.detachChild(a.Hash, uid); err != nil {
+			return err
+		}
+	}
+	for _, sub := range dir.SubDirs {
+		if err := t.removeDirContents(sub.Uid); err != nil {
+			return err
+		}
+		if err := t.deleteDir(sub.Uid, uid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// detachChild removes the (key,"parent",parent) edge. When that was the key's
+// last parent, its per-hash metadata is dropped as well; the content blob is
+// left on the filehost. This mirrors the client's unexported detachChild, which
+// the pinned tie v0.6 client does not expose (DeleteFile arrived in v0.7).
+func (t *TieFS) detachChild(key string, parent client.DirUID) error {
+	b := t.tc.NewBatch()
+	b.Delete(key, client.TieParent.String(), string(parent))
+	if _, err := t.tc.Batch(b); err != nil {
+		return err
+	}
+	if err := t.tc.Sync(); err != nil {
+		return err
+	}
+	n, err := t.parentCount(key)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil // still reachable from another directory; keep its metadata
+	}
+	row, err := t.tc.Get(key)
+	if errors.Is(err, client.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	meta := t.tc.NewBatch()
+	for relation, values := range row.Attributes {
+		for _, value := range values {
+			meta.Delete(key, relation, value)
+		}
+	}
+	if _, err := t.tc.Batch(meta); err != nil {
+		return err
+	}
+	return t.tc.Sync()
+}
+
+// deleteDir removes an empty directory's parent edge and path triples, dropping
+// its metadata when no parent remains. It mirrors the client's v0.7 DeleteDir;
+// the pinned v0.6 client only exposes the pieces.
+func (t *TieFS) deleteDir(uid, parent client.DirUID) error {
+	dir, err := client.ReadTieDir(t.tc, uid)
+	if err != nil {
+		return err
+	}
+	if len(dir.SubDirs) > 0 || len(dir.Files) > 0 || len(dir.Archives) > 0 {
+		return fmt.Errorf("tie: directory %s is not empty", uid)
+	}
+	b := t.tc.NewBatch()
+	b.Delete(string(uid), client.TieParent.String(), string(parent))
+	for _, p := range dir.Paths {
+		b.Delete(string(uid), client.TiePath.String(), p)
+	}
+	if _, err := t.tc.Batch(b); err != nil {
+		return err
+	}
+	if err := t.tc.Sync(); err != nil {
+		return err
+	}
+	n, err := t.parentCount(string(uid))
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil // still reachable through another parent; keep its metadata
+	}
+	row, err := t.tc.Get(string(uid))
+	if errors.Is(err, client.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	meta := t.tc.NewBatch()
+	for relation, values := range row.Attributes {
+		for _, value := range values {
+			meta.Delete(string(uid), relation, value)
+		}
+	}
+	if _, err := t.tc.Batch(meta); err != nil {
+		return err
+	}
+	return t.tc.Sync()
+}
+
+// parentCount returns how many parent edges key currently has.
+func (t *TieFS) parentCount(key string) (int, error) {
+	row, err := t.tc.Get(key)
+	if errors.Is(err, client.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return len(client.RowValues(row, client.TieParent.String())), nil
+}
+
+// parentUID resolves the DirUID of uri's containing directory, returning ""
+// when that path is not mapped in the tree.
+func (t *TieFS) parentUID(uri string) (client.DirUID, error) {
+	uid, err := t.tc.DirUIDFromPath(path.Dir(tiePath(uri)))
+	if err != nil || uid == "" {
+		return "", err
+	}
+	return client.DirUID(uid), nil
+}
+
+// parentUIDs returns the subjects of the entry's parent edges, if any.
+func (t *TieFS) parentUIDs(key string) ([]client.DirUID, error) {
+	row, err := t.tc.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	values := client.RowValues(row, client.TieParent.String())
+	out := make([]client.DirUID, 0, len(values))
+	for _, v := range values {
+		out = append(out, client.DirUID(v))
+	}
+	return out, nil
+}
+
+func containsDir(ids []client.DirUID, id client.DirUID) bool {
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
 }
 
 // DirTypes returns the directory's classification labels — its tie-type values

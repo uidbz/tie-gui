@@ -168,8 +168,9 @@ func TestCompactForWidthPreferenceOverridesWidth(t *testing.T) {
 		want  bool
 	}{
 		{"auto phone", config.LayoutAuto, 400, true},
+		{"auto phone landscape", config.LayoutAuto, 900, true},
 		{"auto tablet portrait", config.LayoutAuto, 840, true},
-		{"auto tablet landscape", config.LayoutAuto, 1280, false},
+		{"auto tablet landscape", config.LayoutAuto, 1280, true},
 		{"auto empty preference behaves as auto", "", 400, true},
 		{"pinned compact on a wide window", config.LayoutCompact, 1920, true},
 		{"pinned regular on a phone", config.LayoutRegular, 360, false},

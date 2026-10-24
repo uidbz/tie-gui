@@ -38,7 +38,8 @@ func (b *browsePage) showBrowse() {
 		b.showHomeView()
 		return
 	}
-	if b.wallStale || b.tableMode() || !b.viewer.Loaded() {
+	b.setViewTabsEnabled(true)
+	if b.wallStale || b.tableMode() || b.nowPlayingMode() || !b.viewer.Loaded() {
 		b.wallStale = false
 		b.showWall()
 		return

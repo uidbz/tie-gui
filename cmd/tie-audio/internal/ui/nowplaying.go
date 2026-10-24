@@ -82,9 +82,50 @@ func newNowPlayingPage(p *player, back func()) *nowPlayingPage {
 	// A swipe down over the cover leaves the page, mirroring the swipe up that
 	// opened it from the mini bar.
 	coverArea := container.NewStack(newSwipeDownArea(back), container.NewPadded(n.cover.object))
+	body := container.New(nowPlayingLayout{}, coverArea, container.NewCenter(bottom))
 
-	n.object = container.NewBorder(header, bottom, nil, nil, coverArea)
+	n.object = container.NewBorder(header, nil, nil, nil, body)
 	return n
+}
+
+// nowPlayingLayout stacks the cover above the controls in portrait and puts
+// the cover on the left in landscape, where a phone's extra width would
+// otherwise be wasted by a tall column. The controls keep their intrinsic
+// height in portrait (pinned to the bottom) and center vertically beside the
+// cover in landscape.
+type nowPlayingLayout struct{}
+
+func (nowPlayingLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) < 2 {
+		return
+	}
+	cover, controls := objects[0], objects[1]
+	if size.Width > size.Height {
+		half := size.Width / 2
+		cover.Resize(fyne.NewSize(half, size.Height))
+		cover.Move(fyne.NewPos(0, 0))
+		controls.Resize(fyne.NewSize(size.Width-half, size.Height))
+		controls.Move(fyne.NewPos(half, 0))
+		return
+	}
+	h := controls.MinSize().Height
+	if h > size.Height*0.6 {
+		h = size.Height * 0.6
+	}
+	cover.Resize(fyne.NewSize(size.Width, size.Height-h))
+	cover.Move(fyne.NewPos(0, 0))
+	controls.Resize(fyne.NewSize(size.Width, h))
+	controls.Move(fyne.NewPos(0, size.Height-h))
+}
+
+func (nowPlayingLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	if len(objects) < 2 {
+		return fyne.Size{}
+	}
+	cover, controls := objects[0], objects[1]
+	c := controls.MinSize()
+	cv := cover.MinSize()
+	return fyne.NewSize(fyne.Max(c.Width, cv.Width), c.Height+cv.Height)
 }
 
 func (n *nowPlayingPage) Object() fyne.CanvasObject { return n.object }

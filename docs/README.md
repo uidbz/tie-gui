@@ -10,6 +10,8 @@ User and developer documentation for the tie-gui clients
 - **[TIE-FM-ALBUM-IMPORT.md](TIE-FM-ALBUM-IMPORT.md)** — bulk-importing a
   music library into tie as albums: destination templates, cd1/cd2 disc
   placement, dir-types, review dialog, caveats.
+- **[TIE-FM-DELETE.md](TIE-FM-DELETE.md)** — what Delete does to `tie:` rows
+  (unlink triples, keep the blob) and notes toward reference-counted blob GC.
 - **[ANDROID.md](ANDROID.md)** — building and installing the Android APKs.
 
 ## For developers

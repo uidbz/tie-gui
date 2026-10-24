@@ -40,6 +40,16 @@ type browsePage struct {
 	win     fyne.Window
 	session *data.Session
 
+	// shell is the real window wrapper when win is one (it always is in the
+	// app; tests may use a plain test window). The browse page installs the
+	// desktop view-tab decorator on it.
+	shell *shellWindow
+	// viewTabs is the desktop Covers/Table/Now Playing selector, built on
+	// first use. desktopPlaying is the Now Playing tab's content and a
+	// player view, registered when built.
+	viewTabs       *browseViewTabs
+	desktopPlaying *desktopNowPlaying
+
 	viewer *gallery.Gallery
 	ts     *tagselection.TagSelection
 
@@ -135,17 +145,20 @@ type browsePage struct {
 // cover grid or the album table per the configured BrowseView).
 func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers *coverStore, compact bool) *browsePage {
 	b := &browsePage{app: app, win: win, session: session, covers: covers, compact: compact}
+	if shell, ok := win.(*shellWindow); ok {
+		b.shell = shell
+	}
 
-	config := gallery.LoadConfig(win, "")
+	galCfg := gallery.LoadConfig(win, "")
 	// Adjust before NewGallery: the config is passed by value, so a later
 	// AdjustForMobile would only reach this page's copy and leave the gallery
 	// itself with desktop tile sizes, page size and worker count.
 	b.mobile = gallery.NewPlatform().IsMobile()
 	if b.mobile {
-		config.AdjustForMobile()
+		galCfg.AdjustForMobile()
 	}
 
-	b.viewer = gallery.NewGallery(app, win, config, func(t *gallery.Tile) {
+	b.viewer = gallery.NewGallery(app, win, galCfg, func(t *gallery.Tile) {
 		t.Viewer.ChangeImage(t.Info) // Openable → routes to AudioAlbumItem.Open
 	})
 	b.viewer.OnTileSecondaryTapped = func(t *gallery.Tile) {
@@ -158,7 +171,7 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 	b.viewer.OnPullRefresh = b.reloadWall
 	b.viewer.Thumbnailer = &coverThumbnailer{
 		page:      b,
-		tileWidth: int(config.General.TileWidth),
+		tileWidth: int(galCfg.General.TileWidth),
 	}
 	b.fsTree = newTieFSTree(b)
 	b.viewer.Sidebar = b.buildSidebar()
@@ -174,22 +187,27 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 		if b.fsTree.showHidden {
 			label = "Hide hidden directories"
 		}
-		// The compact nav bar's ☰ opens this menu over the table view too.
-		viewLabel := "Table view"
-		if b.tableMode() {
-			viewLabel = "Cover view"
-		}
-		return []*fyne.MenuItem{
+		items := []*fyne.MenuItem{
 			fyne.NewMenuItem("Home", b.showHome),
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
 			fyne.NewMenuItem("Reload albums", b.reloadWall),
 			// The full listing from anywhere (a tag wall, a Files directory):
 			// clears the tag selection, which feeds the latest albums.
 			fyne.NewMenuItem("Latest albums", b.showLatest),
-			// Swap the cover grid for a sortable table of the same albums;
-			// the table view's own button row carries the way back.
-			fyne.NewMenuItem(viewLabel, b.toggleWallView),
 		}
+		// Swap the cover grid for the table or the large now-playing cover.
+		// The desktop view tabs expose the same switch; the menu keeps it
+		// reachable from the compact layout and the Home page.
+		if !b.tableMode() {
+			items = append(items, fyne.NewMenuItem("Table view", func() { b.setBrowseView(config.BrowseTable) }))
+		}
+		if !b.nowPlayingMode() && !b.compact {
+			items = append(items, fyne.NewMenuItem("Now playing view", func() { b.setBrowseView(config.BrowseNowPlaying) }))
+		}
+		if b.tableMode() || b.nowPlayingMode() {
+			items = append(items, fyne.NewMenuItem("Cover view", func() { b.setBrowseView(config.BrowseCovers) }))
+		}
+		return items
 	}
 	b.viewer.ToggleLabels() // album titles under covers, on by default
 
@@ -211,6 +229,9 @@ func (b *browsePage) Content() fyne.CanvasObject {
 	if b.feed == feedHome && b.home != nil {
 		return b.homeRoot()
 	}
+	if b.nowPlayingMode() {
+		return b.nowPlayingObject()
+	}
 	if b.tableMode() && b.wallTable != nil {
 		return b.wallTableRoot()
 	}
@@ -228,6 +249,9 @@ func (b *browsePage) setCompact(compact bool) {
 	b.setGalleryChrome(compact)
 	b.syncSettingsTab()
 	b.viewer.CreateView()
+	if compact {
+		b.setViewTabsEnabled(false)
+	}
 	if b.wallTable != nil {
 		b.wallTable.setCompact(compact)
 	}

@@ -139,7 +139,12 @@ locations on the other.
 **Features:**
 - Tag panel filters listings by include/exclude tags; switches to related
   (co-occurring) tags once a filter is chosen
+- `Ctrl+I` (`Cmd+I` on macOS) reveals the in-page text filter; the
+  filter/page bar stays hidden unless the listing needs more than one
+  2000-entry page
 - Select rows to view/edit their tags (directories are taggable too)
+- Delete works for local and `tie:` rows; tie delete unlinks triples and keeps
+  the content blob for the filehost's retention policy
 - ☆/★ favorite tags, stored in the tie collection and shared with tie-view
 - Copy/move/delete with progress view; USB drives and MTP phones under
   removable devices (Linux)

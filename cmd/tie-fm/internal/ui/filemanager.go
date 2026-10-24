@@ -29,7 +29,7 @@ const (
 	colTags
 )
 
-const pageSize = 200
+const pageSize = 2000
 
 // bookmarkResource is the toolbar "bookmark current path" icon (a Material
 // bookmark ribbon, colorized by the theme). The SVG fill is replaced at render
@@ -63,7 +63,7 @@ type FileManager struct {
 
 	table        *tablewidget.TableWidget
 	toolbar      *widget.Toolbar
-	addr         *widget.Entry
+	addr         *shortcutEntry
 	breadcrumb   *fyne.Container
 	tagPanel     *TagPanel
 	content      *fyne.Container
@@ -120,7 +120,11 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	ft.SetColumnWidth(colModified, 160)
 	ft.SetColumnWidth(colTags, 240)
 
-	fm.addr = widget.NewEntry()
+	fm.addr = newShortcutEntry(func(s fyne.Shortcut) {
+		if s.ShortcutName() == FilterShortcut.ShortcutName() {
+			fm.ShowFilter()
+		}
+	})
 	fm.addr.OnSubmitted = func(s string) { fm.navigateTo(strings.TrimSpace(s)) }
 
 	fm.toolbar = widget.NewToolbar(
@@ -177,6 +181,16 @@ func (fm *FileManager) SetBookmarkHandler(fn func(path string)) { fm.onBookmark 
 func (fm *FileManager) InitPreview(cfg gallery.Config, thumb gallery.Thumbnailer) {
 	fm.preview = newPreviewController(fm, cfg, thumb)
 	fm.toolbar.Append(widget.NewToolbarAction(theme.MediaPhotoIcon(), fm.togglePreview))
+}
+
+// ShowFilter reveals this pane's filter/page bar and focuses the filter box.
+// Ignored in preview mode, where there is no table to filter.
+func (fm *FileManager) ShowFilter() {
+	if fm.preview != nil && fm.preview.on {
+		return
+	}
+	fm.markActive()
+	fm.table.ShowFilter()
 }
 
 func (fm *FileManager) togglePreview() {
@@ -675,7 +689,7 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 	if item := fm.extractMenuItem(e); item != nil {
 		items = append(items, item)
 	}
-	if !fs.IsTie(e.Path) {
+	if fm.canDelete(e) {
 		items = append(items,
 			fyne.NewMenuItem("Delete", func() { fm.confirmDelete(e) }),
 		)
@@ -1169,17 +1183,47 @@ func (fm *FileManager) openInTerminal(e fs.Entry) {
 	}
 }
 
+// canDelete reports whether the entry's backend supports Delete. Local files
+// use os.RemoveAll; tie implements fs.Remover (triples only, blob untouched).
+func (fm *FileManager) canDelete(e fs.Entry) bool {
+	if fs.IsLocal(e.Path) {
+		return true
+	}
+	_, ok := fm.registry.For(e.Path).(fs.Remover)
+	return ok
+}
+
 func (fm *FileManager) confirmDelete(e fs.Entry) {
-	dialog.ShowConfirm("Delete", fmt.Sprintf("Delete %q?", e.Name), func(ok bool) {
+	msg := fmt.Sprintf("Delete %q?", e.Name)
+	if fs.IsTie(e.Path) {
+		what := "file"
+		if e.IsDir {
+			what = "directory and everything below it"
+		}
+		msg = fmt.Sprintf("Remove the %s %q from tie?\n\nThe tree references are removed; content stays in the tie filehost until the filehost's retention policy collects it.", what, e.Name)
+	}
+	dialog.ShowConfirm("Delete", msg, func(ok bool) {
 		if !ok {
 			return
 		}
-		if err := fs.RemoveLocal(e); err != nil {
+		if err := fm.deleteEntry(e); err != nil {
 			dialog.ShowError(err, fm.win)
 			return
 		}
 		fm.reload()
 	}, fm.win)
+}
+
+// deleteEntry deletes through the backend's Remover when it has one, falling
+// back to os.RemoveAll for local entries.
+func (fm *FileManager) deleteEntry(e fs.Entry) error {
+	if remover, ok := fm.registry.For(e.Path).(fs.Remover); ok {
+		return remover.Remove(e)
+	}
+	if fs.IsLocal(e.Path) {
+		return fs.RemoveLocal(e)
+	}
+	return fmt.Errorf("deleting %s entries is not supported", fs.SchemeOf(e.Path))
 }
 
 // destEntry describes this panel's current directory as a copy/move target.

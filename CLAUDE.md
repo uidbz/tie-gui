@@ -10,7 +10,7 @@ Fyne fork — hence the monorepo.
 |------|------|
 | `cmd/imgview/` | Local-filesystem image viewer entry point |
 | `cmd/tie-view/` | tie-network image viewer entry point (also opens local directories/images/archives like imgview) |
-| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction"); copy/move destination conflicts prompt with a Dolphin-style dialog (see "tie-fm copy/move conflicts"); the context menu also offers "New file…" (backends implementing `fs.FileMaker`, local) and "Open in terminal" (local entries; terminal from `Config.Terminal`, `$TERMINAL`, or the first known emulator in PATH, set in Menu → "Terminal…") |
+| `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); the table's filter/page footer is hidden unless the listing spans more than one 2000-entry page, and `Ctrl+I` (`Cmd+I` on macOS) reveals it and focuses the in-page filter; Delete is offered for local and `tie:` rows (tie unlinks triples recursively and leaves blobs to the filehost's retention, see `docs/TIE-FM-DELETE.md`); archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction"); copy/move destination conflicts prompt with a Dolphin-style dialog (see "tie-fm copy/move conflicts"); the context menu also offers "New file…" (backends implementing `fs.FileMaker`, local) and "Open in terminal" (local entries; terminal from `Config.Terminal`, `$TERMINAL`, or the first known emulator in PATH, set in Menu → "Terminal…") |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/history/playback/ui; Home page + play history, see the sections at the end) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
@@ -1028,17 +1028,34 @@ settings saves like the column sets).
 
 ## tie-audio compact layout (`cmd/tie-audio/internal/ui/app.go`, `layout.go`)
 
-The shell renders one of two layouts, chosen from the **window width**, not
-from `IsMobile()` — Fyne reports tablets as mobile, and a tablet (or a phone
-in landscape) has room for the split layout:
+The shell renders one of two layouts. On desktop the choice follows the
+window width (a narrow window is not forced compact); on touch devices
+"auto" always picks the **compact** layout, including landscape, because a
+phone rotated sideways is still a phone and the desktop split layout puts
+finger-sized controls into cramped panes. The Now Playing page adapts to the
+wide shape itself (cover left, controls right). An explicit layout preference
+still wins on either kind of device:
 
-| | regular (desktop, tablet in landscape) | compact (phone, tablet in portrait) |
+| | regular (desktop, or pinned by the user) | compact (phone/tablet, portrait or landscape) |
 |---|---|---|
 | Tags/Files sidebar | `HSplit` pane inside the gallery | slide-over **drawer** over the grid + filter chip row |
 | Playlist | `trackTable` in a permanent right-hand `HSplit` pane, grouped by album headers | full-screen **album-grouped list** (`queueList`) |
 | Album track list | persisted column set + Columns dialog | fixed `compactAlbumColumns` (track no / title / duration) |
 | Transport | `regularBar` (one row, both sliders, "3 / 42" queue position; cover click scrolls the queue pane to the playing track) | `miniBar` (cover + controls, track line, always-visible volume row) → full-screen `nowPlayingPage` |
 | Bottom nav | — | persistent `navBar` (Home / Albums / Tags / Playlist / Settings / ☰) on **every** view |
+
+- **Desktop view tabs** (`ui/viewtabs.go`, `ui/viewmode.go`,
+  `ui/nowplayingdesktop.go`): the browse wall has Covers / Table / Now
+  Playing buttons above the content. The choice persists in
+  `AppConfig.BrowseView` (`covers`/`table`/`nowplaying`); the gallery ☰ menu
+  carries the same switches (Covers/Table on compact, where Now Playing is the
+  mini bar's full-screen page; all three on Home). Now Playing is a
+  large current-track cover plus title/subtitle, registered as a player view;
+  controls stay on the regular transport bar. `shellWindow.decorate` wraps the
+  main pane (not the queue pane) so gallery-initiated `SetContent` calls keep
+  the tabs; queue/settings/compact Now Playing clear it.
+- **Now Playing landscape** (`nowplaying.go`): a custom layout stacks cover
+  above controls in portrait and puts the cover on the left in landscape.
 
 - **Bottom panel** (`App.applyBottomBar`, `navbar.go`): every compact view
   pins mini bar + nav bar on one shared `panelBackground`; Now Playing (its
@@ -1068,12 +1085,12 @@ in landscape) has room for the split layout:
   transportView that refreshes only on track change); the chip opens Now
   Playing (compact) or scrolls to the row (regular).
 
-- `gallery.Platform.CompactLayout(width)` is the width heuristic
-  (`width <= 0` counts as compact on mobile: the canvas has not been laid out
-  yet, and guessing the split layout for a phone shows it for one frame).
-  `CompactWidth` is **1000** dp — the bar is a tablet in *landscape*, not a
-  phone: a 10" tablet in portrait is ~800dp, which fits a split on paper but
-  leaves a 160dp sidebar, narrower than a whole phone screen.
+- `gallery.Platform.CompactLayout(width)` is the gallery library's width
+  heuristic (`width <= 0` counts as compact on mobile: the canvas has not been
+  laid out yet, and guessing the split layout for a phone shows it for one
+  frame). `CompactWidth` is **1000** dp. tie-audio's `ui.compactForWidth`
+  keeps all touch devices compact regardless of orientation; desktop windows
+  are never compact under `auto`.
 - The heuristic is only the default: `AppConfig.Layout`
   (`auto`/`compact`/`regular`, Settings → "layout") pins the mode, because
   width cannot classify a tablet (the same device is ~800dp portrait and

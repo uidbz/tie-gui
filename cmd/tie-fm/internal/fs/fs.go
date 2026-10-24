@@ -85,6 +85,14 @@ type Importer interface {
 	Import(destDir, srcPath, name string) error
 }
 
+// Remover is implemented by backends that can delete an entry. For tie, this
+// unlinks the entry's tree triples (and drops its metadata when no parent
+// remains); the content-addressed blob is left to the filehost's retention
+// policy, never deleted through this path.
+type Remover interface {
+	Remove(e Entry) error
+}
+
 // BuiltinDirTypes are the tie dir-type labels offered by the "into tie as"
 // transfer menus — the same vocabulary the tie CLI's import subcommands use.
 // Custom labels can be applied via the Directory type dialog.

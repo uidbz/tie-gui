@@ -51,6 +51,10 @@ type shellWindow struct {
 	// content is the inner view currently wrapped, kept so a layout-mode
 	// change can re-wrap it without the caller re-navigating.
 	content fyne.CanvasObject
+	// decorate, when set, wraps the main view (but not the queue pane) before
+	// composition. tie-audio's browse page uses it for the desktop view tabs,
+	// so gallery-initiated SetContent calls keep the tabs.
+	decorate func(fyne.CanvasObject) fyne.CanvasObject
 	// edges, when set, returns the compact layout's edge-swipe strips for the
 	// view being wrapped (nil for none). Evaluated on every wrap, because the
 	// gallery and the album view push their content through SetContent
@@ -68,24 +72,28 @@ func (w *shellWindow) SetBottom(bar fyne.CanvasObject) {
 // pane) without pushing it to the window, so Root() can reuse the same layout.
 func (w *shellWindow) wrap(o fyne.CanvasObject) fyne.CanvasObject {
 	w.content = o
+	main := o
+	if w.decorate != nil {
+		main = w.decorate(o)
+	}
 	var composed fyne.CanvasObject
 	if !w.compact && w.queuePanel != nil {
 		if w.split == nil {
-			w.split = container.NewHSplit(o, w.queuePanel)
+			w.split = container.NewHSplit(main, w.queuePanel)
 			if w.splitOffset == 0 {
 				w.splitOffset = 0.72
 			}
 			w.split.SetOffset(w.splitOffset)
 		} else {
-			w.split.Leading = o
+			w.split.Leading = main
 		}
 		w.split.Refresh()
 		composed = container.NewBorder(nil, w.bar, nil, nil, w.split)
 	} else {
-		center := o
+		center := main
 		if w.compact && w.edges != nil {
 			if strips := w.edges(); strips != nil {
-				center = container.NewStack(o, strips)
+				center = container.NewStack(main, strips)
 			}
 		}
 		composed = container.NewBorder(nil, w.bar, nil, nil, center)
@@ -96,10 +104,15 @@ func (w *shellWindow) wrap(o fyne.CanvasObject) fyne.CanvasObject {
 	return container.NewStack(w.watcher, composed)
 }
 
-// SetContent wraps o with the transport bar (and the regular layout's queue
-// pane).
+// SetContent swaps the wrapped content.
 func (w *shellWindow) SetContent(o fyne.CanvasObject) {
 	w.Window.SetContent(w.wrap(o))
+}
+
+// SetContentDecorator installs (or clears) a wrapper applied to the main view
+// but not the queue pane.
+func (w *shellWindow) SetContentDecorator(fn func(fyne.CanvasObject) fyne.CanvasObject) {
+	w.decorate = fn
 }
 
 // rewrap re-composes the current content, applying a changed layout mode or
@@ -353,6 +366,7 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	// Feed the wall per the configured startup page (latest / favorites /
 	// playlists / a tag); Home is the default, StartupBlank leaves it empty.
 	a.browse.applyStartupPage()
+	a.browse.syncViewTabs()
 
 	// Swipes mirror the compact nav bar's buttons, and work in either layout on
 	// a touch screen: left opens the playlist, right pulls in the sidebar
@@ -507,6 +521,12 @@ func (a *App) layoutWidth() float32 {
 // device reports is not something the user can otherwise discover.
 func (a *App) AutoLayoutLabel() string {
 	width := a.layoutWidth()
+	if a.platform != nil && a.platform.IsMobile() {
+		if width <= 0 {
+			return "automatic picks compact on touch"
+		}
+		return fmt.Sprintf("automatic picks compact on touch — window %.0fdp (orientation does not change it)", width)
+	}
 	mode := "regular"
 	if compactForWidth(config.LayoutAuto, a.platform, width) {
 		mode = "compact"
@@ -705,6 +725,7 @@ func (a *App) showQueueView() {
 		return
 	}
 	a.browse.closeSidebar()
+	a.browse.setViewTabsEnabled(false)
 	a.setView(viewQueue)
 	a.win.SetContent(a.queue.Object())
 	a.queue.show()
@@ -714,6 +735,7 @@ func (a *App) showQueueView() {
 // the sidebar's own tab selection.
 func (a *App) showSettingsView() {
 	a.browse.closeSidebar()
+	a.browse.setViewTabsEnabled(false)
 	a.setView(viewSettings)
 	a.refreshLayoutInfo()
 	a.win.SetContent(a.settingsContent)
@@ -728,6 +750,7 @@ func (a *App) showNowPlaying() {
 	if !a.compact {
 		return
 	}
+	a.browse.setViewTabsEnabled(false)
 	a.setView(viewNowPlaying)
 	a.win.SetContent(a.playing.Object())
 }

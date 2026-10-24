@@ -142,15 +142,15 @@ func newWallTable(page *browsePage) *wallTable {
 
 	wt.applyColumnConfig()
 
-	// The button row mirrors the album view's: the view toggle on the left,
-	// the Columns dialog beside it (regular layout only — the compact column
-	// set is fixed, like the album view's).
-	// Reload re-runs the wall's feed: the table has no pull-to-refresh
-	// gesture, unlike the cover grid.
-	buttons := container.NewHBox(
-		widget.NewButtonWithIcon("Cover view", theme.GridIcon(), page.toggleWallView),
-		widget.NewButtonWithIcon("Reload", theme.ViewRefreshIcon(), page.reloadWall),
-	)
+	// The button row mirrors the album view's: in the compact layout the view
+	// toggle lives here (there are no desktop tabs); in the regular layout the
+	// tabs above carry it. Reload re-runs the wall's feed either way — the
+	// table has no pull-to-refresh gesture, unlike the cover grid.
+	buttons := container.NewHBox()
+	if page.compact {
+		buttons.Add(widget.NewButtonWithIcon("Cover view", theme.GridIcon(), page.toggleWallView))
+	}
+	buttons.Add(widget.NewButtonWithIcon("Reload", theme.ViewRefreshIcon(), page.reloadWall))
 	if !page.compact {
 		buttons.Add(widget.NewButtonWithIcon("Columns", theme.MenuIcon(), wt.showColumnsDialog))
 	}
@@ -395,7 +395,7 @@ func (b *browsePage) setWallAlbums(albums []data.Album) {
 }
 
 // showWall pushes the wall to the window in the configured rendering: the
-// cover grid, or the album table.
+// cover grid, the album table, or the current track's large cover.
 func (b *browsePage) showWall() {
 	if b.onFeedChanged != nil {
 		defer b.onFeedChanged()
@@ -404,7 +404,12 @@ func (b *browsePage) showWall() {
 		b.showHomeView()
 		return
 	}
-	if b.tableMode() {
+	b.setViewTabsEnabled(true)
+	switch {
+	case b.nowPlayingMode():
+		b.showNowPlayingView()
+		return
+	case b.tableMode():
 		b.showWallTable()
 		return
 	}
@@ -414,11 +419,15 @@ func (b *browsePage) showWall() {
 // showWallTable swaps the window content to the album table, building it on
 // first use.
 func (b *browsePage) showWallTable() {
+	b.setViewTabsEnabled(true)
 	if b.wallTable == nil {
 		b.wallTable = newWallTable(b)
 		b.wallTable.setAlbums(b.albums)
 	}
 	b.win.SetContent(b.wallTableRoot())
+	if b.viewTabs != nil {
+		b.viewTabs.setActive(config.BrowseTable)
+	}
 	b.wallTable.show() // size the Title column now that the pane width is known
 }
 
@@ -452,18 +461,13 @@ func (b *browsePage) wallTableRoot() fyne.CanvasObject {
 }
 
 // toggleWallView switches the wall between the cover grid and the album table,
-// persisting the choice. Bound to the gallery ☰ menu's "Table view" item and
-// the table view's "Cover view" button.
+// persisting the choice. Bound to the gallery ☰ menu's "Table view" item.
 func (b *browsePage) toggleWallView() {
 	if b.tableMode() {
-		b.session.Cfg.BrowseView = config.BrowseCovers
+		b.setBrowseView(config.BrowseCovers)
 	} else {
-		b.session.Cfg.BrowseView = config.BrowseTable
+		b.setBrowseView(config.BrowseTable)
 	}
-	if err := config.Save(b.session.Cfg); err != nil {
-		dialog.ShowError(err, b.win)
-	}
-	b.showWall()
 }
 
 // saveWallColumns persists the album table's visible-column set/order to the

@@ -144,6 +144,11 @@ func main() {
 		active.PreviewHandlesKey(key)
 	})
 
+	// Ctrl+I (Cmd+I on macOS) reveals the active pane's in-page filter (and
+	// the page bar that shares its footer), which is otherwise hidden for
+	// single-page listings.
+	mainWin.Canvas().AddShortcut(ui.FilterShortcut, func(fyne.Shortcut) { active.ShowFilter() })
+
 	twin := container.NewHSplit(left.View(), right.View())
 
 	// applyTieConfig rebuilds the tie client from path, persists the choice, and

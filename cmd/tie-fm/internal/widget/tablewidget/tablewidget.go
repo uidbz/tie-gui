@@ -27,10 +27,13 @@ type TableWidget struct {
 	currentPage   binding.Int
 	currentFilter string
 	filterEntry   *widget.Entry
+	pageEntry     *widget.Entry
 	currentData   *TableData
 	filteredData  *TableData
 	totalPages    binding.Int
 	totalResults  binding.Int
+	footer        *fyne.Container
+	filterShown   bool
 
 	Instance *fyne.Container
 	Title    string
@@ -128,6 +131,7 @@ func NewTableWidget(title string, pageSize int) *TableWidget {
 
 	currentPage := widget.NewEntryWithData(binding.IntToString(ctx.currentPage))
 	currentPage.Validator = nil
+	ctx.pageEntry = currentPage
 	currentPage.OnSubmitted = func(s string) {
 		i, err := strconv.Atoi(s)
 		if err != nil {
@@ -151,15 +155,50 @@ func NewTableWidget(title string, pageSize int) *TableWidget {
 		widget.NewLabel("Count:"),
 		widget.NewLabelWithData(binding.IntToString(ctx.totalResults)),
 	)
-	footer := container.NewBorder(ctx.newFilterWidget(), nil, leftFooter, nil)
+	ctx.footer = container.NewBorder(ctx.newFilterWidget(), nil, leftFooter, nil)
 
 	ctx.table.SelectionColor = color.RGBA{85, 85, 85, 128}
-	ctx.Instance = container.NewBorder(nil, footer, nil, nil, container.NewPadded(ctx.table))
+	ctx.Instance = container.NewBorder(nil, ctx.footer, nil, nil, container.NewPadded(ctx.table))
 	ctx.Data = func(offset, limit int) *TableData { return NewTableData("empty") }
 	ctx.RowCount = func() int { return 0 }
 	ctx.Refresh()
 
 	return ctx
+}
+
+// setFooterVisible shows or hides the filter/page footer. Show()/Hide() only
+// toggle the flag, so the surrounding border must be refreshed to relayout.
+func (ctx *TableWidget) setFooterVisible(show bool) {
+	if ctx.footer == nil || ctx.footer.Hidden == !show {
+		return
+	}
+	if show {
+		ctx.footer.Show()
+	} else {
+		// A hidden Entry would otherwise keep keyboard focus, swallowing the
+		// Ctrl+I shortcut that is supposed to bring the footer back.
+		if canvas := fyne.CurrentApp().Driver().CanvasForObject(ctx.footer); canvas != nil {
+			if focused := canvas.Focused(); focused == ctx.filterEntry || focused == ctx.pageEntry {
+				canvas.Unfocus()
+			}
+		}
+		ctx.footer.Hide()
+	}
+	ctx.Instance.Refresh()
+}
+
+// ShowFilter reveals the filter/page footer and focuses the filter box, even
+// when the listing fits on one page. The footer stays visible until the
+// listing is replaced (ClearFilter resets the explicit request).
+func (ctx *TableWidget) ShowFilter() {
+	ctx.filterShown = true
+	ctx.setFooterVisible(true)
+	if ctx.filterEntry == nil {
+		return
+	}
+	if canvas := fyne.CurrentApp().Driver().CanvasForObject(ctx.filterEntry); canvas != nil {
+		canvas.Focus(ctx.filterEntry)
+	}
 }
 
 func (ctx *TableWidget) Refresh() {
@@ -173,6 +212,11 @@ func (ctx *TableWidget) Refresh() {
 
 	ctx.totalResults.Set(totalCount)
 	ctx.totalPages.Set((totalCount + ctx.pageSize - 1) / ctx.pageSize)
+
+	// The footer (filter + page controls) would otherwise take a strip from
+	// every listing even though most fit on one page. Keep it out of the way
+	// until it is needed, or until the user asks for the filter with Ctrl+I.
+	ctx.setFooterVisible(totalCount > ctx.pageSize || ctx.filterShown)
 
 	ctx.currentData = data
 	if ctx.currentFilter != "" {
@@ -276,13 +320,17 @@ func contains(haystack, needle string) bool {
 
 // ClearFilter removes any active in-page filter and empties the filter box.
 // Callers use it when the underlying listing changes (e.g. a directory change)
-// so a stale filter does not silently hide rows in the new listing.
+// so a stale filter does not silently hide rows in the new listing. An
+// explicitly revealed filter bar is hidden again unless pagination needs it.
 func (ctx *TableWidget) ClearFilter() {
 	ctx.currentFilter = ""
 	ctx.filteredData = ctx.currentData
+	ctx.filterShown = false
 	if ctx.filterEntry != nil {
 		ctx.filterEntry.SetText("")
 	}
+	pages, _ := ctx.totalPages.Get()
+	ctx.setFooterVisible(pages > 1)
 }
 
 func (ctx *TableWidget) newFilterWidget() *widget.Entry {

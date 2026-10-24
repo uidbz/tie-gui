@@ -132,7 +132,12 @@ filters the listing (include/exclude tags, co-tag suggestions) or shows and
 edits the tags of the current selection — directories are taggable too.
 Favorite tags (☆/★) are stored in the tie collection and shared with the
 other clients. Copy/move progress is shown in-app; USB storage and MTP
-phones appear under removable devices (Linux).
+phones appear under removable devices (Linux). `Ctrl+I` (`Cmd+I` on macOS)
+reveals the in-page text filter; the filter/page bar is hidden unless the
+listing spans more than one page (2000 entries each). Delete works on both
+local and `tie:` rows; for tie it removes the tree references and leaves the
+content blob to the filehost's retention policy (see
+[docs/TIE-FM-DELETE.md](docs/TIE-FM-DELETE.md)).
 
 ### tie-audio — music in tie
 
