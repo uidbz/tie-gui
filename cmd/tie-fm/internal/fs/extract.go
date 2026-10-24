@@ -58,7 +58,7 @@ func archiveStem(name string) string {
 // archive, and a name already present in destDir gets a " (N)" suffix so
 // nothing existing is overwritten. See Copy for the done callback.
 func (o *Operations) Extract(archive, destDir Entry, done func(*Op)) *Op {
-	op := o.newOp(archive, destDir, OpExtract, done)
+	op := o.newOp(archive, destDir, OpExtract, nil, done)
 	if o.reg != nil {
 		op.destFS = o.reg.For(destDir.Path)
 	}

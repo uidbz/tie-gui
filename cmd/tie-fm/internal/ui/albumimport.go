@@ -522,7 +522,7 @@ func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string
 	var failed []string
 	done := func(op *fs.Op) {
 		fyne.Do(func() {
-			if op.Err != nil {
+			if op.Err != nil && op.Status != fs.StatusCancelled {
 				failed = append(failed, fmt.Sprintf("%s: %v", op.B.Path, op.Err))
 			}
 			remaining--
@@ -532,9 +532,12 @@ func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string
 			fm.afterAlbumImports(groups, matches, coverArt, failed)
 		})
 	}
+	// The batch is one transfer: a conflict answer (Apply to All / Cancel) given
+	// for one album covers the remaining albums too.
+	tr := fm.ops.NewTransfer(len(groups))
 	go func() {
 		for _, g := range groups {
-			fm.ops.ImportAlbum(g, dirType, tags, done)
+			tr.ImportAlbum(g, dirType, tags, done)
 		}
 	}()
 }

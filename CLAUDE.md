@@ -675,11 +675,26 @@ source is more recent." / size delta / "The files seem identical."), a
 "Rename:" row with "Suggest New Name" (`fs.UniqueName`), an "Apply to All"
 checkbox on multi-item transfers (directories, file lists), and Skip / Rename /
 Overwrite (Write Into for directory merges) / Cancel. Answers map to
-`fs.ConflictAction`; SkipAll/OverwriteAll are sticky for the rest of the op,
-Rename retargets the transfer (`op.renameTo`), Cancel aborts with
-`errConflictCancelled`, and a skipped move keeps its source. A nil resolver
-keeps the historic silent-overwrite behaviour. Local destinations are checked
-with `os.Stat`, remote ones via a memoized destination listing.
+`fs.ConflictAction`.
+
+A user action's items are grouped into one `fs.Transfer` (`ops.NewTransfer(len(set))`,
+then `tr.Copy`/`tr.Move`/`tr.ImportAlbum`): "Apply to All" (SkipAll/OverwriteAll)
+is sticky across **every item of the transfer**, not just the current op, and it
+is offered whenever the action carries more than one item (a multi-file
+selection included). `Cancel` stops the whole transfer — remaining items never
+start, and they settle as `fs.StatusCancelled` with `fs.ErrCancelled` (an
+expected outcome; callers like the album-import summary must not report it as a
+failure). The ops view's stop button cancels the transfer too. Dialog dismissal
+with no button (programmatic Hide, window closing) answers Cancel via
+`SetOnClosed`, so the ops goroutine can never be left waiting. Rename requires a
+name that actually differs from the existing one (the button stays disabled
+otherwise) and re-prompts when the new name is occupied as well (the conflict
+check loops). Rename retargets the transfer (`op.renameTo`), and a skipped move
+keeps its source. A nil resolver keeps the historic silent-overwrite behaviour.
+Local destinations are checked with `os.Stat`, remote ones via a memoized
+destination listing. Transfer feeds are enqueued off the UI goroutine: the ops
+queue is small and blocks when full, and the conflict dialog needs the UI
+goroutine free.
 
 ## tie-fm archive extraction (`cmd/tie-fm/internal/fs/extract.go`)
 

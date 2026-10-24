@@ -15,11 +15,14 @@ import (
 func waitDone(t *testing.T, op *Op) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError {
+	for op.Status != StatusCompleted && op.Status != StatusError && op.Status != StatusCancelled {
 		if time.Now().After(deadline) {
 			t.Fatal("operation did not finish in time")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if op.Status == StatusCancelled {
+		t.Fatalf("operation was cancelled: %v", op.Err)
 	}
 	if op.Status == StatusError {
 		t.Fatalf("operation failed: %v", op.Err)
@@ -152,8 +155,8 @@ func TestCopyConflictRename(t *testing.T) {
 	}
 }
 
-// TestCopyConflictCancel checks Cancel aborts the op with an error and writes
-// nothing.
+// TestCopyConflictCancel checks Cancel aborts the op with a cancellation (not a
+// failure) and writes nothing.
 func TestCopyConflictCancel(t *testing.T) {
 	srcPath, destDir := conflictSetup(t, "new content", "old content")
 
@@ -166,8 +169,8 @@ func TestCopyConflictCancel(t *testing.T) {
 	op := ops.Copy(src, dst, nil)
 	waitSettled(t, op)
 
-	if op.Status != StatusError || op.Err != errConflictCancelled {
-		t.Fatalf("Status = %v, Err = %v; want StatusError with errConflictCancelled", op.Status, op.Err)
+	if op.Status != StatusCancelled || !errors.Is(op.Err, ErrCancelled) {
+		t.Fatalf("Status = %v, Err = %v; want StatusCancelled with ErrCancelled", op.Status, op.Err)
 	}
 	got, _ := os.ReadFile(filepath.Join(destDir, "src.txt"))
 	if string(got) != "old content" {
@@ -228,6 +231,225 @@ func TestCopyDirConflictApplyAll(t *testing.T) {
 	if string(got) != "new c.txt" {
 		t.Fatalf("c.txt = %q, want transferred", got)
 	}
+}
+
+// transferFileSetup builds a source and a destination directory both holding
+// the given names, with "new <name>" / "old <name>" contents.
+func transferFileSetup(t *testing.T, names ...string) (srcDir, destDir string) {
+	t.Helper()
+	dir := t.TempDir()
+	srcDir = filepath.Join(dir, "src")
+	destDir = filepath.Join(dir, "dest")
+	for _, d := range []string{srcDir, destDir} {
+		if err := os.Mkdir(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte("new "+name), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(destDir, name), []byte("old "+name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return srcDir, destDir
+}
+
+// transferCopies enqueues one copy per name through the same transfer and
+// returns the ops in that order.
+func transferCopies(t *testing.T, tr *Transfer, srcDir, destDir string, names ...string) []*Op {
+	t.Helper()
+	dst, err := statEntry(destDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending []*Op
+	for _, name := range names {
+		src, err := statEntry(filepath.Join(srcDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending = append(pending, tr.Copy(src, dst, nil))
+	}
+	return pending
+}
+
+// TestTransferApplyAllCoversEveryItem is the multi-selection case: each file is
+// its own op, and "Apply to All" answered on the first conflict must not prompt
+// again for the rest of the transfer.
+func TestTransferApplyAllCoversEveryItem(t *testing.T) {
+	names := []string{"a.txt", "b.txt", "c.txt"}
+	srcDir, destDir := transferFileSetup(t, names...)
+
+	ops := NewOperations(nil)
+	asked := 0
+	ops.ConflictResolver = func(c Conflict) ConflictResult {
+		asked++
+		if !c.Multiple {
+			t.Error("a multi-item transfer must offer Apply to All")
+		}
+		return ConflictResult{Action: ConflictOverwriteAll}
+	}
+	pending := transferCopies(t, ops.NewTransfer(len(names)), srcDir, destDir, names...)
+	for _, op := range pending {
+		waitDone(t, op)
+	}
+
+	if asked != 1 {
+		t.Fatalf("resolver called %d times, want 1 (Overwrite All is transfer-wide)", asked)
+	}
+	for _, name := range names {
+		got, _ := os.ReadFile(filepath.Join(destDir, name))
+		if string(got) != "new "+name {
+			t.Fatalf("%s = %q, want overwritten", name, got)
+		}
+	}
+}
+
+// TestTransferSkipAllCoversEveryItem checks Skip All skips every remaining item
+// of the transfer.
+func TestTransferSkipAllCoversEveryItem(t *testing.T) {
+	names := []string{"a.txt", "b.txt", "c.txt"}
+	srcDir, destDir := transferFileSetup(t, names...)
+
+	ops := NewOperations(nil)
+	asked := 0
+	ops.ConflictResolver = func(Conflict) ConflictResult {
+		asked++
+		return ConflictResult{Action: ConflictSkipAll}
+	}
+	pending := transferCopies(t, ops.NewTransfer(len(names)), srcDir, destDir, names...)
+	for _, op := range pending {
+		waitDone(t, op)
+	}
+
+	if asked != 1 {
+		t.Fatalf("resolver called %d times, want 1 (Skip All is transfer-wide)", asked)
+	}
+	for _, name := range names {
+		got, _ := os.ReadFile(filepath.Join(destDir, name))
+		if string(got) != "old "+name {
+			t.Fatalf("%s = %q, want untouched", name, got)
+		}
+	}
+}
+
+// TestTransferCancelStopsRemaining checks Cancel aborts the whole transfer: the
+// remaining items must neither prompt nor be transferred, and they must settle
+// as cancelled rather than failed.
+func TestTransferCancelStopsRemaining(t *testing.T) {
+	names := []string{"a.txt", "b.txt", "c.txt"}
+	srcDir, destDir := transferFileSetup(t, names...)
+
+	ops := NewOperations(nil)
+	asked := 0
+	ops.ConflictResolver = func(Conflict) ConflictResult {
+		asked++
+		return ConflictResult{Action: ConflictCancel}
+	}
+	pending := transferCopies(t, ops.NewTransfer(len(names)), srcDir, destDir, names...)
+	for _, op := range pending {
+		waitSettled(t, op)
+		if op.Status != StatusCancelled || !errors.Is(op.Err, ErrCancelled) {
+			t.Fatalf("Status = %v, Err = %v; want every item StatusCancelled", op.Status, op.Err)
+		}
+	}
+
+	if asked != 1 {
+		t.Fatalf("resolver called %d times, want 1 (Cancel stops the transfer)", asked)
+	}
+	for _, name := range names {
+		got, _ := os.ReadFile(filepath.Join(destDir, name))
+		if string(got) != "old "+name {
+			t.Fatalf("%s = %q, want untouched", name, got)
+		}
+	}
+}
+
+// TestStandaloneOpsDoNotShareApplyAll keeps the old contract for callers that
+// do not group ops: a sticky answer covers one op only, so the next op prompts
+// again.
+func TestStandaloneOpsDoNotShareApplyAll(t *testing.T) {
+	names := []string{"a.txt", "b.txt"}
+	srcDir, destDir := transferFileSetup(t, names...)
+
+	ops := NewOperations(nil)
+	asked := 0
+	ops.ConflictResolver = func(Conflict) ConflictResult {
+		asked++
+		return ConflictResult{Action: ConflictSkipAll}
+	}
+	dst, _ := statEntry(destDir)
+	var pending []*Op
+	for _, name := range names {
+		src, _ := statEntry(filepath.Join(srcDir, name))
+		pending = append(pending, ops.Copy(src, dst, nil))
+	}
+	for _, op := range pending {
+		waitDone(t, op)
+	}
+	if asked != len(names) {
+		t.Fatalf("resolver called %d times, want %d without a shared transfer", asked, len(names))
+	}
+}
+
+// TestTransferSingleFileDoesNotOfferApplyAll: a one-item transfer has nothing
+// to apply "all" to.
+func TestTransferSingleFileDoesNotOfferApplyAll(t *testing.T) {
+	srcPath, destDir := conflictSetup(t, "new content", "old content")
+
+	ops := NewOperations(nil)
+	ops.ConflictResolver = func(c Conflict) ConflictResult {
+		if c.Multiple {
+			t.Error("single-item transfer must not offer Apply to All")
+		}
+		return ConflictResult{Action: ConflictSkip}
+	}
+	src, _ := statEntry(srcPath)
+	dst, _ := statEntry(destDir)
+	op := ops.NewTransfer(1).Copy(src, dst, nil)
+	waitDone(t, op)
+}
+
+// TestConflictRenameOntoOccupiedNameReprompts checks that renaming onto another
+// name that already exists prompts again instead of silently overwriting it.
+func TestConflictRenameOntoOccupiedNameReprompts(t *testing.T) {
+	srcDir, destDir := transferFileSetup(t, "a.txt", "b.txt")
+
+	ops := NewOperations(nil)
+	asked := 0
+	ops.ConflictResolver = func(c Conflict) ConflictResult {
+		asked++
+		if asked == 1 {
+			if c.Existing.Name != "a.txt" {
+				t.Errorf("first conflict over %q, want a.txt", c.Existing.Name)
+			}
+			return ConflictResult{Action: ConflictRename, NewName: "b.txt"}
+		}
+		if c.Existing.Name != "b.txt" {
+			t.Errorf("second conflict over %q, want b.txt", c.Existing.Name)
+		}
+		return ConflictResult{Action: ConflictSkipAll}
+	}
+	op := ops.NewTransfer(1).Copy(mustStat(t, filepath.Join(srcDir, "a.txt")), mustStat(t, destDir), nil)
+	waitDone(t, op)
+
+	if asked != 2 {
+		t.Fatalf("resolver called %d times, want 2 (rename onto an occupied name re-prompts)", asked)
+	}
+	if got, _ := os.ReadFile(filepath.Join(destDir, "b.txt")); string(got) != "old b.txt" {
+		t.Fatalf("b.txt = %q, want untouched", got)
+	}
+}
+
+func mustStat(t *testing.T, path string) Entry {
+	t.Helper()
+	e, err := statEntry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
 }
 
 // TestMoveConflictSkipKeepsSource checks a skipped move keeps its source.
@@ -369,11 +591,12 @@ func (f *fakePlainImportFS) Import(destDir, srcPath, name string) error {
 }
 
 // waitSettled waits for the op to leave the pending/running states, without
-// failing on StatusError (the caller asserts the error itself).
+// failing on StatusError or StatusCancelled (the caller asserts the outcome
+// itself).
 func waitSettled(t *testing.T, op *Op) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError {
+	for op.Status != StatusCompleted && op.Status != StatusError && op.Status != StatusCancelled {
 		if time.Now().After(deadline) {
 			t.Fatal("operation did not finish in time")
 		}

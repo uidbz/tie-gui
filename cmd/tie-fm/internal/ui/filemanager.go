@@ -886,28 +886,44 @@ func (fm *FileManager) transferItems(set []fs.Entry, target *FileManager, srcIsT
 			})
 		}
 	}
+	// Each action is one fs.Transfer of the whole set, so Apply to All and
+	// Cancel at a conflict prompt cover every selected item. Feed the queue off
+	// the UI goroutine: it blocks once full, and the ops goroutine needs the UI
+	// goroutine free to show the conflict dialog.
 	copyAll := func() {
-		for _, e := range set {
-			fm.ops.Copy(e, dest, onDone(false))
-		}
+		tr := fm.ops.NewTransfer(len(set))
+		go func() {
+			for _, e := range set {
+				tr.Copy(e, dest, onDone(false))
+			}
+		}()
 	}
 	moveAll := func() {
-		for _, e := range set {
-			fm.ops.Move(e, dest, onDone(true))
-		}
+		tr := fm.ops.NewTransfer(len(set))
+		go func() {
+			for _, e := range set {
+				tr.Move(e, dest, onDone(true))
+			}
+		}()
 	}
 	// copyAs/moveAs transfer with a dir-type label stamped on the imported
 	// directory: the freshly created directory root when copying directories,
 	// the destination directory itself when copying loose files.
 	copyAs := func(dirType string) {
-		for _, e := range set {
-			fm.ops.CopyAs(e, dest, dirType, onDone(false))
-		}
+		tr := fm.ops.NewTransfer(len(set))
+		go func() {
+			for _, e := range set {
+				tr.CopyAs(e, dest, dirType, onDone(false))
+			}
+		}()
 	}
 	moveAs := func(dirType string) {
-		for _, e := range set {
-			fm.ops.MoveAs(e, dest, dirType, onDone(true))
-		}
+		tr := fm.ops.NewTransfer(len(set))
+		go func() {
+			for _, e := range set {
+				tr.MoveAs(e, dest, dirType, onDone(true))
+			}
+		}()
 	}
 	// dirTypeSubMenu lists the built-in dir-type vocabulary plus a custom-label
 	// prompt; picking one runs the transfer with that label.

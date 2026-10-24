@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -64,8 +66,11 @@ func conflictColumn(e fs.Entry) fyne.CanvasObject {
 // sentence + question, a Source/Destination comparison with a verdict line, a
 // Rename row with "Suggest New Name", an "Apply to All" checkbox on
 // multi-item transfers, and the button row Skip / Rename / Overwrite (Write
-// Into for directory merges) / Cancel.
-func showConflictDialog(win fyne.Window, c fs.Conflict, out chan<- fs.ConflictResult) {
+// Into for directory merges) / Cancel. Exactly one answer is delivered, even
+// when the dialog is dismissed by other means (the window closing, or a
+// programmatic Hide): dismissal means Cancel. It returns the dialog so tests
+// can dismiss it.
+func showConflictDialog(win fyne.Window, c fs.Conflict, out chan<- fs.ConflictResult) *dialog.CustomDialog {
 	isDir := c.Source.IsDir && c.Existing.IsDir
 
 	title := "File Already Exists"
@@ -101,17 +106,22 @@ func showConflictDialog(win fyne.Window, c fs.Conflict, out chan<- fs.ConflictRe
 	renameEntry := widget.NewEntry()
 	renameEntry.SetText(c.Existing.Name)
 	suggest := widget.NewButton("Suggest New Name", func() {
-		renameEntry.SetText(fs.UniqueName(renameEntry.Text, map[string]bool{c.Existing.Name: true}))
+		renameEntry.SetText(fs.UniqueName(c.Existing.Name, map[string]bool{c.Existing.Name: true}))
 	})
 	rows = append(rows, container.NewBorder(nil, nil, widget.NewLabel("Rename:"), suggest, renameEntry))
 
 	applyAll := widget.NewCheck("Apply to All", nil)
 	applyAll.Hide()
-
 	var d *dialog.CustomDialog
+	var once sync.Once
+	answer := func(res fs.ConflictResult) {
+		once.Do(func() { out <- res })
+	}
 	send := func(res fs.ConflictResult) {
+		// Answer before hiding: Hide() runs the closed hook, whose Cancel
+		// answer must lose the race.
+		answer(res)
 		d.Hide()
-		out <- res
 	}
 
 	skipBtn := widget.NewButton("Skip", func() {
@@ -122,7 +132,7 @@ func showConflictDialog(win fyne.Window, c fs.Conflict, out chan<- fs.ConflictRe
 		}
 	})
 	renameBtn := widget.NewButton("Rename", func() {
-		send(fs.ConflictResult{Action: fs.ConflictRename, NewName: renameEntry.Text})
+		send(fs.ConflictResult{Action: fs.ConflictRename, NewName: strings.TrimSpace(renameEntry.Text)})
 	})
 	overwriteLabel := "Overwrite"
 	if isDir {
@@ -138,24 +148,50 @@ func showConflictDialog(win fyne.Window, c fs.Conflict, out chan<- fs.ConflictRe
 	cancelBtn := widget.NewButton("Cancel", func() {
 		send(fs.ConflictResult{Action: fs.ConflictCancel})
 	})
-	// Like Dolphin, Apply to All makes a per-item rename meaningless: the
-	// rename controls disable and Skip/Overwrite apply to every conflict.
-	applyAll.OnChanged = func(checked bool) {
-		renameEntry.Disable()
-		suggest.Disable()
-		renameBtn.Disable()
-		if !checked {
+
+	// renameAllowed: Apply to All is transfer-wide, so a per-item rename makes
+	// no sense once it is ticked (like KIO). An unchanged or empty name is not
+	// a rename either — without this, pressing Rename with the prefilled name
+	// silently overwrote the existing item.
+	renameAllowed := func() bool {
+		if applyAll.Checked {
+			return false
+		}
+		name := strings.TrimSpace(renameEntry.Text)
+		return name != "" && name != c.Existing.Name
+	}
+	updateRename := func() {
+		if applyAll.Checked {
+			renameEntry.Disable()
+			suggest.Disable()
+		} else {
 			renameEntry.Enable()
 			suggest.Enable()
+		}
+		if renameAllowed() {
 			renameBtn.Enable()
+		} else {
+			renameBtn.Disable()
 		}
 	}
+	// Like Dolphin, Apply to All makes a per-item rename meaningless: the
+	// rename controls disable and Skip/Overwrite apply to every conflict.
+	applyAll.OnChanged = func(bool) { updateRename() }
 	if c.Multiple {
 		applyAll.Show()
 	}
+	renameEntry.OnChanged = func(string) { updateRename() }
+	updateRename()
 
 	rows = append(rows, applyAll)
 	d = dialog.NewCustomWithoutButtons(title, container.NewVBox(rows...), win)
+	// Any close that is not one of the four buttons (e.g. the window closing
+	// under a pending prompt) is a Cancel: the ops goroutine must never be left
+	// blocked waiting for an answer that can no longer arrive.
+	d.SetOnClosed(func() {
+		answer(fs.ConflictResult{Action: fs.ConflictCancel})
+	})
 	d.SetButtons([]fyne.CanvasObject{skipBtn, renameBtn, overwriteBtn, cancelBtn})
 	d.Show()
+	return d
 }

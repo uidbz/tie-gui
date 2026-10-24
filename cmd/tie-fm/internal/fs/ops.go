@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,10 @@ const (
 	StatusRunning
 	StatusCompleted
 	StatusError
+	// StatusCancelled marks an op the user stopped (conflict prompt Cancel,
+	// the ops view's stop button, or a cancelled transfer). It is an expected
+	// outcome, not a failure: callers must not report it as an error.
+	StatusCancelled
 )
 
 // Operations is a queue-based async engine that runs file copy/move ops one at a
@@ -76,8 +81,9 @@ type Conflict struct {
 	Source   Entry // the item being transferred
 	Existing Entry // the item already at the destination
 	DestDir  string
-	// Multiple is true for multi-item transfers (directories, file lists):
-	// the dialog offers "Apply to All".
+	// Multiple is true for a transfer of several items (a multi-file selection
+	// or several album groups), and for an op that can conflict repeatedly on
+	// its own (a directory tree, a file list): the dialog offers "Apply to All".
 	Multiple bool
 }
 
@@ -87,9 +93,10 @@ type ConflictResult struct {
 	NewName string // for ConflictRename
 }
 
-// errConflictCancelled aborts an op when the user answers Cancel to a
-// conflict prompt.
-var errConflictCancelled = errors.New("cancelled")
+// ErrCancelled marks an op (or a remaining item of a transfer) the user stopped
+// at a conflict prompt or with the ops view's stop button. It is an expected
+// outcome: callers must check Op.Status rather than reporting it as a failure.
+var ErrCancelled = errors.New("cancelled")
 
 func (o *Operations) run() {
 	var opID int
@@ -99,15 +106,25 @@ func (o *Operations) run() {
 		o.active = append(o.active, op)
 		op.StartTime = time.Now()
 		o.ActiveChanged()
-		if err := op.ctx.Err(); err != nil {
+		switch {
+		case op.transfer.stopped():
+			// The user cancelled another item of the same transfer (e.g. at a
+			// conflict prompt): drop this item without touching the destination.
+			op.Status = StatusCancelled
+			op.Err = ErrCancelled
+		case op.ctx.Err() != nil:
 			// Cancelled while still queued: skip the transfer entirely.
-			op.Status = StatusError
-			op.Err = err
-		} else {
+			op.Status = StatusCancelled
+			op.Err = op.ctx.Err()
+		default:
 			op.Status = StatusRunning
 			if err := op.Do(); err != nil {
-				op.Status = StatusError
 				op.Err = err
+				if errors.Is(err, ErrCancelled) || errors.Is(err, context.Canceled) {
+					op.Status = StatusCancelled
+				} else {
+					op.Status = StatusError
+				}
 			}
 		}
 		o.remove(op.opID)
@@ -132,35 +149,119 @@ func (o *Operations) remove(opID int) {
 // Copy enqueues a copy of source into dest. done, if non-nil, runs after the op
 // finishes (success or error), from the ops goroutine — wrap UI work in fyne.Do.
 func (o *Operations) Copy(source, dest Entry, done func(*Op)) *Op {
-	op := o.newOp(source, dest, OpCopy, done)
-	o.queued <- op
-	return op
+	return o.enqueue(source, dest, OpCopy, "", nil, done)
 }
 
 // CopyAs enqueues a copy like Copy, additionally stamping the imported
 // directory with the given dir-type label (e.g. "audio-dir") once the transfer
 // into a typing backend (tie) succeeds. See Op.DirType for what gets labeled.
 func (o *Operations) CopyAs(source, dest Entry, dirType string, done func(*Op)) *Op {
-	op := o.newOp(source, dest, OpCopy, done)
-	op.DirType = dirType
-	o.queued <- op
-	return op
+	return o.enqueue(source, dest, OpCopy, dirType, nil, done)
 }
 
 // Move enqueues a move of source into dest. See Copy for the done callback.
 func (o *Operations) Move(source, dest Entry, done func(*Op)) *Op {
-	op := o.newOp(source, dest, OpMove, done)
-	o.queued <- op
-	return op
+	return o.enqueue(source, dest, OpMove, "", nil, done)
 }
 
 // MoveAs enqueues a move like Move, additionally stamping the imported
 // directory with the given dir-type label, like CopyAs.
 func (o *Operations) MoveAs(source, dest Entry, dirType string, done func(*Op)) *Op {
-	op := o.newOp(source, dest, OpMove, done)
-	op.DirType = dirType
-	o.queued <- op
-	return op
+	return o.enqueue(source, dest, OpMove, dirType, nil, done)
+}
+
+// Transfer groups the ops of one user-initiated transfer — the entries of a
+// copy/move selection or the album groups of one import. Each item is still its
+// own Op (the queue runs them one at a time), but the conflict answers "Apply
+// to All" and Cancel cover the whole group: Apply to All is remembered for the
+// remaining items, and Cancel stops the transfer instead of letting the next
+// item prompt again. Build one Transfer per action and enqueue every item
+// through it.
+type Transfer struct {
+	ops   *Operations
+	items int
+
+	mu        sync.Mutex
+	sticky    ConflictAction
+	stickySet bool
+	cancelled bool
+}
+
+// NewTransfer starts a transfer of items entries (the selection size). A
+// transfer of more than one item offers "Apply to All" on every conflict.
+func (o *Operations) NewTransfer(items int) *Transfer {
+	return &Transfer{ops: o, items: items}
+}
+
+// multiple reports whether a conflict prompt for this transfer should offer
+// "Apply to All": it carries more than one item. nil-safe (a bare Operations op
+// outside a transfer).
+func (t *Transfer) multiple() bool { return t != nil && t.items > 1 }
+
+// stickyAnswer returns the Apply-to-All answer already given for the transfer.
+func (t *Transfer) stickyAnswer() (ConflictAction, bool) {
+	if t == nil {
+		return 0, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.sticky, t.stickySet
+}
+
+// remember records an Apply-to-All answer for the whole transfer.
+func (t *Transfer) remember(action ConflictAction) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.sticky, t.stickySet = action, true
+	t.mu.Unlock()
+}
+
+// cancel stops every remaining item of the transfer.
+func (t *Transfer) cancel() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.cancelled = true
+	t.mu.Unlock()
+}
+
+// stopped reports whether the transfer was cancelled by the user.
+func (t *Transfer) stopped() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cancelled
+}
+
+// Copy enqueues a copy of one item of the transfer; see Operations.Copy.
+func (t *Transfer) Copy(source, dest Entry, done func(*Op)) *Op {
+	return t.ops.enqueue(source, dest, OpCopy, "", t, done)
+}
+
+// CopyAs enqueues a labelled copy of one item; see Operations.CopyAs.
+func (t *Transfer) CopyAs(source, dest Entry, dirType string, done func(*Op)) *Op {
+	return t.ops.enqueue(source, dest, OpCopy, dirType, t, done)
+}
+
+// Move enqueues a move of one item of the transfer; see Operations.Move.
+func (t *Transfer) Move(source, dest Entry, done func(*Op)) *Op {
+	return t.ops.enqueue(source, dest, OpMove, "", t, done)
+}
+
+// MoveAs enqueues a labelled move of one item; see Operations.MoveAs.
+func (t *Transfer) MoveAs(source, dest Entry, dirType string, done func(*Op)) *Op {
+	return t.ops.enqueue(source, dest, OpMove, dirType, t, done)
+}
+
+// ImportAlbum enqueues one planned album group as part of the transfer; see
+// Operations.ImportAlbum.
+func (t *Transfer) ImportAlbum(g client.AlbumGroup, dirType string, tags []string, done func(*Op)) *Op {
+	return t.ops.enqueueAlbum(g, dirType, tags, t, done)
 }
 
 // ImportAlbum enqueues the import of one planned album group (from
@@ -179,9 +280,13 @@ func (o *Operations) MoveAs(source, dest Entry, dirType string, done func(*Op)) 
 // groups), so the album is queryable in media apps like tie-audio; the
 // group's aggregated artist/album/year are recorded on the album root.
 func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, tags []string, done func(*Op)) *Op {
+	return o.enqueueAlbum(g, dirType, tags, nil, done)
+}
+
+func (o *Operations) enqueueAlbum(g client.AlbumGroup, dirType string, tags []string, tr *Transfer, done func(*Op)) *Op {
 	src := Entry{Path: g.SourceDir, Name: filepath.Base(g.SourceDir), IsDir: true}
 	dest := Entry{Path: tieURI(g.Dest), IsDir: true}
-	op := o.newOp(src, dest, OpCopy, done)
+	op := o.newOp(src, dest, OpCopy, tr, done)
 	op.DirType = dirType
 	op.Tags = tags
 	switch {
@@ -214,9 +319,17 @@ func (o *Operations) ImportAlbum(g client.AlbumGroup, dirType string, tags []str
 	return op
 }
 
+// enqueue builds and queues one op, attached to tr (nil for a standalone op).
+func (o *Operations) enqueue(source, dest Entry, t OpType, dirType string, tr *Transfer, done func(*Op)) *Op {
+	op := o.newOp(source, dest, t, tr, done)
+	op.DirType = dirType
+	o.queued <- op
+	return op
+}
+
 // newOp builds an operation with its cancellation context and pause condition
 // initialized, so Pause/Resume/Cancel work even while the op is still queued.
-func (o *Operations) newOp(source, dest Entry, t OpType, done func(*Op)) *Op {
+func (o *Operations) newOp(source, dest Entry, t OpType, tr *Transfer, done func(*Op)) *Op {
 	ctx, cancel := context.WithCancel(context.Background())
 	op := &Op{
 		A: source, B: dest, OpType: t,
@@ -224,6 +337,7 @@ func (o *Operations) newOp(source, dest Entry, t OpType, done func(*Op)) *Op {
 		srcFS:      o.exporterFor(source.Path),
 		resolver:   o.ConflictResolver,
 		multiple:   source.IsDir,
+		transfer:   tr,
 		OnComplete: done,
 		ctx:        ctx,
 		cancel:     cancel,
@@ -304,11 +418,15 @@ type Op struct {
 	// resolver, when non-nil, is consulted when the destination name is
 	// already occupied (copy/move conflicts); see Operations.ConflictResolver.
 	resolver func(Conflict) ConflictResult
-	// multiple marks a multi-item transfer (directory, file list): conflict
-	// prompts offer "Apply to All".
+	// multiple marks a transfer that can hit more than one conflict of its own
+	// (a directory tree, a file list): conflict prompts offer "Apply to All".
 	multiple bool
+	// transfer, when non-nil, is the user action this op belongs to; its
+	// Apply-to-All answers and Cancel cover every item of that action.
+	transfer *Transfer
 	// sticky, once set, is the conflict answer applied to all further
 	// conflicts of this op without prompting again (SkipAll / OverwriteAll).
+	// Only used by standalone ops; transfer ops keep it on the Transfer.
 	sticky ConflictAction
 	// stickySet distinguishes "no sticky answer" from ConflictCancel (0).
 	stickySet bool
@@ -334,8 +452,11 @@ type Op struct {
 
 // Cancel aborts the operation. In-flight byte transfers stop at their next
 // chunk (local copies via the read loop, tie uploads via the progress writer),
-// and a queued-but-not-started op is skipped.
+// and a queued-but-not-started op is skipped. When the op belongs to a
+// Transfer, the whole transfer is cancelled: its remaining items must not start
+// after the user stopped this one.
 func (op *Op) Cancel() {
+	op.transfer.cancel()
 	if op.cancel != nil {
 		op.cancel()
 	}
@@ -834,11 +955,13 @@ func (op *Op) destName() string {
 
 // resolveConflict asks the user what to do about an occupied destination
 // name. It returns the name to transfer under and whether to proceed at all.
-// A sticky SkipAll/OverwriteAll answer applies without prompting again; a nil
-// resolver keeps the historic behaviour (overwrite). Cancel aborts the op.
+// An Apply-to-All answer (SkipAll/OverwriteAll) applies to the rest of the
+// transfer without prompting again — or to the rest of this op for a
+// standalone op; a nil resolver keeps the historic behaviour (overwrite).
+// Cancel aborts the whole transfer.
 func (op *Op) resolveConflict(destDir string, src, existing Entry) (string, bool, error) {
-	if op.stickySet {
-		switch op.sticky {
+	if action, ok := op.stickyConflict(); ok {
+		switch action {
 		case ConflictSkipAll:
 			op.skipped = true
 			return "", false, nil
@@ -853,41 +976,75 @@ func (op *Op) resolveConflict(destDir string, src, existing Entry) (string, bool
 		Source:   src,
 		Existing: existing,
 		DestDir:  destDir,
-		Multiple: op.multiple,
+		Multiple: op.multipleForPrompt(),
 	})
 	switch res.Action {
 	case ConflictSkip:
 		op.skipped = true
 		return "", false, nil
 	case ConflictSkipAll:
-		op.sticky, op.stickySet = ConflictSkipAll, true
+		op.setStickyConflict(ConflictSkipAll)
 		op.skipped = true
 		return "", false, nil
 	case ConflictOverwrite:
 		return existing.Name, true, nil
 	case ConflictOverwriteAll:
-		op.sticky, op.stickySet = ConflictOverwriteAll, true
+		op.setStickyConflict(ConflictOverwriteAll)
 		return existing.Name, true, nil
 	case ConflictRename:
-		if res.NewName != "" && res.NewName != existing.Name {
-			return res.NewName, true, nil
+		if name := strings.TrimSpace(res.NewName); name != "" && name != existing.Name {
+			return name, true, nil
 		}
 		return existing.Name, true, nil
-	default:
-		return "", false, errConflictCancelled
+	default: // ConflictCancel
+		op.transfer.cancel()
+		return "", false, ErrCancelled
 	}
 }
 
-// checkLocalConflict reports whether destDir/name is occupied on the local
-// disk and resolves the conflict if so.
-func (op *Op) checkLocalConflict(destDir, name string, src Entry) (string, bool, error) {
-	p := filepath.Join(osPath(destDir), name)
-	info, err := os.Stat(p)
-	if err != nil {
-		return name, true, nil // absent or unreadable: proceed
+// stickyConflict returns the Apply-to-All answer already given for this op's
+// transfer, or for the op itself when it is not part of one.
+func (op *Op) stickyConflict() (ConflictAction, bool) {
+	if op.transfer != nil {
+		return op.transfer.stickyAnswer()
 	}
-	existing := Entry{Name: name, Path: p, IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}
-	return op.resolveConflict(destDir, src, existing)
+	return op.sticky, op.stickySet
+}
+
+// setStickyConflict remembers an Apply-to-All answer for the rest of the op's
+// transfer, or for the rest of the op when it is not part of one.
+func (op *Op) setStickyConflict(action ConflictAction) {
+	if op.transfer != nil {
+		op.transfer.remember(action)
+		return
+	}
+	op.sticky, op.stickySet = action, true
+}
+
+// multipleForPrompt reports whether the conflict prompt should offer "Apply to
+// All": a transfer of several items, or an op that can conflict repeatedly on
+// its own (a directory tree or file list).
+func (op *Op) multipleForPrompt() bool {
+	return op.multiple || op.transfer.multiple()
+}
+
+// checkLocalConflict reports whether destDir/name is occupied on the local
+// disk and resolves the conflict if so, re-prompting when the user renames onto
+// another name that is also occupied.
+func (op *Op) checkLocalConflict(destDir, name string, src Entry) (string, bool, error) {
+	for {
+		p := filepath.Join(osPath(destDir), name)
+		info, err := os.Stat(p)
+		if err != nil {
+			return name, true, nil // absent or unreadable: proceed
+		}
+		existing := Entry{Name: name, Path: p, IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}
+		resolved, proceed, err := op.resolveConflict(destDir, src, existing)
+		if err != nil || !proceed || resolved == name {
+			return resolved, proceed, err
+		}
+		name = resolved
+	}
 }
 
 // checkRemoteConflict reports whether destDir/name is occupied in the remote
@@ -900,21 +1057,32 @@ func (op *Op) checkRemoteConflict(destDir, name string, src Entry) (string, bool
 	if op.listCache == nil {
 		op.listCache = map[string][]Entry{}
 	}
-	entries, ok := op.listCache[destDir]
-	if !ok {
-		var err error
-		entries, err = op.destFS.List(destDir)
-		if err != nil {
-			return name, true, nil // cannot list: proceed (historic behaviour)
+	for {
+		entries, ok := op.listCache[destDir]
+		if !ok {
+			var err error
+			entries, err = op.destFS.List(destDir)
+			if err != nil {
+				return name, true, nil // cannot list: proceed (historic behaviour)
+			}
+			op.listCache[destDir] = entries
 		}
-		op.listCache[destDir] = entries
-	}
-	for _, e := range entries {
-		if e.Name == name {
-			return op.resolveConflict(destDir, src, e)
+		var existing *Entry
+		for i := range entries {
+			if entries[i].Name == name {
+				existing = &entries[i]
+				break
+			}
 		}
+		if existing == nil {
+			return name, true, nil
+		}
+		resolved, proceed, err := op.resolveConflict(destDir, src, *existing)
+		if err != nil || !proceed || resolved == name {
+			return resolved, proceed, err
+		}
+		name = resolved
 	}
-	return name, true, nil
 }
 
 type readerCtx struct {
