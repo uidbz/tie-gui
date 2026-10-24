@@ -150,6 +150,74 @@ func TestSidebarModeSwitchReparentsOnce(t *testing.T) {
 	}
 }
 
+func TestSidebarDrawerSwipeBackToGrid(t *testing.T) {
+	viewer := newDrawerTestGallery(t, true)
+
+	viewer.OpenSidebar()
+	if !viewer.SidebarOpen() {
+		t.Fatal("OpenSidebar did not open the drawer")
+	}
+	// A swipe that starts on the panel (not the scrim) dismisses it: the
+	// panel's swipe scroller reports the leftward travel.
+	viewer.drawer.swipe.scrolled(fyne.NewPos(drawerCloseDrag-1, 0))
+	if !viewer.SidebarOpen() {
+		t.Error("a sub-threshold swipe closed the drawer")
+	}
+	viewer.drawer.swipe.scrolled(fyne.NewPos(drawerCloseDrag, 0))
+	if viewer.SidebarOpen() {
+		t.Error("a leftward swipe across the panel did not close the drawer")
+	}
+
+	// Reopening starts from a fresh offset, so an earlier swipe does not carry
+	// over and dismiss it again.
+	viewer.OpenSidebar()
+	if !viewer.SidebarOpen() {
+		t.Fatal("OpenSidebar did not reopen the drawer")
+	}
+	if off := viewer.drawer.swipe.scroll.Offset.X; off != 0 {
+		t.Errorf("reopened drawer swipe offset = %v, want 0", off)
+	}
+	viewer.drawer.swipe.scrolled(fyne.NewPos(drawerCloseDrag, 0))
+	if viewer.SidebarOpen() {
+		t.Error("after reopening, a swipe no longer closes the drawer")
+	}
+}
+
+// The mobile driver delivers drag travel only in DragEvent.Dragged and leaves
+// AbsolutePosition at zero, so the scrim must not depend on that position.
+func TestDrawerScrimSwipeUsesDragDelta(t *testing.T) {
+	dismissed := 0
+	scrim := newDrawerScrim(func() { dismissed++ })
+
+	scrim.Dragged(&fyne.DragEvent{Dragged: fyne.NewDelta(-20, 0)})
+	if dismissed != 0 {
+		t.Errorf("dismissed after 20 px, want the %d px threshold", drawerCloseDrag)
+	}
+	scrim.Dragged(&fyne.DragEvent{Dragged: fyne.NewDelta(-25, 1)})
+	if dismissed != 1 {
+		t.Fatalf("leftward drag of %d px fired %d dismisses, want 1", drawerCloseDrag, dismissed)
+	}
+	// Once fired, the rest of the same gesture must not fire again.
+	scrim.Dragged(&fyne.DragEvent{Dragged: fyne.NewDelta(-200, 0)})
+	if dismissed != 1 {
+		t.Errorf("one gesture fired %d dismisses, want 1", dismissed)
+	}
+	scrim.DragEnd()
+
+	// A vertical-dominant drag is not a dismiss gesture.
+	scrim.Dragged(&fyne.DragEvent{Dragged: fyne.NewDelta(-10, 80)})
+	if dismissed != 1 {
+		t.Errorf("vertical drag dismissed the drawer")
+	}
+	scrim.DragEnd()
+
+	// Nor is a rightward one.
+	scrim.Dragged(&fyne.DragEvent{Dragged: fyne.NewDelta(120, 0)})
+	if dismissed != 1 {
+		t.Errorf("rightward drag dismissed the drawer")
+	}
+}
+
 func TestFilterChipsRowVisibility(t *testing.T) {
 	viewer := newDrawerTestGallery(t, true)
 

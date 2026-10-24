@@ -1128,6 +1128,7 @@ still wins on either kind of device:
   `App.keyPress` handles the Back/Escape unwind first, then dispatches
   hotkeys.
 - Swipes: left on the wall → playlist, right → open the drawer (compact),
+  left across the open drawer (panel or scrim) → back to the wall,
   pull down at the top of the wall → reload its feed
   (`gallery.OnPullRefresh`), swipe up on the mini bar → Now Playing, swipe
   down over its cover → back. The other full-screen views get edge strips
@@ -1310,8 +1311,14 @@ flips the overlay instead of rebuilding the content — the grid keeps its
 scroll position. The drawer is `drawerLayout{scrim, panel}`: the panel takes
 85% of the width capped at 360, the scrim dismisses on tap or a leftward drag,
 and both a scrim and a panel-level tap sink stop pointer events reaching the
-tiles underneath. **`CreateView` must drop the drawer when building the split**
-(and vice versa): the sidebar object cannot have two parents.
+tiles underneath. A leftward swipe that starts anywhere over the panel — not
+only on the scrim — also dismisses it: `drawerSwipe` is a transparent
+horizontal scroller under the sidebar, and the touch driver pairs the
+horizontal half of a drag with the sidebar's vertical scroller, so swipe-back
+works over the tag list while vertical drags keep scrolling it (the scrim
+counts `DragEvent.Dragged` travel itself; the mobile driver leaves
+`AbsolutePosition` at zero). **`CreateView` must drop the drawer when building
+the split** (and vice versa): the sidebar object cannot have two parents.
 
 `SetFilterChips` / `TagFilterChips` render the active tag selection as a
 scrollable chip row above the grid (each chip's ✕ removes its tag via
