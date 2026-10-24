@@ -61,8 +61,12 @@ go build -tags nompv ./cmd/imgview ./cmd/tie-view
 # Run tests
 go test ./...
 
-# Optional: Install to $GOPATH/bin
-go install ./cmd/...
+# Install binaries to $GOPATH/bin plus XDG desktop entries and icons
+# (so the apps appear in the desktop application launcher):
+make install
+
+# Remove them again:
+make uninstall
 ```
 
 ### Verify Installation

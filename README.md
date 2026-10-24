@@ -81,6 +81,18 @@ go test ./...
 > **not** work — the `replace` directive points into the git submodule,
 > which module-proxy downloads do not contain. Build from a clone as above.
 
+To install all four apps into `$GOBIN` and register them with the desktop
+environment's application launcher:
+
+```sh
+make install
+```
+
+Besides the binaries, this writes `.desktop` entries and icons under
+`$XDG_DATA_HOME` (`~/.local/share` by default), so the apps also show up in
+menus and dock launchers. `make uninstall` removes the binaries, entries, and
+icons.
+
 **Android:** imgview, tie-view, and tie-audio package as arm64-v8a
 APKs (the viewers with in-app libmpv playback; the audio player is a plain
 remote-client build). See [docs/ANDROID.md](docs/ANDROID.md).
