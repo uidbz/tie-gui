@@ -49,6 +49,62 @@ type AppAssoc struct {
 	TieURL  bool
 }
 
+// MusicBrainz configures tie-fm's MusicBrainz metadata lookups.
+type MusicBrainz struct {
+	// Source selects the backend: "local" (the MusicBrainz PostgreSQL
+	// database) or "web" (the public MusicBrainz web service).
+	Source string
+	// DBDSN is the connection string for the local backend.
+	DBDSN string
+	// WebBaseURL is the web service root, e.g. https://musicbrainz.org.
+	WebBaseURL string
+	// CoverArtBaseURL is the Cover Art Archive root.
+	CoverArtBaseURL string
+	// Contact is an optional contact URL/address added to the User-Agent.
+	Contact string
+	// AutoMatch looks releases up automatically when scanning albums.
+	AutoMatch bool
+	// FetchCoverArt offers to download a front cover when the album has none.
+	FetchCoverArt bool
+}
+
+// DefaultMusicBrainz returns the local-mirror defaults (the database created
+// by the companion MusicBrainz setup), with web service fallbacks filled in.
+func DefaultMusicBrainz() MusicBrainz {
+	return MusicBrainz{
+		Source:          "local",
+		DBDSN:           "postgres://musicbrainz:musicbrainz@127.0.0.1:5432/musicbrainz_db?sslmode=disable",
+		WebBaseURL:      "https://musicbrainz.org",
+		CoverArtBaseURL: "https://coverartarchive.org",
+		AutoMatch:       true,
+		FetchCoverArt:   true,
+	}
+}
+
+// WithDefaults fills empty values. It treats a completely empty struct as
+// "not configured yet" and returns the defaults wholesale, so a config file
+// written before this feature existed still gets sensible auto-match/cover-art
+// behaviour.
+func (m MusicBrainz) WithDefaults() MusicBrainz {
+	d := DefaultMusicBrainz()
+	if m.Source == "" && m.DBDSN == "" && m.WebBaseURL == "" {
+		return d
+	}
+	if m.Source == "" {
+		m.Source = d.Source
+	}
+	if m.DBDSN == "" {
+		m.DBDSN = d.DBDSN
+	}
+	if m.WebBaseURL == "" {
+		m.WebBaseURL = d.WebBaseURL
+	}
+	if m.CoverArtBaseURL == "" {
+		m.CoverArtBaseURL = d.CoverArtBaseURL
+	}
+	return m
+}
+
 // Config is tie-fm's persisted settings.
 type Config struct {
 	// TieConfig is the path to the tie client config file to load. Empty means
@@ -73,6 +129,8 @@ type Config struct {
 	// appended as the final argument. Empty falls back to $TERMINAL, then the
 	// first known terminal emulator found in PATH.
 	Terminal string
+	// MusicBrainz configures album/track metadata lookups.
+	MusicBrainz MusicBrainz
 
 	path string // where this config was loaded from / will be saved back to
 }
@@ -151,6 +209,7 @@ func Default() Config {
 			{Label: "home", Path: home},
 			{Label: "tie", Path: "tie:/"},
 		},
+		MusicBrainz: DefaultMusicBrainz(),
 	}
 }
 
@@ -205,6 +264,7 @@ func Load() (Config, error) {
 	if len(c.Bookmarks) == 0 {
 		c.Bookmarks = Default().Bookmarks
 	}
+	c.MusicBrainz = c.MusicBrainz.WithDefaults()
 	return c, nil
 }
 

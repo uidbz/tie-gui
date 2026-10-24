@@ -686,6 +686,13 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 			items = append(items, fyne.NewMenuItem("Import as albums…", func() { fm.importAsAlbums(set) }))
 		}
 	}
+	// MusicBrainz lookup for already-imported albums/tracks (tie: and tie://
+	// style paths). A directory is looked up as a release, an audio file as a
+	// recording; a multi-file selection uses the shared parent album.
+	if fs.IsTie(e.Path) && e.Hash != "" {
+		set := fm.menuSet(e)
+		items = append(items, fyne.NewMenuItem("MusicBrainz…", func() { fm.musicBrainzDialog(set) }))
+	}
 	if item := fm.extractMenuItem(e); item != nil {
 		items = append(items, item)
 	}

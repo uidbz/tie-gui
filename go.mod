@@ -9,6 +9,7 @@ require (
 	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.2
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/h2non/filetype v1.1.3
+	github.com/lib/pq v1.12.3
 	github.com/mholt/archives v0.1.5
 	github.com/minio/highwayhash v1.0.3
 	github.com/pelletier/go-toml/v2 v2.2.1

@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image/color"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -16,6 +19,7 @@ import (
 	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
+	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/musicbrainz"
 	"github.com/uidbz/tie-gui/tagselection"
 )
 
@@ -65,6 +69,10 @@ func (fm *FileManager) importAsAlbums(entries []fs.Entry) {
 	tmplEntry := widget.NewEntry()
 	tmplEntry.PlaceHolder = "/{albumartist}/{year} - {album}  (empty: keep source paths)"
 	remember := widget.NewCheck("Remember as default for this type", nil)
+	matchMB := widget.NewCheck("Look up releases on MusicBrainz", nil)
+	matchMB.SetChecked(fm.cfg.MusicBrainz.AutoMatch)
+	coverArt := widget.NewCheck("Download missing cover art", nil)
+	coverArt.SetChecked(fm.cfg.MusicBrainz.FetchCoverArt)
 
 	resolvedType := func() string {
 		if t := strings.TrimSpace(custom.Text); t != "" {
@@ -102,6 +110,8 @@ func (fm *FileManager) importAsAlbums(entries []fs.Entry) {
 			widget.NewFormItem("Destination", tmplEntry),
 			widget.NewFormItem("", remember),
 			widget.NewFormItem("Tags", tagSel),
+			widget.NewFormItem("", matchMB),
+			widget.NewFormItem("", coverArt),
 		}, func(ok bool) {
 			if !ok {
 				return
@@ -119,7 +129,7 @@ func (fm *FileManager) importAsAlbums(entries []fs.Entry) {
 				fm.saveAlbumTemplate(tc, dirType, tmpl)
 			}
 			tags, _ := tagSel.SelectedTags()
-			fm.scanAlbumPlan(entries, tc.Config, dirType, tmpl, tags)
+			fm.scanAlbumPlan(entries, tc.Config, dirType, tmpl, tags, matchMB.Checked, coverArt.Checked)
 		}, fm.win)
 	// The dialog sizes itself once from its MinSize; grow/shrink it as the
 	// tag search dropdown opens and closes and the chip row appears.
@@ -221,7 +231,7 @@ func albumImportRoots(entries []fs.Entry) []fs.Entry {
 // UI goroutine via fyne.Do. template overrides the tie config's ImportDest
 // entry for dirType (an empty string falls back to the config, then to
 // source-path placement).
-func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirType, template string, tags []string) {
+func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirType, template string, tags []string, matchMB, coverArt bool) {
 	roots := make([]string, len(entries))
 	for i, e := range entries {
 		roots[i] = strings.TrimPrefix(e.Path, "file:")
@@ -255,6 +265,13 @@ func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirT
 			}
 			plan = append(plan, groups...)
 		}
+		var matches map[string]*musicbrainz.Release
+		if matchMB && len(plan) > 0 {
+			fyne.Do(func() { status.SetText("Matching albums on MusicBrainz…") })
+			matches = fm.matchAlbumPlan(plan, template, func(msg string) {
+				fyne.Do(func() { status.SetText(msg) })
+			})
+		}
 		fyne.Do(func() {
 			bar.Stop()
 			scan.Hide()
@@ -268,40 +285,50 @@ func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirT
 				}
 				return
 			}
-			fm.showAlbumPlan(plan, dirType, tags)
+			fm.showAlbumPlan(plan, dirType, tags, template, matches, coverArt)
 		})
 	}()
 }
 
 // showAlbumPlan presents the scanned import plan: one checkbox row per album
-// with its destination, track count, size and warnings. Confirming imports
-// exactly the checked groups. Groups without a destination (no template
-// rendered, no album tag) cannot import and are fixed unchecked.
-func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, tags []string) {
+// with its destination, track count, size and warnings, plus a MusicBrainz
+// button to pick/change the release match. Confirming imports exactly the
+// checked groups. Groups without a destination (no template rendered, no album
+// tag) cannot import and are fixed unchecked.
+func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, tags []string, template string, matches map[string]*musicbrainz.Release, coverArt bool) {
+	if matches == nil {
+		matches = map[string]*musicbrainz.Release{}
+	}
 	selected := make([]bool, len(plan))
 	for i, g := range plan {
 		selected[i] = g.Dest != ""
 	}
 
 	summary := widget.NewLabel("")
-	list := widget.NewList(
+	var list *widget.List
+	list = widget.NewList(
 		func() int { return len(plan) },
 		func() fyne.CanvasObject {
 			check := widget.NewCheck("", nil)
+			btn := widget.NewButton("MB…", nil)
+			btn.Importance = widget.LowImportance
 			title := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 			detail := widget.NewLabel("")
 			detail.Truncation = fyne.TextTruncateEllipsis
-			return container.NewBorder(nil, nil, check, nil,
+			return container.NewBorder(nil, nil, check, btn,
 				container.NewVBox(title, detail))
 		},
 		func(i int, o fyne.CanvasObject) {
 			// Match NewBorder's children by type, not position.
 			var check *widget.Check
+			var btn *widget.Button
 			var box *fyne.Container
 			for _, ch := range o.(*fyne.Container).Objects {
 				switch w := ch.(type) {
 				case *widget.Check:
 					check = w
+				case *widget.Button:
+					btn = w
 				case *fyne.Container:
 					box = w
 				}
@@ -309,33 +336,60 @@ func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, t
 			title := box.Objects[0].(*widget.Label)
 			detail := box.Objects[1].(*widget.Label)
 
+			idx := i
 			g := plan[i]
 			title.SetText(albumTitle(g))
-			detail.SetText(albumDetail(g))
+			detail.SetText(albumDetail(g, matches[g.SourceDir]))
 			check.OnChanged = func(on bool) {
-				selected[i] = on
-				summary.SetText(albumPlanSummary(plan, selected))
+				selected[idx] = on
+				summary.SetText(albumPlanSummary(plan, selected, matches))
 			}
-			check.SetChecked(selected[i])
+			check.SetChecked(selected[idx])
 			if g.Dest == "" {
 				check.Disable()
 			} else {
 				check.Enable()
 			}
+			if g.IsArchive {
+				btn.Disable()
+			}
+			btn.OnTapped = func() {
+				g := &plan[idx]
+				q := musicbrainz.ReleaseQuery{
+					Artist:     g.Artist,
+					Album:      g.Album,
+					Year:       g.Year,
+					TrackCount: g.Tracks,
+				}
+				fm.showReleasePicker(q, matches[g.SourceDir], func(rel *musicbrainz.Release) {
+					matches[g.SourceDir] = rel
+					applyReleaseToGroup(g, rel, template)
+					selected[idx] = g.Dest != ""
+					list.Refresh()
+					summary.SetText(albumPlanSummary(plan, selected, matches))
+				})
+			}
 		})
-	summary.SetText(albumPlanSummary(plan, selected))
+	summary.SetText(albumPlanSummary(plan, selected, matches))
 
 	// A transparent spacer gives the list a usable size: a bare List reports a
 	// tiny MinSize and the dialog would shrink to it.
 	spacer := canvas.NewRectangle(color.Transparent)
-	spacer.SetMinSize(fyne.NewSize(640, 420))
+	spacer.SetMinSize(fyne.NewSize(720, 420))
 	content := container.NewBorder(summary, nil, nil, nil,
 		container.NewStack(spacer, list))
 	dialog.ShowCustomConfirm("Import as albums", "Import", "Cancel", content, func(ok bool) {
 		if !ok {
 			return
 		}
-		fm.runAlbumImport(selectedGroups(plan, selected), dirType, tags)
+		groups := selectedGroups(plan, selected)
+		picked := map[string]*musicbrainz.Release{}
+		for _, g := range groups {
+			if rel := matches[g.SourceDir]; rel != nil {
+				picked[g.SourceDir] = rel
+			}
+		}
+		fm.runAlbumImport(groups, dirType, tags, picked, coverArt)
 	}, fm.win)
 }
 
@@ -350,12 +404,120 @@ func selectedGroups(plan []client.AlbumGroup, selected []bool) []client.AlbumGro
 	return groups
 }
 
+// matchAlbumPlan searches MusicBrainz for every planned album, applies the best
+// match to the group (artist/album/year and destination), and returns the
+// chosen releases keyed by SourceDir.
+func (fm *FileManager) matchAlbumPlan(plan []client.AlbumGroup, template string, status func(string)) map[string]*musicbrainz.Release {
+	out := map[string]*musicbrainz.Release{}
+	p, err := openMusicBrainz(fm.cfg.MusicBrainz)
+	if err != nil {
+		status("MusicBrainz unavailable: " + err.Error())
+		return out
+	}
+	defer p.Close()
+	for i := range plan {
+		g := &plan[i]
+		if g.IsArchive {
+			// Archive groups have no readable track list, so per-track
+			// metadata cannot be applied; keep their source placement.
+			continue
+		}
+		q := musicbrainz.ReleaseQuery{
+			Artist:     g.Artist,
+			Album:      g.Album,
+			Year:       g.Year,
+			TrackCount: g.Tracks,
+			Limit:      5,
+		}
+		if q.Artist == "" && q.Album == "" {
+			continue
+		}
+		status(fmt.Sprintf("MusicBrainz: matching %d/%d — %s", i+1, len(plan), albumTitle(*g)))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		rels, err := p.SearchReleases(ctx, q)
+		cancel()
+		if err != nil {
+			status("MusicBrainz: " + err.Error())
+			continue
+		}
+		if len(rels) > 0 && rels[0].Score >= 0.55 {
+			rel := rels[0]
+			applyReleaseToGroup(g, &rel, template)
+			out[g.SourceDir] = &rel
+		}
+	}
+	status(fmt.Sprintf("MusicBrainz: matched %d of %d albums", len(out), len(plan)))
+	return out
+}
+
+// applyReleaseToGroup rewrites the plan group's album identity from a matched
+// release and re-renders its destination (when a template is in use).
+func applyReleaseToGroup(g *client.AlbumGroup, rel *musicbrainz.Release, template string) {
+	if rel == nil {
+		return
+	}
+	if artist := rel.DisplayArtist(); artist != "" {
+		g.Artist = artist
+	}
+	if rel.Title != "" {
+		g.Album = rel.Title
+	}
+	if rel.Year > 0 {
+		g.Year = rel.Year
+	}
+	if dest, ok := renderAlbumDest(template, g.Artist, g.Album, g.Year); ok {
+		g.Dest = dest
+	}
+}
+
+// renderAlbumDest renders the album-level destination template with tie's
+// rules (values stay within one path segment). ok is false when the template
+// is empty or references a value the album does not provide; the planner's
+// destination is then kept untouched.
+func renderAlbumDest(template, artist, album string, year int) (string, bool) {
+	if strings.TrimSpace(template) == "" {
+		return "", false
+	}
+	values := map[string]string{
+		"artist":      sanitizePathSegment(artist),
+		"albumartist": sanitizePathSegment(artist),
+		"album":       sanitizePathSegment(album),
+		"title":       sanitizePathSegment(album),
+		"year":        "",
+		"track":       "",
+	}
+	if year > 0 {
+		values["year"] = strconv.Itoa(year)
+	}
+	var b strings.Builder
+	for i := 0; i < len(template); {
+		if template[i] != '{' {
+			b.WriteByte(template[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(template[i:], '}')
+		if end < 0 {
+			return "", false
+		}
+		name := template[i+1 : i+end]
+		v, ok := values[name]
+		if !ok || v == "" {
+			return "", false
+		}
+		b.WriteString(v)
+		i += end + 1
+	}
+	return b.String(), true
+}
+
 // runAlbumImport enqueues one op per confirmed album group. The ops queue is
 // small and runs one op at a time, so feeding it blocks and happens off the UI
 // goroutine. Completions are counted on the UI goroutine; when the batch has
-// finished, a tie-browsing sibling panel reloads once and any per-group
-// failures are summarized (one failed album does not abort the rest).
-func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string, tags []string) {
+// finished, a tie-browsing sibling panel reloads once, any MusicBrainz matches
+// are applied to the imported albums, and per-group failures are summarized
+// (one failed album does not abort the rest).
+func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string, tags []string, matches map[string]*musicbrainz.Release, coverArt bool) {
 	remaining := len(groups)
 	var failed []string
 	done := func(op *fs.Op) {
@@ -367,19 +529,87 @@ func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string
 			if remaining > 0 {
 				return
 			}
-			if fm.other != nil && fm.other.isTie() {
-				fm.other.reload()
-			}
-			if len(failed) > 0 {
-				dialog.ShowError(fmt.Errorf("%d album import(s) failed:\n%s",
-					len(failed), strings.Join(failed, "\n")), fm.win)
-			}
+			fm.afterAlbumImports(groups, matches, coverArt, failed)
 		})
 	}
 	go func() {
 		for _, g := range groups {
 			fm.ops.ImportAlbum(g, dirType, tags, done)
 		}
+	}()
+}
+
+// afterAlbumImports reloads the tie panes and applies MusicBrainz metadata to
+// the imported albums (one background pass, then a single summary dialog).
+func (fm *FileManager) afterAlbumImports(groups []client.AlbumGroup, matches map[string]*musicbrainz.Release, coverArt bool, failed []string) {
+	if fm.other != nil && fm.other.isTie() {
+		fm.other.reload()
+	}
+	if len(matches) == 0 {
+		if len(failed) > 0 {
+			dialog.ShowError(fmt.Errorf("%d album import(s) failed:\n%s",
+				len(failed), strings.Join(failed, "\n")), fm.win)
+		}
+		return
+	}
+	tc, err := fm.tieClient()
+	if err != nil {
+		failed = append(failed, err.Error())
+		if len(failed) > 0 {
+			dialog.ShowError(fmt.Errorf("%d album import(s) failed:\n%s",
+				len(failed), strings.Join(failed, "\n")), fm.win)
+		}
+		return
+	}
+	cfg := fm.cfg.MusicBrainz
+	progLabel := widget.NewLabel("Applying MusicBrainz tags…")
+	prog := dialog.NewCustomWithoutButtons("MusicBrainz",
+		container.NewVBox(progLabel, widget.NewProgressBarInfinite()), fm.win)
+	prog.Show()
+	go func() {
+		var provider musicbrainz.Provider
+		for _, g := range groups {
+			rel := matches[g.SourceDir]
+			if rel == nil {
+				continue
+			}
+			label := "MusicBrainz: " + albumTitle(g)
+			fyne.Do(func() { progLabel.SetText(label) })
+			full := rel
+			var aerr error
+			if !rel.HasTracks() {
+				if provider == nil {
+					provider, aerr = openMusicBrainz(cfg)
+					if aerr != nil {
+						failed = append(failed, fmt.Sprintf("%s: %v", g.Dest, aerr))
+						continue
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				full, aerr = provider.LookupRelease(ctx, rel.MBID)
+				cancel()
+			}
+			if aerr == nil {
+				aerr = applyReleaseToAlbum(tc, "tie:"+g.Dest, full, coverArt, cfg)
+			}
+			if aerr != nil {
+				failed = append(failed, fmt.Sprintf("%s: %v", g.Dest, aerr))
+			}
+		}
+		if provider != nil {
+			provider.Close()
+		}
+		fyne.Do(func() {
+			prog.Hide()
+			fm.reload()
+			if fm.other != nil && fm.other.isTie() {
+				fm.other.reload()
+			}
+			if len(failed) > 0 {
+				dialog.ShowError(fmt.Errorf("%d MusicBrainz problem(s):\n%s",
+					len(failed), strings.Join(failed, "\n")), fm.win)
+			}
+		})
 	}()
 }
 
@@ -404,12 +634,15 @@ func albumTitle(g client.AlbumGroup) string {
 
 // albumDetail is the plan row's second line: destination, track count, size
 // and any warnings (one line — the list row template is a fixed height).
-func albumDetail(g client.AlbumGroup) string {
+func albumDetail(g client.AlbumGroup, rel *musicbrainz.Release) string {
 	dest := g.Dest
 	if dest == "" {
 		dest = "(no destination)"
 	}
 	d := fmt.Sprintf("→ %s · %d tracks · %s", dest, g.Tracks, humanizeBytes(g.Size))
+	if rel != nil {
+		d += " · MB: " + musicBrainzNoticeText(rel)
+	}
 	if len(g.Warnings) > 0 {
 		d += " · ⚠ " + strings.Join(g.Warnings, "; ")
 	}
@@ -417,14 +650,21 @@ func albumDetail(g client.AlbumGroup) string {
 }
 
 // albumPlanSummary tallies the checked groups for the line above the list.
-func albumPlanSummary(plan []client.AlbumGroup, selected []bool) string {
-	n := 0
+func albumPlanSummary(plan []client.AlbumGroup, selected []bool, matches map[string]*musicbrainz.Release) string {
+	n, matched := 0, 0
 	var size int64
 	for i, g := range plan {
 		if selected[i] {
 			n++
 			size += g.Size
+			if matches[g.SourceDir] != nil {
+				matched++
+			}
 		}
 	}
-	return fmt.Sprintf("%d of %d albums selected · %s", n, len(plan), humanizeBytes(size))
+	s := fmt.Sprintf("%d of %d albums selected · %s", n, len(plan), humanizeBytes(size))
+	if len(matches) > 0 {
+		s += fmt.Sprintf(" · %d of %d matched on MusicBrainz", matched, n)
+	}
+	return s
 }

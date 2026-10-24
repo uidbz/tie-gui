@@ -194,3 +194,49 @@ func TestLoadTieConfigEmptyIsDefault(t *testing.T) {
 		t.Errorf("TripleStoreURL = %q, want local default", c.TripleStoreURL)
 	}
 }
+
+func TestMusicBrainzDefaults(t *testing.T) {
+	d := DefaultMusicBrainz()
+	if d.Source != "local" || d.DBDSN == "" || d.WebBaseURL == "" {
+		t.Fatalf("defaults = %+v", d)
+	}
+	if Default().MusicBrainz.Source != "local" {
+		t.Error("Default() must include MusicBrainz defaults")
+	}
+	// An old config with no MusicBrainz table gets the defaults wholesale.
+	got := (MusicBrainz{}).WithDefaults()
+	if got.Source != "local" || !got.AutoMatch || !got.FetchCoverArt {
+		t.Errorf("empty WithDefaults = %+v", got)
+	}
+	// A configured backend keeps its explicit false checkboxes.
+	custom := MusicBrainz{Source: "web", WebBaseURL: "https://example.org"}
+	got = custom.WithDefaults()
+	if got.Source != "web" || got.WebBaseURL != "https://example.org" || got.AutoMatch {
+		t.Errorf("custom WithDefaults = %+v", got)
+	}
+}
+
+func TestMusicBrainzRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.MusicBrainz.Source = "web"
+	c.MusicBrainz.WebBaseURL = "https://mb.example"
+	c.MusicBrainz.AutoMatch = false
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.MusicBrainz.Source != "web" || c2.MusicBrainz.WebBaseURL != "https://mb.example" || c2.MusicBrainz.AutoMatch {
+		t.Errorf("round trip = %+v", c2.MusicBrainz)
+	}
+	if c2.MusicBrainz.DBDSN == "" || c2.MusicBrainz.CoverArtBaseURL == "" {
+		t.Errorf("missing filled defaults: %+v", c2.MusicBrainz)
+	}
+}

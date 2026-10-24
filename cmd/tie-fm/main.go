@@ -348,6 +348,9 @@ func main() {
 		fyne.NewMenuItem("File associations…", func() {
 			ui.ShowFileAssociations(mainWin, &appCfg)
 		}),
+		fyne.NewMenuItem("MusicBrainz…", func() {
+			ui.ShowMusicBrainzSettings(mainWin, &appCfg)
+		}),
 		fyne.NewMenuItem("Terminal…", func() {
 			ui.ShowTerminalSettings(mainWin, &appCfg)
 		}),
