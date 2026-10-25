@@ -696,6 +696,27 @@ destination listing. Transfer feeds are enqueued off the UI goroutine: the ops
 queue is small and blocks when full, and the conflict dialog needs the UI
 goroutine free.
 
+## tie-fm file table rendering (`cmd/tie-fm/internal/widget/tablewidget/`)
+
+The twin-panel table is a paginated `TableWidget` over a `FlexTable`
+(widget-mode cells: an icon + name/size/date/tags label per row). Two vendored
+Fyne quirks used to leave it blank until the window was resized or the table
+scrolled, which made a directory change *sometimes* show nothing:
+
+- `container.Clip` does not `ExtendBaseWidget`, so the `Resize` that precedes
+  its renderer is dropped. A recycled cell keeps its size, so replacing its
+  content triggers no layout pass and the new label/icon stays 0x0.
+  `widgetCellRenderer.Layout`/`Refresh` now lay the content out themselves
+  (Refresh calls Layout at the cell size after a content swap), and the
+  plain-cell `tableCellRenderer` does the same. Regression tests:
+  `render_test.go` (also covers an empty listing and listing→listing swaps).
+- A stale scroll offset: the table kept the previous listing's offset, so a
+  directory change showed the tail of the new listing, or nothing when the new
+  one was shorter. `FlexTable.ScrollToTop` is now called by
+  `TableWidget.ResetPage` (directory change), page navigation (prev/next/
+  first/last/page entry) and filter edits. Plain `reload()` keeps the offset,
+  so a refresh or a finished copy does not jump to the top.
+
 ## tie-fm archive extraction (`cmd/tie-fm/internal/fs/extract.go`)
 
 The context menu's **Extract archive to here** (`extractMenuItem`,

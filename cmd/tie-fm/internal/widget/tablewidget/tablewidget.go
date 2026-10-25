@@ -75,6 +75,7 @@ func (ctx *TableWidget) prevPage() {
 	}
 	ctx.currentPage.Set(page)
 	ctx.Refresh()
+	ctx.ScrollToTop()
 }
 
 func (ctx *TableWidget) nextPage() {
@@ -89,18 +90,29 @@ func (ctx *TableWidget) nextPage() {
 	}
 	ctx.currentPage.Set(page)
 	ctx.Refresh()
+	ctx.ScrollToTop()
 }
 
 func (ctx *TableWidget) firstPage() {
 	ctx.currentPage.Set(1)
 	ctx.Refresh()
+	ctx.ScrollToTop()
 }
 
 // ResetPage jumps back to page 1. Callers use it when the underlying listing is
 // replaced (e.g. a directory change) so a stale page number does not land past
-// the end of a shorter listing.
+// the end of a shorter listing. The scroll position is reset too: the new
+// listing starts at its first row.
 func (ctx *TableWidget) ResetPage() {
 	ctx.currentPage.Set(1)
+	ctx.ScrollToTop()
+}
+
+// ScrollToTop scrolls the current page back to its first row, so a stale scroll
+// offset from the previous listing (or the previous page/filter) cannot leave
+// the table showing its tail or a blank region.
+func (ctx *TableWidget) ScrollToTop() {
+	ctx.table.ScrollToTop()
 }
 
 func (ctx *TableWidget) lastPage() {
@@ -110,6 +122,7 @@ func (ctx *TableWidget) lastPage() {
 	}
 	ctx.currentPage.Set(max)
 	ctx.Refresh()
+	ctx.ScrollToTop()
 }
 
 func NewTableWidget(title string, pageSize int) *TableWidget {
@@ -139,6 +152,7 @@ func NewTableWidget(title string, pageSize int) *TableWidget {
 		}
 		ctx.currentPage.Set(i)
 		ctx.Refresh()
+		ctx.ScrollToTop()
 	}
 	totalPages := widget.NewLabelWithData(binding.IntToString(ctx.totalPages))
 	first := theme.NewThemedResource(fyne.NewStaticResource("navigateFirst", navigateFirst))
@@ -347,6 +361,7 @@ func (ctx *TableWidget) newFilterWidget() *widget.Entry {
 		}
 		ctx.table.SetData(ctx.filteredData)
 		ctx.table.Refresh()
+		ctx.ScrollToTop()
 	}
 
 	return filter

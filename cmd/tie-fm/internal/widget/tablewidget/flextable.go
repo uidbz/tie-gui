@@ -229,8 +229,20 @@ func (t *FlexTable) SetData(data *TableData) {
 	t.table.Refresh()
 }
 
+// SetColumnWidth sets the width of one column.
 func (t *FlexTable) SetColumnWidth(id int, width float32) {
 	t.table.SetColumnWidth(id, width)
+}
+
+// ScrollToTop scrolls the table back to the first row. Consumers call it when
+// the listing is replaced (a directory change) or the page/filter changes: a
+// stale offset otherwise leaves the table showing the tail of the previous
+// listing, or nothing at all when the new one is shorter.
+func (t *FlexTable) ScrollToTop() {
+	// ScrollToOffset (rather than widget.Table.ScrollToTop) also refreshes the
+	// scroll bars, so the thumb cannot stay at the old position while the rows
+	// start at the top.
+	t.table.ScrollToOffset(fyne.NewPos(0, 0))
 }
 
 // SetSort records the current sort column and direction for the header arrow
@@ -327,7 +339,36 @@ func (c *TableCell) CreateRenderer() fyne.WidgetRenderer {
 	// Use container.Stack for layering and container.Clip to prevent overflow
 	content := container.NewStack(c.background, c.label)
 	clipped := container.NewClip(content)
-	return widget.NewSimpleRenderer(clipped)
+	return &tableCellRenderer{clip: clipped, content: content}
+}
+
+// tableCellRenderer lays the cell content out itself instead of delegating to a
+// SimpleRenderer around the clip: the vendored container.Clip drops the Resize
+// that precedes its renderer (NewClip does not ExtendBaseWidget), and a
+// recycled cell is never resized again, so the content would stay 0x0. The
+// same workaround lives in widgetCellRenderer.
+type tableCellRenderer struct {
+	clip    *container.Clip
+	content *fyne.Container
+}
+
+func (r *tableCellRenderer) Destroy() {}
+
+func (r *tableCellRenderer) Layout(size fyne.Size) {
+	r.clip.Resize(size)
+	r.content.Resize(size)
+}
+
+func (r *tableCellRenderer) MinSize() fyne.Size {
+	return r.content.MinSize()
+}
+
+func (r *tableCellRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.clip}
+}
+
+func (r *tableCellRenderer) Refresh() {
+	canvas.Refresh(r.clip)
 }
 
 // cellTapped routes a single tap: a tap in SelectColumn (or any column when
@@ -602,6 +643,14 @@ func (r *widgetCellRenderer) Destroy() {}
 
 func (r *widgetCellRenderer) Layout(size fyne.Size) {
 	r.stack.Resize(size)
+	// Resize the content directly: the vendored container.Clip drops its first
+	// layout (NewClip does not ExtendBaseWidget, so the Resize before its
+	// renderer exists is a no-op), leaving the content at zero size until a
+	// second layout pass. Without this the first data load renders blank until
+	// the window is resized.
+	if r.cell.content != nil {
+		r.cell.content.Resize(size)
+	}
 }
 
 func (r *widgetCellRenderer) MinSize() fyne.Size {
@@ -620,6 +669,12 @@ func (r *widgetCellRenderer) Refresh() {
 	if r.clip.Content != r.cell.content {
 		r.clip.Content = r.cell.content
 	}
+	// Lay the content out at the cell's size. A recycled table cell keeps its
+	// old size, so replacing its content does not trigger a Resize/Layout pass
+	// on its own; without this, cells created for a new listing stay 0x0 and
+	// the table renders blank until an unrelated layout pass (scrolling or
+	// resizing the window) refreshes them.
+	r.Layout(r.cell.Size())
 	r.cell.background.Refresh()
 	r.stack.Refresh()
 }
