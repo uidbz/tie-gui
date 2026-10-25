@@ -184,3 +184,79 @@ func writeTestWAV(t *testing.T, path string, fill byte) {
 		t.Fatal(err)
 	}
 }
+
+// TestAddMusicBrainzTagsOnlyIntegration verifies the tag-bar action writes only
+// tags: existing tags survive, genres/community tags are unioned, and no album
+// metadata or MBIDs are touched.
+func TestAddMusicBrainzTagsOnlyIntegration(t *testing.T) {
+	if os.Getenv("TIE_FM_TIE_TEST") == "" {
+		t.Skip("set TIE_FM_TIE_TEST=1 and start the tie test-env")
+	}
+	tc := client.NewTieClient(client.TestingConfig())
+	if _, err := tc.ServerVersion(); err != nil {
+		t.Skipf("tie test-env not reachable: %v", err)
+	}
+	dirPath := "/tie-fm-mb-tags-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	uid, err := tc.MkTieDirAll(dirPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetTags(tc, string(uid), []string{"keepme"}); err != nil {
+		t.Fatal(err)
+	}
+	b := tc.NewBatch()
+	b.Set(string(uid), "album", []string{"Old Album"})
+	if _, err := tc.Batch(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := tc.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	rel := &musicbrainz.Release{
+		MBID:        "rel-tags-only",
+		Title:       "New Album",
+		Genres:      []string{"rock", "Rock"},
+		Tags:        []string{"pop", "keepme"},
+		HasCoverArt: false,
+	}
+	added, err := addReleaseTagsOnly(tc, uid, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(added) != 2 || added[0] != "rock" || added[1] != "pop" {
+		t.Errorf("added = %v, want [rock pop]", added)
+	}
+	tags, err := client.GetTags(tc, string(uid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tag := range tags {
+		got[tag] = true
+	}
+	for _, want := range []string{"keepme", "rock", "pop"} {
+		if !got[want] {
+			t.Errorf("missing tag %q in %v", want, tags)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("tags = %v, want exactly keepme/rock/pop", tags)
+	}
+
+	row, err := tc.Get(string(uid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := client.RowFirst(row, "album"); got != "Old Album" {
+		t.Errorf("album metadata was rewritten: %q", got)
+	}
+	if got := client.RowFirst(row, "musicbrainz-release-id"); got != "" {
+		t.Errorf("tags-only wrote a release MBID: %q", got)
+	}
+
+	// Re-running is a no-op for tags.
+	if added, err := addReleaseTagsOnly(tc, uid, rel); err != nil || len(added) != 0 {
+		t.Errorf("second run added %v, err %v", added, err)
+	}
+}

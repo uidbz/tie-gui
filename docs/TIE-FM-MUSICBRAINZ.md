@@ -63,6 +63,23 @@ FetchCoverArt = true
    then normalised title, then remaining order — so files with partial tags
    still line up.
 
+## Tags only (tag panel)
+
+The right-hand **tag panel** (the "tag bag") is the tags-only entry point:
+
+1. Browse a `tie:/…` location and select an album row (the leftmost icon
+   column; clicking the name opens the folder).
+2. In **Tags of selection**, press **Add MusicBrainz tags…**.
+3. Pick the release. Only its **genres + community tags** are unioned into the
+   album's tags — no artist/album/year, no MBIDs, no track metadata, no cover
+   art. Existing tags and their spelling are preserved; duplicates are ignored
+   case-insensitively.
+4. With several albums selected, each is matched automatically and its own tags
+   are added; a summary lists unmatched/failed albums.
+
+The newly added chips appear in the editor immediately; the full-metadata
+match remains available from the row context menu's **MusicBrainz…** action.
+
 ## tie: paths
 
 Right-click a row in a `tie:/…` listing:

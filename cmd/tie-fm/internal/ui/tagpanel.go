@@ -62,12 +62,18 @@ func NewTagPanel(fm *FileManager) *TagPanel {
 	tp.editorLabel = widget.NewLabelWithStyle("Tags of selection", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	closeBtn := widget.NewButtonWithIcon("Close", theme.CancelIcon(), func() { tp.fm.clearSelection() })
 	editorHeader := container.NewBorder(nil, nil, tp.editorLabel, closeBtn)
+	// MusicBrainz tag lookup lives here, next to the tags it writes: it adds
+	// only genres/community tags (no metadata, MBIDs or cover art). The full
+	// metadata match remains the row context menu's "MusicBrainz…" action.
+	mbTags := widget.NewButtonWithIcon("Add MusicBrainz tags…", theme.SearchIcon(), tp.onMusicBrainzTags)
+	mbTags.Alignment = widget.ButtonAlignLeading
+	mbTags.Importance = widget.LowImportance
 
 	tp.filterSection = container.NewVBox(
 		widget.NewLabelWithStyle("Filter by tags", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		tp.filter,
 	)
-	tp.editorSection = container.NewVBox(editorHeader, tp.editor)
+	tp.editorSection = container.NewVBox(editorHeader, mbTags, tp.editor)
 	tp.editorSection.Hide()
 
 	tp.Container = container.NewVBox(tp.filterSection, tp.editorSection)

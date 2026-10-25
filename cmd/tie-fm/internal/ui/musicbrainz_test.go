@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -96,5 +97,24 @@ func TestTieParentPath(t *testing.T) {
 		if got := tieParentPath(in); got != want {
 			t.Errorf("tieParentPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestMusicBrainzTagUnion(t *testing.T) {
+	merged, added := musicBrainzTagUnion(
+		[]string{"KeepMe", "rock"},
+		[]string{"Rock", "pop"},
+		[]string{"pop", "shoegaze", " "},
+	)
+	wantMerged := []string{"KeepMe", "rock", "pop", "shoegaze"}
+	wantAdded := []string{"pop", "shoegaze"}
+	if strings.Join(merged, ",") != strings.Join(wantMerged, ",") {
+		t.Errorf("merged = %v, want %v", merged, wantMerged)
+	}
+	if strings.Join(added, ",") != strings.Join(wantAdded, ",") {
+		t.Errorf("added = %v, want %v", added, wantAdded)
+	}
+	if m, a := musicBrainzTagUnion([]string{"x"}, nil, nil); len(a) != 0 || len(m) != 1 {
+		t.Errorf("empty update = %v, %v", m, a)
 	}
 }
