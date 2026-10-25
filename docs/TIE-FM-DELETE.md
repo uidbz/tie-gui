@@ -1,7 +1,9 @@
 # tie-fm delete on `tie:` entries
 
 `Delete` is available for `tie:` rows (context menu) and removes **references**,
-never bytes:
+never bytes. It acts on the whole selection when the clicked row is part of it:
+each item is removed in turn (off the UI goroutine), the pane reloads once, and
+any failures are reported together:
 
 - **File / archive:** removes the `(hash, "parent", <dir>)` edge. If that was
   the hash's last parent edge, its per-hash metadata (filename, name, tie-type,

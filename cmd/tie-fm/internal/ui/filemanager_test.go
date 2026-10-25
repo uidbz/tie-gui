@@ -1,14 +1,17 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/data/binding"
+	"fyne.io/fyne/v2/test"
 
 	"github.com/uidbz/tie/client"
 
@@ -201,6 +204,137 @@ func TestContextMenuSetUsesSelection(t *testing.T) {
 	}
 	if got := fm.menuSet(c); len(got) != 1 || got[0].Path != c.Path {
 		t.Errorf("menuSet(unselected) = %v, want [c]", got)
+	}
+}
+
+// menuLabels lists a menu's item labels, for assertions.
+func menuLabels(items []*fyne.MenuItem) []string {
+	labels := make([]string, len(items))
+	for i, item := range items {
+		labels[i] = item.Label
+	}
+	return labels
+}
+
+// TestDeleteEntriesRemovesSelection checks a multi-item delete removes every
+// selected local entry (leaving unselected ones) and runs off the UI goroutine.
+func TestDeleteEntriesRemovesSelection(t *testing.T) {
+	test.NewApp()
+	dir := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "keep.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
+
+	var set []fs.Entry
+	for _, e := range fm.entries {
+		if e.Name != "keep.txt" {
+			set = append(set, e)
+		}
+	}
+	if len(set) != 2 {
+		t.Fatalf("selection = %v, want the two deletable files", set)
+	}
+	fm.deleteEntries(set)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, errA := os.Stat(filepath.Join(dir, "a.txt"))
+		_, errB := os.Stat(filepath.Join(dir, "b.txt"))
+		if errA != nil && errB != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("selected files still present (a err=%v, b err=%v)", errA, errB)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
+		t.Fatalf("unselected file was deleted: %v", err)
+	}
+}
+
+// TestContextMenuDeleteUsesSelection checks Delete acts on the whole selection
+// (with a counted label) when the clicked row is part of it, and on just the
+// clicked row otherwise — for local and tie listings alike.
+func TestContextMenuDeleteUsesSelection(t *testing.T) {
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	localA := fs.Entry{Name: "a.txt", Path: "/tmp/a.txt"}
+	localB := fs.Entry{Name: "b.txt", Path: "/tmp/b.txt"}
+	fm := &FileManager{
+		ops:             fs.NewOperations(reg),
+		registry:        reg,
+		selectedEntries: []fs.Entry{localA, localB},
+	}
+
+	got := menuLabels(fm.contextMenuItems(localA, 0))
+	if !slices.Contains(got, "Delete 2 items") {
+		t.Errorf("local menu = %v, want Delete 2 items", got)
+	}
+
+	// Right-clicking a row outside the selection acts on that row alone.
+	localC := fs.Entry{Name: "c.txt", Path: "/tmp/c.txt"}
+	got = menuLabels(fm.contextMenuItems(localC, 2))
+	if !slices.Contains(got, "Delete") {
+		t.Errorf("local menu for an unselected row = %v, want Delete", got)
+	}
+
+	// tie rows go through fs.Remover and support the same multi-selection.
+	tieA := fs.Entry{Name: "a.flac", Path: "tie:/music/a.flac", Hash: "h1"}
+	tieB := fs.Entry{Name: "b.flac", Path: "tie:/music/b.flac", Hash: "h2"}
+	fm.selectedEntries = []fs.Entry{tieA, tieB}
+	got = menuLabels(fm.contextMenuItems(tieA, 0))
+	if !slices.Contains(got, "Delete 2 items") {
+		t.Errorf("tie menu = %v, want Delete 2 items", got)
+	}
+}
+
+// TestDeletePromptText checks the confirmation wording: single items keep their
+// name, multi-item deletes count and list the names, directories are called
+// out, and tie deletes explain that only references go.
+func TestDeletePromptText(t *testing.T) {
+	localFile := fs.Entry{Name: "a.txt", Path: "/tmp/a.txt"}
+	localDir := fs.Entry{Name: "images", Path: "/tmp/images", IsDir: true}
+	tieFile := fs.Entry{Name: "a.flac", Path: "tie:/music/a.flac", Hash: "h1"}
+	tieDir := fs.Entry{Name: "album", Path: "tie:/music/album", IsDir: true, Hash: "h2"}
+
+	if got, want := deletePromptText([]fs.Entry{localFile}), `Delete "a.txt"?`; got != want {
+		t.Errorf("local single = %q, want %q", got, want)
+	}
+	if got, want := deletePromptText([]fs.Entry{tieFile}), "Remove the file \"a.flac\" from tie?\n\n"+tieDeleteNote; got != want {
+		t.Errorf("tie single file = %q, want %q", got, want)
+	}
+	if got, want := deletePromptText([]fs.Entry{tieDir}), "Remove the directory and everything below it \"album\" from tie?\n\n"+tieDeleteNote; got != want {
+		t.Errorf("tie single dir = %q, want %q", got, want)
+	}
+
+	got := deletePromptText([]fs.Entry{localFile, localDir})
+	for _, want := range []string{`Delete 2 items?`, `"a.txt"`, `"images/"`, "Directories are removed with everything below them."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("local multi prompt = %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "tie") {
+		t.Errorf("local multi prompt mentions tie: %q", got)
+	}
+
+	got = deletePromptText([]fs.Entry{tieFile, tieDir})
+	for _, want := range []string{`Remove 2 items from tie?`, `"a.flac"`, `"album/"`, tieDeleteNote} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tie multi prompt = %q, want it to contain %q", got, want)
+		}
+	}
+
+	// Long selections elide the tail.
+	many := make([]fs.Entry, 10)
+	for i := range many {
+		many[i] = fs.Entry{Name: fmt.Sprintf("f%d", i), Path: fmt.Sprintf("/tmp/f%d", i)}
+	}
+	if got := deletePromptText(many); !strings.Contains(got, "and 2 more") {
+		t.Errorf("long selection prompt = %q, want an elided tail", got)
 	}
 }
 

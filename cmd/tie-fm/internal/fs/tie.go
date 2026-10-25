@@ -286,6 +286,9 @@ func (t *TieFS) Remove(e Entry) error {
 
 func (t *TieFS) removeFile(e Entry) error {
 	parents, err := t.parentUIDs(e.Hash)
+	if errors.Is(err, client.ErrNotFound) {
+		return nil // already gone (e.g. deleted with a parent directory)
+	}
 	if err != nil {
 		return err
 	}
@@ -307,6 +310,9 @@ func (t *TieFS) removeFile(e Entry) error {
 func (t *TieFS) removeDirEntry(e Entry) error {
 	uid := client.DirUID(e.Hash)
 	parents, err := t.parentUIDs(e.Hash)
+	if errors.Is(err, client.ErrNotFound) {
+		return nil // already gone (e.g. deleted with a parent directory)
+	}
 	if err != nil {
 		return err
 	}

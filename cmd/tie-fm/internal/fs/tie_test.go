@@ -134,3 +134,65 @@ func TestTieRemoveDeletesTriplesNotBlob(t *testing.T) {
 		t.Errorf("DirUIDFromPath after recursive delete = %q, %v; want empty", got, err)
 	}
 }
+
+// A multi-item delete can contain a directory and items below it (a tag query
+// lists rows from anywhere, so the two can be selected together). Deleting the
+// directory removes its whole subtree; removing the now-gone children
+// afterwards must be a no-op, not an error, so the batch reports only real
+// failures.
+func TestTieRemoveChildOfDeletedDirIsIdempotent(t *testing.T) {
+	tc := client.NewTieClient(client.TestingConfig())
+	if _, err := tc.ServerVersion(); err != nil {
+		t.Skipf("tie test-env not reachable: %v", err)
+	}
+	host, err := tc.ResolveHost("")
+	if err != nil {
+		t.Fatalf("ResolveHost: %v", err)
+	}
+
+	rootPath := fmt.Sprintf("/tie-fm-remove-nested-%d", time.Now().UnixNano())
+	root, err := tc.MkTieDirAll(client.FileURIScheme + rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := tc.MkTieDirAll(client.FileURIScheme + rootPath + "/sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "nested.txt")
+	if err := os.WriteFile(src, []byte("nested"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := tc.WriteFile(host, "", sub, "nested.txt", src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tfs := NewTieFS(tc)
+	entries, err := tfs.List("tie:" + rootPath + "/sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "nested.txt" {
+		t.Fatalf("sub listing = %v, want [nested.txt]", entries)
+	}
+	fileEntry := entries[0]
+	dirEntry := Entry{Name: "sub", Path: "tie:" + rootPath + "/sub", IsDir: true, Hash: string(sub)}
+
+	// Delete the parent: this removes sub and the file with it.
+	if err := tfs.Remove(Entry{Name: filepath.Base(rootPath), Path: "tie:" + rootPath, IsDir: true, Hash: string(root)}); err != nil {
+		t.Fatalf("Remove root: %v", err)
+	}
+	if _, err := tc.Get(hash); err == nil {
+		t.Fatal("nested file still has triples after its parent tree was deleted")
+	}
+
+	// The stale selection members are already gone: deleting them succeeds
+	// silently instead of failing the whole batch.
+	if err := tfs.Remove(fileEntry); err != nil {
+		t.Errorf("Remove already-deleted file: %v", err)
+	}
+	if err := tfs.Remove(dirEntry); err != nil {
+		t.Errorf("Remove already-deleted directory: %v", err)
+	}
+}

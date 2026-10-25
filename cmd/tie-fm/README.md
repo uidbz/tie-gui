@@ -16,8 +16,9 @@ tie-fm browses two kinds of location side by side:
 
 - Twin panels with independent navigation history, breadcrumb, and a favorites
   sidebar (bookmarks).
-- Local file operations: copy, move, and delete (local-to-local), with a
-  progress view.
+- Local file operations: copy, move, and delete, with a progress view. Delete
+  also covers `tie:` rows (references only — blobs stay in the filehost) and
+  the whole multi-row selection; per-item failures are reported together.
 - Copy/move destination conflicts prompt with a Dolphin-style dialog (Skip /
   Rename / Overwrite / Cancel, with "Apply to All" on multi-item transfers);
   a skipped move keeps its source. Applies to local copies and tie imports

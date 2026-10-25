@@ -696,10 +696,14 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 	if item := fm.extractMenuItem(e); item != nil {
 		items = append(items, item)
 	}
-	if fm.canDelete(e) {
-		items = append(items,
-			fyne.NewMenuItem("Delete", func() { fm.confirmDelete(e) }),
-		)
+	// Delete covers the whole selection when the clicked row is part of it
+	// (local files use os.RemoveAll; tie unlinks triples and keeps blobs).
+	if set := fm.menuSet(e); fm.canDeleteAll(set) {
+		label := "Delete"
+		if len(set) > 1 {
+			label = fmt.Sprintf("Delete %d items", len(set))
+		}
+		items = append(items, fyne.NewMenuItem(label, func() { fm.confirmDelete(set) }))
 	}
 	if _, ok := fm.registry.For(e.Path).(fs.DirTyper); ok && e.IsDir && e.Hash != "" {
 		items = append(items, fyne.NewMenuItem("Directory type…", func() { fm.showDirTypeDialog(e) }))
@@ -1216,25 +1220,114 @@ func (fm *FileManager) canDelete(e fs.Entry) bool {
 	return ok
 }
 
-func (fm *FileManager) confirmDelete(e fs.Entry) {
-	msg := fmt.Sprintf("Delete %q?", e.Name)
-	if fs.IsTie(e.Path) {
+// canDeleteAll reports whether every entry of set can be deleted, so the menu
+// never offers Delete for a selection with an unsupported member.
+func (fm *FileManager) canDeleteAll(set []fs.Entry) bool {
+	if len(set) == 0 {
+		return false
+	}
+	for _, e := range set {
+		if !fm.canDelete(e) {
+			return false
+		}
+	}
+	return true
+}
+
+// tieDeleteNote is the trailing explanation of a tie delete prompt: only tree
+// references go, the content-addressed bytes stay for the filehost's retention.
+const tieDeleteNote = "The tree references are removed; content stays in the tie filehost until the filehost's retention policy collects it."
+
+// deletePromptText is the confirmation message for set: the single-item wording
+// (naming the item; for tie, saying that only references go) or a counted
+// summary listing the names, noting directories and (for tie) the blob policy.
+func deletePromptText(set []fs.Entry) string {
+	if len(set) == 0 {
+		return ""
+	}
+	tie := fs.IsTie(set[0].Path)
+	if len(set) == 1 {
+		e := set[0]
+		if !tie {
+			return fmt.Sprintf("Delete %q?", e.Name)
+		}
 		what := "file"
 		if e.IsDir {
 			what = "directory and everything below it"
 		}
-		msg = fmt.Sprintf("Remove the %s %q from tie?\n\nThe tree references are removed; content stays in the tie filehost until the filehost's retention policy collects it.", what, e.Name)
+		return fmt.Sprintf("Remove the %s %q from tie?\n\n%s", what, e.Name, tieDeleteNote)
 	}
-	dialog.ShowConfirm("Delete", msg, func(ok bool) {
+
+	action := fmt.Sprintf("Delete %d items?", len(set))
+	if tie {
+		action = fmt.Sprintf("Remove %d items from tie?", len(set))
+	}
+	msg := action + "\n\n" + quotedEntryNames(set)
+	for _, e := range set {
+		if e.IsDir {
+			msg += "\n\nDirectories are removed with everything below them."
+			break
+		}
+	}
+	if tie {
+		msg += "\n\n" + tieDeleteNote
+	}
+	return msg
+}
+
+// quotedEntryNames lists up to a handful of the entries' names (directories
+// with a trailing slash), eliding the rest.
+func quotedEntryNames(set []fs.Entry) string {
+	const max = 8
+	parts := make([]string, 0, len(set))
+	for i, e := range set {
+		if i == max {
+			parts = append(parts, fmt.Sprintf("and %d more", len(set)-max))
+			break
+		}
+		name := e.Name
+		if e.IsDir {
+			name += "/"
+		}
+		parts = append(parts, fmt.Sprintf("%q", name))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (fm *FileManager) confirmDelete(set []fs.Entry) {
+	if len(set) == 0 {
+		return
+	}
+	dialog.ShowConfirm("Delete", deletePromptText(set), func(ok bool) {
 		if !ok {
 			return
 		}
-		if err := fm.deleteEntry(e); err != nil {
-			dialog.ShowError(err, fm.win)
-			return
-		}
-		fm.reload()
+		fm.deleteEntries(set)
 	}, fm.win)
+}
+
+// deleteEntries removes every entry of set, continuing past per-entry failures,
+// then reloads the pane once and reports what failed. It runs off the UI
+// goroutine: a tie delete is one or more network round-trips (a directory walks
+// its whole subtree), and a multi-item delete would otherwise freeze the app.
+func (fm *FileManager) deleteEntries(set []fs.Entry) {
+	set = append([]fs.Entry(nil), set...) // the caller's selection may change
+	go func() {
+		var failed []string
+		for _, e := range set {
+			if err := fm.deleteEntry(e); err != nil {
+				failed = append(failed, fmt.Sprintf("%q: %v", e.Name, err))
+			}
+		}
+		fyne.Do(func() {
+			fm.reload()
+			if len(failed) == 0 {
+				return
+			}
+			dialog.ShowError(fmt.Errorf("could not delete %d of %d items:\n\n%s",
+				len(failed), len(set), strings.Join(failed, "\n")), fm.win)
+		})
+	}()
 }
 
 // deleteEntry deletes through the backend's Remover when it has one, falling
