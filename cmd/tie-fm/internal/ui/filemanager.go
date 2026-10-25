@@ -61,16 +61,17 @@ type FileManager struct {
 	queryInclude []string
 	queryExclude []string
 
-	table        *tablewidget.TableWidget
-	toolbar      *widget.Toolbar
-	addr         *shortcutEntry
-	breadcrumb   *fyne.Container
-	tagPanel     *TagPanel
-	content      *fyne.Container
-	wrapper      *fyne.Container    // content + active-panel highlight border
-	activeBorder *canvas.Rectangle  // outline shown when this panel is active
-	onActivate   func(*FileManager) // called when this panel should become active
-	onBookmark   func(path string)  // called by the toolbar bookmark button
+	table          *tablewidget.TableWidget
+	toolbar        *widget.Toolbar
+	terminalButton *widget.Button
+	addr           *shortcutEntry
+	breadcrumb     *fyne.Container
+	tagPanel       *TagPanel
+	content        *fyne.Container
+	wrapper        *fyne.Container    // content + active-panel highlight border
+	activeBorder   *canvas.Rectangle  // outline shown when this panel is active
+	onActivate     func(*FileManager) // called when this panel should become active
+	onBookmark     func(path string)  // called by the toolbar bookmark button
 
 	dragGhost *widget.PopUp // floating indicator shown while dragging rows
 	dragLabel string        // text for the drag indicator (empty when not dragging)
@@ -127,12 +128,20 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	})
 	fm.addr.OnSubmitted = func(s string) { fm.navigateTo(strings.TrimSpace(s)) }
 
+	// A text toolbar item: the terminal action is the one location command that
+	// users look for by name. It is disabled for tie:/mtp: locations, which
+	// have no real filesystem path to open.
+	fm.terminalButton = widget.NewButtonWithIcon("Open Terminal Here", theme.ComputerIcon(), fm.openTerminalHere)
+	fm.terminalButton.Alignment = widget.ButtonAlignLeading
+	fm.terminalButton.Importance = widget.LowImportance
+
 	fm.toolbar = widget.NewToolbar(
 		widget.NewToolbarAction(theme.NavigateBackIcon(), fm.goBack),
 		widget.NewToolbarAction(theme.NavigateNextIcon(), fm.goForward),
 		widget.NewToolbarAction(theme.MoveUpIcon(), fm.goUp),
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() { fm.reload() }),
 		widget.NewToolbarAction(theme.FolderNewIcon(), fm.newDir),
+		toolbarButtonItem{fm.terminalButton},
 		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(bookmarkResource, fm.bookmarkCurrent),
 	)
@@ -307,6 +316,7 @@ func (fm *FileManager) navigateTo(p string) {
 func (fm *FileManager) setPath(p string) {
 	fm.currentPath.Set(p)
 	fm.addr.SetText(p)
+	fm.updateTerminalButton()
 	fm.table.ClearFilter()
 	fm.table.ResetPage()
 	fm.reload()
@@ -671,7 +681,7 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 	// Open in terminal: a local directory opens itself, a local file opens its
 	// containing directory (like Dolphin's "Open Terminal" on a file).
 	if fs.IsLocal(e.Path) {
-		items = append(items, fyne.NewMenuItem("Open in terminal", func() { fm.openInTerminal(e) }))
+		items = append(items, fyne.NewMenuItem("Open Terminal Here", func() { fm.openInTerminal(e) }))
 	}
 	// Transfers target the other panel's current directory.
 	if fm.other != nil {
@@ -1370,4 +1380,40 @@ func sizeString(size int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.2f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
+}
+
+// toolbarButtonItem adapts a labelled button for widget.Toolbar, whose
+// standard actions are icon-only.
+type toolbarButtonItem struct {
+	button *widget.Button
+}
+
+func (t toolbarButtonItem) ToolbarObject() fyne.CanvasObject { return t.button }
+
+// updateTerminalButton enables the toolbar's terminal action only for local
+// paths; tie:/mtp: locations have no filesystem directory to open.
+func (fm *FileManager) updateTerminalButton() {
+	if fm.terminalButton == nil {
+		return
+	}
+	if fs.IsLocal(fm.pathValue()) {
+		fm.terminalButton.Enable()
+	} else {
+		fm.terminalButton.Disable()
+	}
+}
+
+// openTerminalHere opens the configured terminal emulator at the pane's
+// current local directory.
+func (fm *FileManager) openTerminalHere() {
+	fm.markActive()
+	p := fm.pathValue()
+	if !fs.IsLocal(p) {
+		dialog.ShowInformation("Terminal",
+			"A terminal can only be opened at a local directory.", fm.win)
+		return
+	}
+	if err := launchTerminal(fm.cfg, fs.LocalPath(p)); err != nil {
+		dialog.ShowError(err, fm.win)
+	}
 }

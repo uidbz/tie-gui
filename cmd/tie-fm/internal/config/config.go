@@ -124,7 +124,7 @@ type Config struct {
 	// ShowHidden makes dot-files (names with a leading ".") visible in the
 	// listing; hidden (false) by default, toggled from the app menu.
 	ShowHidden bool
-	// Terminal is the command line used by "Open in terminal". A "%d" token in
+	// Terminal is the command line used by "Open Terminal Here". A "%d" token in
 	// any argument is replaced by the directory; without one the directory is
 	// appended as the final argument. Empty falls back to $TERMINAL, then the
 	// first known terminal emulator found in PATH.

@@ -381,7 +381,7 @@ func TestContextMenuNewFileAndTerminal(t *testing.T) {
 	if !hasItem(local, "New file…") {
 		t.Error("local menu lacks New file…")
 	}
-	if !hasItem(local, "Open in terminal") {
+	if !hasItem(local, "Open Terminal Here") {
 		t.Error("local menu lacks Open in terminal")
 	}
 
@@ -390,7 +390,7 @@ func TestContextMenuNewFileAndTerminal(t *testing.T) {
 	if hasItem(tie, "New file…") {
 		t.Error("tie menu unexpectedly offers New file…")
 	}
-	if hasItem(tie, "Open in terminal") {
+	if hasItem(tie, "Open Terminal Here") {
 		t.Error("tie menu unexpectedly offers Open in terminal")
 	}
 }
@@ -469,5 +469,34 @@ func TestContextMenuExtractItem(t *testing.T) {
 	fm.queryInclude = []string{"x"}
 	if got := label(fs.Entry{Name: "a.zip", Path: "tie:/a.zip", Hash: "h"}); got != "" {
 		t.Errorf("tag query: unexpected %q", got)
+	}
+}
+
+// TestTerminalToolbarItemState checks the labelled toolbar action exists and
+// follows the location: enabled for local paths, disabled for tie: paths.
+func TestTerminalToolbarItemState(t *testing.T) {
+	dir := t.TempDir()
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
+	if fm.terminalButton == nil {
+		t.Fatal("terminal toolbar item missing")
+	}
+	if got := fm.terminalButton.Text; got != "Open Terminal Here" {
+		t.Errorf("toolbar label = %q", got)
+	}
+	if fm.terminalButton.Disabled() {
+		t.Error("terminal action disabled for a local directory")
+	}
+
+	fm.currentPath.Set("tie:/music")
+	fm.updateTerminalButton()
+	if !fm.terminalButton.Disabled() {
+		t.Error("terminal action enabled for a tie: path")
+	}
+
+	fm.currentPath.Set(dir)
+	fm.updateTerminalButton()
+	if fm.terminalButton.Disabled() {
+		t.Error("terminal action stayed disabled after returning to a local path")
 	}
 }
