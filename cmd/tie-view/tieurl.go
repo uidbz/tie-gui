@@ -62,7 +62,7 @@ func loadTieHash(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClie
 		tieURLError(window, rawURL, err)
 		return
 	}
-	types := client.RowValues(row, client.TieTypeProperty.String())
+	types := client.RowValues(row, client.RelType)
 	if slices.Contains(types, client.TieImageDir.String()) || slices.Contains(types, client.TieDirectory.String()) {
 		loadTieDirUID(window, viewer, tc, fsTree, rawURL, client.DirUID(hash))
 		return
@@ -77,7 +77,7 @@ func loadTieHash(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClie
 		fyne.Do(func() { browseTieArchive(viewer, tieFileHost(tc), hash) })
 	default:
 		tieURLError(window, rawURL, fmt.Errorf("not an image, video, directory or archive (media type %q)",
-			client.RowFirst(row, client.TieMediaType.String())))
+			client.RowFirst(row, client.RelMediaType)))
 	}
 }
 

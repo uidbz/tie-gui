@@ -11,6 +11,8 @@ import (
 
 	"github.com/uidbz/tie/client"
 
+	"github.com/uidbz/tie-gui/internal/tietest"
+
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/musicbrainz"
 )
@@ -24,7 +26,7 @@ func TestApplyReleaseToAlbumIntegration(t *testing.T) {
 	if os.Getenv("TIE_FM_TIE_TEST") == "" {
 		t.Skip("set TIE_FM_TIE_TEST=1 and start the tie test-env")
 	}
-	tc := client.NewTieClient(client.TestingConfig())
+	tc := client.NewTieClient(tietest.Config())
 	if _, err := tc.ServerVersion(); err != nil {
 		t.Skipf("tie test-env not reachable: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestApplyReleaseToAlbumIntegration(t *testing.T) {
 	for i, title := range titles {
 		wav := filepath.Join(dir, fmt.Sprintf("%02d.wav", i+1))
 		writeTestWAV(t, wav, byte(i+1))
-		hash, err := tc.WriteFile(host, "", uid, fmt.Sprintf("%02d.wav", i+1), wav, nil)
+		hash, err := tc.WriteFile(host, uid, fmt.Sprintf("%02d.wav", i+1), wav, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +105,7 @@ func TestApplyReleaseToAlbumIntegration(t *testing.T) {
 		"year":                   "1999",
 		"musicbrainz-release-id": "rel-test-mbid",
 	} {
-		if got := client.RowFirst(row, relName); got != want {
+		if got := client.RowFirst(row, client.Relation(relName)); got != want {
 			t.Errorf("dir %s = %q, want %q", relName, got, want)
 		}
 	}
@@ -192,7 +194,7 @@ func TestAddMusicBrainzTagsOnlyIntegration(t *testing.T) {
 	if os.Getenv("TIE_FM_TIE_TEST") == "" {
 		t.Skip("set TIE_FM_TIE_TEST=1 and start the tie test-env")
 	}
-	tc := client.NewTieClient(client.TestingConfig())
+	tc := client.NewTieClient(tietest.Config())
 	if _, err := tc.ServerVersion(); err != nil {
 		t.Skipf("tie test-env not reachable: %v", err)
 	}

@@ -3,7 +3,9 @@ package data
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"path"
 	"slices"
 	"sort"
@@ -124,6 +126,92 @@ func (s *Session) fetchBlob(hash string) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
+// coverHeadBytes is the initial tag probe: enough for the fixed-size headers
+// of an ID3v2 or FLAC tag block, plus the tags themselves in the common case.
+const coverHeadBytes = 64 << 10
+
+// coverProbeBytes is the wider fallback probe for containers whose metadata
+// extent cannot be computed up front (Ogg comments, MP4 atoms, DSF pointers).
+// Audio tags sit at the start of the file for the common formats, so a few
+// megabytes of head hold the cover while the audio frames behind it — tens of
+// megabytes for a FLAC track — are never transferred.
+const coverProbeBytes = 4 << 20
+
+// coverTagCap bounds a computed tag block before it is fetched; an embedded
+// picture larger than this is rare enough to be worth a full read instead.
+const coverTagCap = 16 << 20
+
+// fetchBlobPrefix reads at most n bytes from the start of a blob with an HTTP
+// Range request. The filehost serves blobs with http.ServeFile, which honors
+// Range; a server that ignores it simply yields the first n bytes of a 200
+// response (the body is capped locally). The bytes are not hash-verified: a
+// prefix cannot be, and callers use them only to probe tags.
+func (s *Session) fetchBlobPrefix(hash string, n int64) ([]byte, error) {
+	h := s.Host()
+	if h.URL == "" {
+		return nil, errors.New("no filehost configured")
+	}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(h.URL, "/")+"/"+hash, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", n-1))
+	resp, err := client.HTTPClientFor(h).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusPartialContent, http.StatusOK:
+		return io.ReadAll(io.LimitReader(resp.Body, n))
+	default:
+		return nil, fmt.Errorf("filehost get %s: unexpected status %s", hash, resp.Status)
+	}
+}
+
+// tagBlockSize returns the byte extent of a file's leading metadata block when
+// the container declares it: an ID3v2 tag's synchsafe size, or a FLAC metadata
+// block chain's last-block offset. ok is false for every other container (or
+// when the head is too short/truncated to tell), in which case the caller uses
+// the wider fixed probe.
+func tagBlockSize(head []byte) (n int64, ok bool) {
+	if len(head) >= 10 && string(head[:3]) == "ID3" {
+		size := int64(head[6]&0x7f)<<21 | int64(head[7]&0x7f)<<14 |
+			int64(head[8]&0x7f)<<7 | int64(head[9]&0x7f)
+		if size <= 0 || size > coverTagCap {
+			return 0, false
+		}
+		total := 10 + size
+		if head[5]&0x10 != 0 { // v2.4 footer
+			total += 10
+		}
+		return total, true
+	}
+	if len(head) < 8 || string(head[:4]) != "fLaC" {
+		return 0, false
+	}
+	// Walk the metadata block headers. The block carrying the last-block flag
+	// ends the metadata section; audio frames follow it. A block body that
+	// runs past the head (a large embedded picture, say) means the extent
+	// cannot be computed yet, so the caller falls back to the wide probe.
+	pos := int64(4)
+	for {
+		if pos+4 > int64(len(head)) {
+			return 0, false
+		}
+		h := head[pos]
+		length := int64(head[pos+1])<<16 | int64(head[pos+2])<<8 | int64(head[pos+3])
+		end := pos + 4 + length
+		if end > coverTagCap {
+			return 0, false
+		}
+		if h&0x80 != 0 {
+			return end, true
+		}
+		pos = end
+	}
+}
+
 // ErrNoCover reports that an album carries no cover image at all, as opposed to
 // a cover that exists but could not be fetched. Callers cache this outcome so a
 // coverless album is not re-probed on every tile or queue row.
@@ -179,7 +267,9 @@ func (s *Session) coverBytes(uid, thumbHash string) ([]byte, error) {
 		return nil, ErrNoCover
 	}
 	// A known thumbnail hash (from a query-expanded listing) is fetched
-	// straight away, without reading the album's row.
+	// straight away, without reading the album's row. A missing thumbnail blob
+	// is not fatal: fall through to the source and re-derive it, which also
+	// restores the blob for the next launch.
 	var hintErr error
 	if thumbHash != "" {
 		b, err := s.fetchBlob(thumbHash)
@@ -189,30 +279,32 @@ func (s *Session) coverBytes(uid, thumbHash string) ([]byte, error) {
 		hintErr = err
 	}
 	row, _ := s.Tie.Get(uid) // an absent subject yields a zero Row
-	if th := client.RowFirst(row, "thumbnail"); th != "" {
-		if th == thumbHash {
-			return nil, hintErr // the current thumbnail failed to fetch: retry later
+	if th := client.RowFirst(row, "thumbnail"); th != "" && th != thumbHash {
+		if b, err := s.fetchBlob(th); err == nil { // the relation was created by another view/client
+			return b, nil
 		}
-		return s.fetchBlob(th) // the hint was stale
 	}
 	// ReadTieDir on a non-directory subject yields an empty listing rather
 	// than an error, so a standalone track falls through to probing itself.
 	if dir, err := client.ReadTieDir(s.Tie, client.DirUID(uid)); err == nil {
 		if hash := dirCoverHash(dir); hash != "" {
-			return s.fetchBlob(hash)
+			return s.coverFromBlob(uid, hash)
 		}
 		if hash := firstTrackHash(dir); hash != "" {
 			pic, err := s.trackEmbeddedCover(hash)
-			if err != nil || pic != nil {
-				return pic, err
+			if err != nil {
+				return nil, err
 			}
-			return nil, ErrNoCover
+			if pic == nil {
+				return nil, noCoverOrErr(hintErr)
+			}
+			return s.coverFromImage(uid, pic)
 		}
 		// No files at the root — a multi-disc album files everything below
 		// cd<N>/ (and artwork/): look through the collection's members.
 		if len(dir.SubDirs) > 0 {
 			if hash := s.memberCoverHash(uid); hash != "" {
-				return s.fetchBlob(hash)
+				return s.coverFromBlob(uid, hash)
 			}
 			if rows, err := s.collectionAudioRows(uid); err == nil && len(rows) > 0 {
 				tracks := make([]Track, 0, len(rows))
@@ -225,18 +317,54 @@ func (s *Session) coverBytes(uid, thumbHash string) ([]byte, error) {
 				}
 				sortTracks(tracks)
 				pic, err := s.trackEmbeddedCover(tracks[0].Hash)
-				if err != nil || pic != nil {
-					return pic, err
+				if err != nil {
+					return nil, err
 				}
-				return nil, ErrNoCover
+				if pic == nil {
+					return nil, noCoverOrErr(hintErr)
+				}
+				return s.coverFromImage(uid, pic)
 			}
 		}
 	}
 	if isAudioRow(row) {
 		pic, err := s.trackEmbeddedCover(uid)
-		if err != nil || pic != nil {
-			return pic, err
+		if err != nil {
+			return nil, err
 		}
+		if pic != nil {
+			return s.coverFromImage(uid, pic)
+		}
+	}
+	return nil, noCoverOrErr(hintErr)
+}
+
+// noCoverOrErr reports the outcome of source resolution when it found no
+// cover. If a recorded thumbnail could not be fetched, that failure — not
+// "this album has no cover" — is what the caller should see: the blob may
+// merely be missing, and the next ask retries it.
+func noCoverOrErr(hintErr error) error {
+	if hintErr != nil {
+		return hintErr
+	}
+	return ErrNoCover
+}
+
+// coverFromBlob fetches the cover image stored at hash and turns it into uid's
+// cached thumbnail.
+func (s *Session) coverFromBlob(uid, hash string) ([]byte, error) {
+	raw, err := s.fetchBlob(hash)
+	if err != nil {
+		return nil, err
+	}
+	return s.coverFromImage(uid, raw)
+}
+
+// coverFromImage caches raw as uid's cover thumbnail and returns the small
+// JPEG. Undecodable bytes are as good as no cover: retrying cannot help.
+func (s *Session) coverFromImage(uid string, raw []byte) ([]byte, error) {
+	if thumb := s.coverThumbnail(uid, raw); thumb != nil {
+		return thumb, nil
 	}
 	return nil, ErrNoCover
 }
@@ -252,8 +380,8 @@ func (s *Session) memberCoverHash(uid string) string {
 	for _, r := range rows {
 		files = append(files, client.File{
 			Uid:       r.Key,
-			Filename:  client.RowFirst(r, client.TieFilename.String()),
-			MediaType: client.RowFirst(r, client.TieMediaType.String()),
+			Filename:  client.RowFirst(r, client.RelFilename),
+			MediaType: client.RowFirst(r, client.RelMediaType),
 			TieType:   client.StringToTieType(firstImageType(r)),
 		})
 	}
@@ -262,7 +390,7 @@ func (s *Session) memberCoverHash(uid string) string {
 }
 
 func firstImageType(r client.Row) string {
-	if slices.Contains(client.RowValues(r, client.TieTypeProperty.String()), client.TieImageFile.String()) {
+	if slices.Contains(client.RowValues(r, client.RelType), client.TieImageFile.String()) {
 		return client.TieImageFile.String()
 	}
 	return ""
@@ -309,17 +437,47 @@ func firstTrackHash(dir client.Directory) string {
 // isAudioRow reports whether a subject's triples mark it an audio file, using
 // the raw multi-valued tie-type (a collapsed single TieType is unreliable).
 func isAudioRow(row client.Row) bool {
-	if slices.Contains(client.RowValues(row, client.TieTypeProperty.String()), client.TieAudioFile.String()) {
+	if slices.Contains(client.RowValues(row, client.RelType), client.TieAudioFile.String()) {
 		return true
 	}
-	return strings.HasPrefix(client.RowFirst(row, client.TieMediaType.String()), "audio/")
+	return strings.HasPrefix(client.RowFirst(row, client.RelMediaType), "audio/")
 }
 
-// trackEmbeddedCover fetches a track's blob and returns its first embedded
-// picture's bytes, or (nil, nil) when the track has none — including when its
-// tags are unreadable: the blob downloaded fine, so a retry would change
-// nothing. A download error is returned so the caller retries later.
+// trackEmbeddedCover fetches a track's first embedded picture's bytes, or
+// (nil, nil) when it has none — including when its tags are unreadable: the
+// blob downloaded fine, so a retry would change nothing. A download error is
+// returned so the caller retries later.
+//
+// Only the leading tag block is read, never the audio frames. ID3v2 and FLAC
+// declare that block's extent in its header, so the exact bytes are fetched;
+// other containers get a fixed-width head probe. When the tags are not in that
+// probe (an MP4 with its moov atom at the end) the blob is fetched in full, as
+// before. Without this, a library of FLAC rips downloads a whole track —
+// tens of megabytes — per album just to look for artwork.
 func (s *Session) trackEmbeddedCover(hash string) ([]byte, error) {
+	head, err := s.fetchBlobPrefix(hash, coverHeadBytes)
+	if err == nil {
+		n, exact := tagBlockSize(head)
+		if exact && n <= int64(len(head)) {
+			if pic, parsed := embeddedCoverIn(head[:n]); parsed {
+				return pic, nil
+			}
+		} else if exact {
+			if data, err := s.fetchBlobPrefix(hash, n); err == nil && int64(len(data)) >= n {
+				if pic, parsed := embeddedCoverIn(data[:n]); parsed {
+					return pic, nil
+				}
+			}
+		} else if wide, err := s.fetchBlobPrefix(hash, coverProbeBytes); err == nil {
+			pic, parsed := embeddedCoverIn(wide)
+			// MP4's atom walker reports a clean EOF when its prefix runs out,
+			// making a truncated moov indistinguishable from a tagless file;
+			// only a complete read of a small file settles absence.
+			if parsed && (pic != nil || !isMP4Head(wide) || len(wide) < coverProbeBytes) {
+				return pic, nil
+			}
+		}
+	}
 	data, err := s.fetchBlob(hash)
 	if err != nil {
 		return nil, err
@@ -334,6 +492,40 @@ func (s *Session) trackEmbeddedCover(hash string) ([]byte, error) {
 	return nil, nil
 }
 
+// isMP4Head reports whether prefix starts with an ISO base-media file type
+// atom, the container whose metadata may sit at the opposite end of the file.
+func isMP4Head(prefix []byte) bool {
+	return len(prefix) >= 8 && string(prefix[4:8]) == "ftyp"
+}
+
+// embeddedCoverIn extracts the embedded picture from a file's leading tag
+// bytes. parsed is false when the prefix cannot answer the question —
+// unparseable/truncated tags in a container known to hold them — and the
+// caller must retry with more of the blob. A container the tag parser does not
+// understand cannot carry a picture at all, so that is a settled "none".
+func embeddedCoverIn(prefix []byte) (pic []byte, parsed bool) {
+	if len(prefix) < 8 {
+		return nil, false
+	}
+	switch {
+	case isMP4Head(prefix), string(prefix[:4]) == "fLaC",
+		string(prefix[:4]) == "OggS", string(prefix[:4]) == "DSD ",
+		string(prefix[:3]) == "ID3":
+	default:
+		// WAV, AIFF, bare MP3 frames, ID3v1-only, ...: no picture is possible
+		// through this parser, so do not download the rest of the file.
+		return nil, true
+	}
+	meta, err := tag.ReadFrom(bytes.NewReader(prefix))
+	if err != nil {
+		return nil, false
+	}
+	if pic := meta.Picture(); pic != nil {
+		return pic.Data, true
+	}
+	return nil, true
+}
+
 func isImageFile(f client.File) bool {
 	return f.TieType == client.TieImageFile || strings.HasPrefix(f.MediaType, "image/")
 }
@@ -343,15 +535,15 @@ func isImageFile(f client.File) bool {
 // set. One Get fetches both relations (matching tie-view). A store with no
 // tags yields empty lists, not an error.
 func (s *Session) TagSets() (all, favorites []string, err error) {
-	row, err := s.Tie.Get(client.TieTags.String())
+	row, err := s.Tie.Get(string(client.RelTags))
 	if errors.Is(err, client.ErrNotFound) {
 		return nil, nil, nil
 	}
 	if err != nil {
 		return nil, nil, err
 	}
-	all = client.RowValues(row, client.TieAll.String())
-	favorites = client.RowValues(row, client.TieFavorite.String())
+	all = client.RowValues(row, client.RelAll)
+	favorites = client.RowValues(row, client.RelFavorite)
 	sort.Strings(favorites)
 	return all, favorites, nil
 }
@@ -409,7 +601,7 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 	innerParents := make(map[string][]string)
 	for _, row := range rows {
 		if isPlainDirRow(row) {
-			innerParents[row.Key] = client.RowValues(row, client.TieParent.String())
+			innerParents[row.Key] = client.RowValues(row, client.RelParent)
 		}
 	}
 	for _, row := range rows {
@@ -417,12 +609,12 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 		if !ok {
 			continue
 		}
-		parents := client.RowValues(row, client.TieParent.String())
+		parents := client.RowValues(row, client.RelParent)
 		if a.Kind == AlbumTrack {
 			// member-of names the owning collection directly; disc folders
 			// resolve one level up.
 			parents = append(parents, client.RowValues(row, client.RelMemberOf)...)
-			for _, p := range client.RowValues(row, client.TieParent.String()) {
+			for _, p := range client.RowValues(row, client.RelParent) {
 				parents = append(parents, innerParents[p]...)
 			}
 		}
@@ -430,9 +622,9 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 		switch a.Kind {
 		case AlbumDir, AlbumPlaylist:
 			dirUIDs[a.UID] = true
-			ownAlbum = client.RowFirst(row, client.TieAlbum.String())
+			ownAlbum = client.RowFirst(row, client.RelAlbum)
 		case AlbumTrack:
-			trackAlbum := client.RowFirst(row, client.TieAlbum.String())
+			trackAlbum := client.RowFirst(row, client.RelAlbum)
 			for _, p := range parents {
 				if trackAlbum != "" && childAlbum[p] == "" {
 					childAlbum[p] = trackAlbum
@@ -489,7 +681,7 @@ func (s *Session) LatestAlbumsExcluding(exclude []string) ([]Album, error) {
 	for _, tieType := range []string{client.TieAudioDir.String(), client.TieAudioArchive.String()} {
 		r, _, err := s.Tie.Query(client.QuerySpec{
 			Terms:   []string{tieType},
-			Filter:  client.TieTypeProperty.String(),
+			Filter:  string(client.RelType),
 			Reverse: true,
 			Expand:  true,
 			Limit:   -1,
@@ -519,7 +711,7 @@ func (s *Session) LatestAlbumsExcluding(exclude []string) ([]Album, error) {
 // isPlainDirRow reports whether row is a directory node without a
 // collection label (a disc folder, artwork/, …).
 func isPlainDirRow(row client.Row) bool {
-	types := client.RowValues(row, client.TieTypeProperty.String())
+	types := client.RowValues(row, client.RelType)
 	if !slices.Contains(types, client.TieDirectory.String()) {
 		return false
 	}
@@ -542,27 +734,27 @@ func hasAnyTag(row client.Row, tags []string) bool {
 }
 
 func classifyAlbum(row client.Row) (Album, bool) {
-	types := client.RowValues(row, client.TieTypeProperty.String())
+	types := client.RowValues(row, client.RelType)
 	a := Album{
 		UID: row.Key,
 		Title: firstNonEmpty(
-			client.RowFirst(row, client.TieAlbum.String()),
-			client.RowFirst(row, client.TieName.String()),
-			client.RowFirst(row, client.TieFilename.String()),
+			client.RowFirst(row, client.RelAlbum),
+			client.RowFirst(row, client.RelName),
+			client.RowFirst(row, client.RelFilename),
 		),
 		Artist: firstNonEmpty(
 			client.RowFirst(row, client.RelAlbumArtist),
-			client.RowFirst(row, client.TieArtist.String()),
+			client.RowFirst(row, client.RelArtist),
 		),
-		Year:      client.RowFirst(row, client.TieYear.String()),
+		Year:      client.RowFirst(row, client.RelYear),
 		ThumbHash: client.RowFirst(row, "thumbnail"),
 		Genres:    client.RowValues(row, client.RelGenre),
-		Tags:      client.RowValues(row, client.TieTag.String()),
+		Tags:      client.RowValues(row, client.RelTag),
 		Stats:     client.StatsFromRow(row),
 	}
 	a.AddedAt, _ = client.ParseMediaTime(client.RowFirst(row, client.RelAddedAt))
 	if a.AddedAt.IsZero() {
-		a.AddedAt, _ = client.ParseMediaTime(client.RowFirst(row, client.TieTagDate.String()))
+		a.AddedAt, _ = client.ParseMediaTime(client.RowFirst(row, client.RelTagDate))
 	}
 	a.TrackCount, _ = strconv.Atoi(client.RowFirst(row, client.RelTrackCount))
 	a.Duration, _ = strconv.ParseFloat(client.RowFirst(row, client.RelDuration), 64)
@@ -580,11 +772,11 @@ func classifyAlbum(row client.Row) (Album, bool) {
 	case slices.Contains(types, client.TieAudioFile.String()):
 		a.Kind = AlbumTrack
 		if a.Title == "" {
-			a.Title = client.RowFirst(row, client.TieTitle.String())
+			a.Title = client.RowFirst(row, client.RelTitle)
 		}
 		return a, true
 	}
-	if strings.HasPrefix(client.RowFirst(row, client.TieMediaType.String()), "audio/") {
+	if strings.HasPrefix(client.RowFirst(row, client.RelMediaType), "audio/") {
 		a.Kind = AlbumTrack
 		return a, true
 	}
@@ -775,13 +967,13 @@ func (s *Session) TrackForHash(hash string) (Track, bool) {
 // parent of every track it lists, but not their album).
 func trackFromRow(row client.Row, excludeParent string) Track {
 	t := Track{Hash: row.Key}
-	t.Title = client.RowFirst(row, client.TieTitle.String())
-	t.Artist = client.RowFirst(row, client.TieArtist.String())
-	t.Album = client.RowFirst(row, client.TieAlbum.String())
-	t.Year = client.RowFirst(row, client.TieYear.String())
-	t.Filename = client.RowFirst(row, client.TieFilename.String())
-	t.AlbumUID = trackAlbumUID(client.RowValues(row, client.TieParent.String()), excludeParent)
-	if n, err := strconv.Atoi(client.RowFirst(row, client.TieTrack.String())); err == nil {
+	t.Title = client.RowFirst(row, client.RelTitle)
+	t.Artist = client.RowFirst(row, client.RelArtist)
+	t.Album = client.RowFirst(row, client.RelAlbum)
+	t.Year = client.RowFirst(row, client.RelYear)
+	t.Filename = client.RowFirst(row, client.RelFilename)
+	t.AlbumUID = trackAlbumUID(client.RowValues(row, client.RelParent), excludeParent)
+	if n, err := strconv.Atoi(client.RowFirst(row, client.RelTrack)); err == nil {
 		t.TrackNo = n
 	}
 	if n, err := strconv.Atoi(client.RowFirst(row, client.RelDisc)); err == nil {
@@ -852,8 +1044,8 @@ func (s *Session) discFolderAlbum(uid string) string {
 	}
 	s.discMu.Unlock()
 	up := ""
-	if row, err := s.Tie.Get(uid); err == nil && client.RowHas(row, client.TieTypeProperty.String(), client.TypeDisc) {
-		up = client.RowFirst(row, client.TieParent.String())
+	if row, err := s.Tie.Get(uid); err == nil && client.RowHas(row, client.RelType, client.TypeDisc) {
+		up = client.RowFirst(row, client.RelParent)
 	}
 	s.discMu.Lock()
 	if s.discUp == nil {

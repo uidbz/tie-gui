@@ -13,6 +13,7 @@ import (
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
+	"github.com/uidbz/tie-gui/internal/tietest"
 )
 
 type fakeBackend struct {
@@ -44,7 +45,7 @@ func randHash() string {
 
 func testSession(t *testing.T) *data.Session {
 	t.Helper()
-	cfg := tieclient.TestingConfig()
+	cfg := tietest.Config()
 	conn, err := net.Dial("tcp", "localhost:2161")
 	if err != nil {
 		t.Skipf("tie test-env not running: %v", err)
@@ -114,7 +115,7 @@ func TestRecorderDrainsClassifiesAndDedups(t *testing.T) {
 }
 
 func TestRecorderKeepsSpoolWhenTieIsDown(t *testing.T) {
-	cfg := tieclient.TestingConfig()
+	cfg := tietest.Config()
 	cfg.TripleStoreURL = "http://127.0.0.1:1" // nothing listens
 	for k, c := range cfg.Collections {
 		c.TripleStoreURL = cfg.TripleStoreURL

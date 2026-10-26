@@ -11,6 +11,8 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie/client"
+
+	"github.com/uidbz/tie-gui/internal/tietest"
 )
 
 // The Settings tab wraps its AppTabs in a border center so the tabs have a
@@ -20,7 +22,7 @@ import (
 // the connection editor's dropdown row is visible.
 func TestSettingsTabWrapsTabsInBorder(t *testing.T) {
 	test.NewApp()
-	tc := client.NewTieClientFor(client.TestingConfig(), "testing")
+	tc := client.NewTieClientFor(tietest.Config(), "testing")
 	tieConfigPath = t.TempDir() + "/config.toml"
 
 	tab := makeSettingsTab(tc, func() string { return "testing" },

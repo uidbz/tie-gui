@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/uidbz/tie/client"
+
+	"github.com/uidbz/tie-gui/internal/tietest"
 )
 
 func TestTiePath(t *testing.T) {
@@ -45,7 +47,7 @@ func TestTieURI(t *testing.T) {
 // it). Runs only when the local tie test-env is up, like the client package's
 // own integration tests.
 func TestTieRemoveDeletesTriplesNotBlob(t *testing.T) {
-	tc := client.NewTieClient(client.TestingConfig())
+	tc := client.NewTieClient(tietest.Config())
 	if _, err := tc.ServerVersion(); err != nil {
 		t.Skipf("tie test-env not reachable: %v", err)
 	}
@@ -70,7 +72,7 @@ func TestTieRemoveDeletesTriplesNotBlob(t *testing.T) {
 		if err := os.WriteFile(src, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
-		hash, err := tc.WriteFile(host, "", parent, name, src, nil)
+		hash, err := tc.WriteFile(host, parent, name, src, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +143,7 @@ func TestTieRemoveDeletesTriplesNotBlob(t *testing.T) {
 // afterwards must be a no-op, not an error, so the batch reports only real
 // failures.
 func TestTieRemoveChildOfDeletedDirIsIdempotent(t *testing.T) {
-	tc := client.NewTieClient(client.TestingConfig())
+	tc := client.NewTieClient(tietest.Config())
 	if _, err := tc.ServerVersion(); err != nil {
 		t.Skipf("tie test-env not reachable: %v", err)
 	}
@@ -163,7 +165,7 @@ func TestTieRemoveChildOfDeletedDirIsIdempotent(t *testing.T) {
 	if err := os.WriteFile(src, []byte("nested"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	hash, err := tc.WriteFile(host, "", sub, "nested.txt", src, nil)
+	hash, err := tc.WriteFile(host, sub, "nested.txt", src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -174,7 +174,7 @@ func (t *TieFS) importFile(destDir, srcPath, name string, tags []string, progres
 	if err != nil {
 		return err
 	}
-	hash, err := t.tc.WriteFileWithProgress(host, "", uid, name, srcPath, tags, progress)
+	hash, err := t.tc.WriteFileWithProgress(host, uid, name, srcPath, tags, progress)
 	if err != nil {
 		return err
 	}
@@ -198,42 +198,42 @@ func writeAudioMetadata(tc *client.TieClient, hash, srcPath string) error {
 	}
 	batch := tc.NewBatch()
 	if m.Title != "" {
-		batch.Add(hash, client.TieTitle.String(), m.Title)
+		batch.Add(hash, string(client.RelTitle), m.Title)
 	}
 	if m.Artist != "" {
-		batch.Add(hash, client.TieArtist.String(), m.Artist)
+		batch.Add(hash, string(client.RelArtist), m.Artist)
 	}
 	if m.AlbumArtist != "" {
 		batch.Add(hash, "album-artist", m.AlbumArtist)
 	}
 	if m.Album != "" {
-		batch.Add(hash, client.TieAlbum.String(), m.Album)
+		batch.Add(hash, string(client.RelAlbum), m.Album)
 	}
 	if m.Year != 0 {
-		batch.Add(hash, client.TieYear.String(), strconv.Itoa(m.Year))
+		batch.Add(hash, string(client.RelYear), strconv.Itoa(m.Year))
 	}
 	if m.Track != 0 {
-		batch.Add(hash, client.TieTrack.String(), strconv.Itoa(m.Track))
+		batch.Add(hash, string(client.RelTrack), strconv.Itoa(m.Track))
 	}
 	if m.Duration > 0 {
 		batch.Add(hash, "duration", strconv.FormatFloat(m.Duration, 'f', 3, 64))
 	}
 	if m.TrackTotal != 0 {
-		batch.Set(hash, client.RelTrackTotal, []string{strconv.Itoa(m.TrackTotal)})
+		batch.Set(hash, string(client.RelTrackTotal), []string{strconv.Itoa(m.TrackTotal)})
 	}
 	if m.Disc != 0 {
-		batch.Set(hash, client.RelDisc, []string{strconv.Itoa(m.Disc)})
+		batch.Set(hash, string(client.RelDisc), []string{strconv.Itoa(m.Disc)})
 	}
 	if m.DiscTotal != 0 {
-		batch.Set(hash, client.RelDiscTotal, []string{strconv.Itoa(m.DiscTotal)})
+		batch.Set(hash, string(client.RelDiscTotal), []string{strconv.Itoa(m.DiscTotal)})
 	}
 	if g := client.SplitGenres(m.Genre); len(g) > 0 {
-		batch.Set(hash, client.RelGenre, g)
+		batch.Set(hash, string(client.RelGenre), g)
 	}
 	if m.Composer != "" {
-		batch.Set(hash, client.RelComposer, []string{m.Composer})
+		batch.Set(hash, string(client.RelComposer), []string{m.Composer})
 	}
-	batch.Set(hash, client.RelMetaVersion, []string{client.MetaVersion})
+	batch.Set(hash, string(client.RelMetaVersion), []string{client.MetaVersion})
 	if _, err := tc.Batch(batch); err != nil {
 		return err
 	}
@@ -365,46 +365,18 @@ func (t *TieFS) removeDirContents(uid client.DirUID) error {
 
 // detachChild removes the (key,"parent",parent) edge. When that was the key's
 // last parent, its per-hash metadata is dropped as well; the content blob is
-// left on the filehost. This mirrors the client's unexported detachChild, which
-// the pinned tie v0.6 client does not expose (DeleteFile arrived in v0.7).
+// left on the filehost. The sync makes the unlink durable before the caller
+// moves on to the next child.
 func (t *TieFS) detachChild(key string, parent client.DirUID) error {
-	b := t.tc.NewBatch()
-	b.Delete(key, client.TieParent.String(), string(parent))
-	if _, err := t.tc.Batch(b); err != nil {
-		return err
-	}
-	if err := t.tc.Sync(); err != nil {
-		return err
-	}
-	n, err := t.parentCount(key)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil // still reachable from another directory; keep its metadata
-	}
-	row, err := t.tc.Get(key)
-	if errors.Is(err, client.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	meta := t.tc.NewBatch()
-	for relation, values := range row.Attributes {
-		for _, value := range values {
-			meta.Delete(key, relation, value)
-		}
-	}
-	if _, err := t.tc.Batch(meta); err != nil {
+	if err := client.DeleteFile(t.tc, key, parent); err != nil {
 		return err
 	}
 	return t.tc.Sync()
 }
 
-// deleteDir removes an empty directory's parent edge and path triples, dropping
-// its metadata when no parent remains. It mirrors the client's v0.7 DeleteDir;
-// the pinned v0.6 client only exposes the pieces.
+// deleteDir removes an empty directory from the path tree, dropping its
+// metadata when no parent remains. The emptiness check keeps this package's
+// user-facing "not empty" wording; client.DeleteDir repeats it defensively.
 func (t *TieFS) deleteDir(uid, parent client.DirUID) error {
 	dir, err := client.ReadTieDir(t.tc, uid)
 	if err != nil {
@@ -413,53 +385,10 @@ func (t *TieFS) deleteDir(uid, parent client.DirUID) error {
 	if len(dir.SubDirs) > 0 || len(dir.Files) > 0 || len(dir.Archives) > 0 {
 		return fmt.Errorf("tie: directory %s is not empty", uid)
 	}
-	b := t.tc.NewBatch()
-	b.Delete(string(uid), client.TieParent.String(), string(parent))
-	for _, p := range dir.Paths {
-		b.Delete(string(uid), client.TiePath.String(), p)
-	}
-	if _, err := t.tc.Batch(b); err != nil {
-		return err
-	}
-	if err := t.tc.Sync(); err != nil {
-		return err
-	}
-	n, err := t.parentCount(string(uid))
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil // still reachable through another parent; keep its metadata
-	}
-	row, err := t.tc.Get(string(uid))
-	if errors.Is(err, client.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	meta := t.tc.NewBatch()
-	for relation, values := range row.Attributes {
-		for _, value := range values {
-			meta.Delete(string(uid), relation, value)
-		}
-	}
-	if _, err := t.tc.Batch(meta); err != nil {
+	if err := client.DeleteDir(t.tc, uid, parent); err != nil {
 		return err
 	}
 	return t.tc.Sync()
-}
-
-// parentCount returns how many parent edges key currently has.
-func (t *TieFS) parentCount(key string) (int, error) {
-	row, err := t.tc.Get(key)
-	if errors.Is(err, client.ErrNotFound) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return len(client.RowValues(row, client.TieParent.String())), nil
 }
 
 // parentUID resolves the DirUID of uri's containing directory, returning ""
@@ -478,7 +407,7 @@ func (t *TieFS) parentUIDs(key string) ([]client.DirUID, error) {
 	if err != nil {
 		return nil, err
 	}
-	values := client.RowValues(row, client.TieParent.String())
+	values := client.RowValues(row, client.RelParent)
 	out := make([]client.DirUID, 0, len(values))
 	for _, v := range values {
 		out = append(out, client.DirUID(v))
@@ -537,27 +466,27 @@ func (t *TieFS) LabelDir(dirURI string, label DirLabel) error {
 	}
 	batch := t.tc.NewBatch()
 	if label.Name != "" {
-		batch.Add(string(uid), client.TieFilename.String(), label.Name)
-		batch.Add(string(uid), client.TieName.String(), label.Name)
+		batch.Add(string(uid), string(client.RelFilename), label.Name)
+		batch.Add(string(uid), string(client.RelName), label.Name)
 	}
 	// tag-date is single-valued (the last import/label time); replace the
 	// whole relation so re-labels don't accumulate dates.
-	batch.Set(string(uid), client.TieTagDate.String(), []string{time.Now().Format("2006-01-02 15:04:05.000000")})
+	batch.Set(string(uid), string(client.RelTagDate), []string{time.Now().Format("2006-01-02 15:04:05.000000")})
 	for _, tag := range label.Tags {
 		if tag == "" {
 			continue
 		}
-		batch.Add(string(uid), client.TieTag.String(), tag)
-		batch.Add(client.TieTags.String(), client.TieAll.String(), tag)
+		batch.Add(string(uid), string(client.RelTag), tag)
+		batch.Add(string(client.RelTags), string(client.RelAll), tag)
 	}
 	if label.Artist != "" {
-		batch.Set(string(uid), client.TieArtist.String(), []string{label.Artist})
+		batch.Set(string(uid), string(client.RelArtist), []string{label.Artist})
 	}
 	if label.Album != "" {
-		batch.Set(string(uid), client.TieAlbum.String(), []string{label.Album})
+		batch.Set(string(uid), string(client.RelAlbum), []string{label.Album})
 	}
 	if label.Year != "" {
-		batch.Set(string(uid), client.TieYear.String(), []string{label.Year})
+		batch.Set(string(uid), string(client.RelYear), []string{label.Year})
 	}
 	if _, err := t.tc.Batch(batch); err != nil {
 		return err
@@ -638,7 +567,7 @@ func (t *TieFS) dirPath(uid string) string {
 	if err != nil {
 		return ""
 	}
-	return client.RowFirst(row, client.TiePath.String())
+	return client.RowFirst(row, client.RelPath)
 }
 
 func (t *TieFS) CoTags(include, exclude []string) ([]string, error) {

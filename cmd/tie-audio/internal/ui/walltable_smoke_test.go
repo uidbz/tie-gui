@@ -101,7 +101,7 @@ func ensureSmokeAlbums(t *testing.T, s *data.Session) {
 		t.Fatal("smoke album import:", err)
 	}
 	for _, dir := range []string{one, two} {
-		if err := s.Tie.ImportDir(dir, host, s.Tie.Config.DefaultCollection, "audio-dir", []string{smokeTag}, "", 0); err != nil {
+		if err := s.Tie.ImportDir(dir, host, "audio-dir", []string{smokeTag}, "", 0); err != nil {
 			t.Fatal("smoke album import:", err)
 		}
 	}

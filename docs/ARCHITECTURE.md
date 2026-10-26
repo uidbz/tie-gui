@@ -414,6 +414,14 @@ go func() {
 - Archive covers use the same relation on the archive hash (CoverProvider):
   the tile's initial view fetches the small cover instead of downloading the
   whole archive blob
+- tie-audio album covers use it too, keyed by the album's dir UID (or the
+  track hash for a standalone track): the first resolution derives a 512 px
+  JPEG from `cover.jpg`/`front.jpg` or the first track's embedded picture,
+  uploads it and records the relation, so later launches fetch ~30 KB per
+  album instead of re-reading the source
+- Embedded artwork is found from the leading tag block only, fetched with an
+  HTTP Range request: ID3v2 and FLAC declare that block's size, so a 40 MB
+  FLAC track costs a few hundred KB at most (never the audio frames)
 - Shared across all tie-view clients
 - Benefit: network-cached thumbnails, no local storage
 

@@ -204,7 +204,7 @@ func UploadThumbnail(tc *client.TieClient, host client.FileHost, ownerHash strin
 	if err != nil {
 		return "", err
 	}
-	item := pc.UploadMultipart(host.URL+"/upload/"+thumbHash, bytes.NewReader(jpegBytes), len(jpegBytes), ownerHash+".jpg")
+	item := pc.UploadMultipart(client.FileHostClient(host), thumbHash, bytes.NewReader(jpegBytes), len(jpegBytes), ownerHash+".jpg")
 	if item.ErrorMsg != "" {
 		return "", errors.New(item.ErrorMsg)
 	}

@@ -33,7 +33,7 @@ Fyne fork — hence the monorepo.
 | `third_party/fyne/` | Vendored Fyne fork — **git submodule** tracking the `imgview` branch of `github.com/uidbz/fyne` (replace directive in go.mod) |
 
 The tie module is a pinned dependency (`github.com/uidbz/tie`) fetched from the
-Go module proxy; no local checkout is needed (v0.6.0+ carries the media
+Go module proxy; no local checkout is needed (v0.7.4 carries the media
 model — collection contract, playlists, play history — that tie-audio
 needs). (It was resolved via a `replace` directive to a sibling `../tie`
 checkout until v0.4.2, and again while the media model was unreleased

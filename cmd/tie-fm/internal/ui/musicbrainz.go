@@ -332,7 +332,7 @@ func ensureAlbumCoverArt(tc *client.TieClient, uid client.DirUID, rel *musicbrai
 		return fmt.Errorf("upload cover art: empty result")
 	}
 	batch := tc.NewBatch()
-	batch.Add(string(uid), client.RelThumbnail, up.Items[0].Hash)
+	batch.Add(string(uid), string(client.RelThumbnail), up.Items[0].Hash)
 	if _, err := tc.Batch(batch); err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func mediumForTrack(rel *musicbrainz.Release, t musicbrainz.Track) *musicbrainz.
 }
 
 func parseRowInt(row client.Row, relation string) int {
-	v := client.RowFirst(row, relation)
+	v := client.RowFirst(row, client.Relation(relation))
 	if v == "" {
 		return 0
 	}

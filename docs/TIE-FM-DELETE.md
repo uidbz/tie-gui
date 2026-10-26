@@ -19,10 +19,10 @@ any failures are reported together:
   every parent edge is removed. This mirrors "delete this item" from a search
   result rather than "unlink from this folder".
 
-The pinned tie client is v0.6.0, which predates the exported
-`client.DeleteFile` / `client.DeleteDir` helpers (v0.7). `TieFS` therefore
-mirrors the same operations with batches in `internal/fs/tie.go`
-(`detachChild`, `deleteDir`). The shared-content guard is preserved: metadata
+The pinned tie client (v0.7.4) exposes `client.DeleteFile` /
+`client.DeleteDir`, which `TieFS` delegates to in `internal/fs/tie.go`
+(`detachChild`, `deleteDir`) and follows with `Sync` so the unlink is durable
+before the caller moves on. The shared-content guard is preserved: metadata
 is only dropped when no parent edge remains, so the same content filed in two
 directories survives a delete from one of them. Dropping the last parent also
 drops the subject's other attributes (tags, `member-of`, media metadata).

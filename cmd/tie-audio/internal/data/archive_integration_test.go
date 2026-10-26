@@ -28,6 +28,10 @@ func testEnvConfig() client.Config {
 	cfg.Collection = "Main"
 	cfg.DefaultCollection = "Main"
 	cfg.TripleStoreURL = "http://localhost:2161"
+	// tie v0.7 removed the test-env credentials from the client's default
+	// config; the generated triplestore config still requires them.
+	cfg.Username = "defaultuser"
+	cfg.Password = "defaultpassword"
 	cfg.DefaultFileHosts = []string{"default"}
 	cfg.FileHosts = map[string]client.FileHost{"default": {URL: "http://localhost:2162"}}
 	return cfg
@@ -167,7 +171,7 @@ func TestArchiveTracksIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cover thumbnail does not decode: %v", err)
 	}
-	if w := img.Bounds().Dx(); w > archiveCoverEdge {
-		t.Errorf("cover thumbnail width = %d, want <= %d", w, archiveCoverEdge)
+	if w := img.Bounds().Dx(); w > coverThumbEdge {
+		t.Errorf("cover thumbnail width = %d, want <= %d", w, coverThumbEdge)
 	}
 }

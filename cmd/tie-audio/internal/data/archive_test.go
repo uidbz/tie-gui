@@ -3,6 +3,7 @@ package data
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -23,11 +24,13 @@ import (
 type fakeFilehost struct {
 	*httptest.Server
 
-	mu      sync.Mutex
-	blobs   map[string][]byte
-	puts    int // number of PUT uploads received
-	zipGets int // GETs of the archive blob (cache assertions)
-	zipHash string
+	mu          sync.Mutex
+	blobs       map[string][]byte
+	puts        int   // number of PUT uploads received
+	gets        int   // number of GETs (all blobs)
+	bytesServed int64 // GET response body bytes served
+	zipGets     int   // GETs of the archive blob (cache assertions)
+	zipHash     string
 }
 
 func newFakeFilehost(t *testing.T) *fakeFilehost {
@@ -59,8 +62,29 @@ func newFakeFilehost(t *testing.T) *fakeFilehost {
 			http.NotFound(w, r)
 			return
 		}
-		if r.Method == http.MethodGet && hash == f.zipHash {
-			f.zipGets++
+		if r.Method == http.MethodGet {
+			f.gets++
+			if hash == f.zipHash {
+				f.zipGets++
+			}
+			// Honor a simple "bytes=0-N" Range like http.ServeFile does, so
+			// cover probing really only transfers the requested prefix.
+			if rng := r.Header.Get("Range"); strings.HasPrefix(rng, "bytes=0-") {
+				var end int
+				if _, err := fmt.Sscanf(rng, "bytes=0-%d", &end); err == nil {
+					end++
+					if end > len(blob) {
+						end = len(blob)
+					}
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", end-1, len(blob)))
+					w.Header().Set("Content-Length", fmt.Sprint(end))
+					w.WriteHeader(http.StatusPartialContent)
+					f.bytesServed += int64(end)
+					w.Write(blob[:end])
+					return
+				}
+			}
+			f.bytesServed += int64(len(blob))
 		}
 		w.Write(blob) // serves HEAD (headers only) and GET alike
 	}))

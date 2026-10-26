@@ -4,10 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"image"
-	_ "image/gif" // cover decode
-	"image/jpeg"
-	_ "image/png" // cover decode
 	"io"
 	"net/http"
 	"path"
@@ -15,17 +11,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/disintegration/imaging"
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/io/archivelib"
 	"github.com/uidbz/tie/io/putlib"
 	"github.com/uidbz/tie/metadata/tag"
 )
-
-// archiveCoverEdge is the pixel width a cover extracted from an archive is
-// downscaled to before it is stored as the archive's thumbnail, matching the
-// cover wall's decode-side cap so later fetches stay small.
-const archiveCoverEdge = 512
 
 // archiveTracks resolves an audio-archive album to its playable tracks.
 //
@@ -165,7 +155,7 @@ func (s *Session) resolveArchive(a Album, host client.FileHost) ([]Track, error)
 			coverData = embeddedCover
 		}
 		if coverData != nil {
-			s.storeArchiveCover(a.UID, pc, host, coverData)
+			s.coverThumbnail(a.UID, coverData)
 		}
 	}
 	return tracks, nil
@@ -195,34 +185,6 @@ func coverScoreOf(name string) int {
 	}
 }
 
-// storeArchiveCover scales img, uploads it as the archive's cover thumbnail
-// and records the (archiveUID, "thumbnail", thumbHash) relation. Every step
-// is best effort: failures are logged and the album simply stays coverless.
-func (s *Session) storeArchiveCover(archiveUID string, pc putlib.PutConfig, host client.FileHost, img []byte) {
-	decoded, _, err := image.Decode(bytes.NewReader(img))
-	if err != nil {
-		return
-	}
-	if w := decoded.Bounds().Dx(); w > archiveCoverEdge {
-		decoded = imaging.Resize(decoded, archiveCoverEdge, 0, imaging.Lanczos)
-	}
-	buf := &bytes.Buffer{}
-	if err := jpeg.Encode(buf, decoded, &jpeg.Options{Quality: 90}); err != nil {
-		return
-	}
-	thumbHash, err := pc.AddressOf(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		return
-	}
-	if err := ensureBlob(pc, host, thumbHash, buf.Bytes(), archiveUID[:8]+"-cover.jpg"); err != nil {
-		fmt.Println("Error uploading archive cover:", err)
-		return
-	}
-	if err := s.Tie.Set(archiveUID, "thumbnail", []string{thumbHash}); err != nil {
-		fmt.Println("Error recording archive cover:", err)
-	}
-}
-
 // ensureBlob makes hash fetchable from the filehost, uploading data when the
 // blob is absent. The existence check is a HEAD request, so a member that any
 // client has already extracted costs one round-trip and no bytes.
@@ -234,7 +196,7 @@ func ensureBlob(pc putlib.PutConfig, host client.FileHost, hash string, data []b
 	if ok {
 		return nil
 	}
-	item := pc.UploadMultipart(host.URL+"/upload/"+hash, bytes.NewReader(data), len(data), name)
+	item := pc.UploadMultipart(client.FileHostClient(host), hash, bytes.NewReader(data), len(data), name)
 	if item.ErrorMsg != "" {
 		return errors.New(item.ErrorMsg)
 	}
