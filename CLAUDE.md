@@ -1962,7 +1962,7 @@ Both apps use the tie client's new `Search` request (tie `client/search.go`,
 `docs/search.md`) rather than building their own index.
 
 **Shared model.** `client.AudioSearchProfile` (title/album/album-artist/
-artist/filename, scoped to audio-file/audio-dir/audio-archive) and
+artist/genre/tag/filename, scoped to audio-file/audio-dir/audio-archive) and
 `client.FileSearchProfile` (filename/name, scoped to directory plus every
 file/archive type) are the vocabularies. Search is case/accent-folded,
 `words`-mode by default (different tokens may match different fields), and
