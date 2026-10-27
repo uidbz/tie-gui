@@ -14,6 +14,11 @@ tie-fm browses two kinds of location side by side:
 
 ## Features
 
+- **Free-text search** over tie filenames and directory names: type in the
+  search row (or press the toolbar search icon), get ranked results in the
+  table, activate a result to open/enter it, and Clear/Back to return to the
+  location you searched from. Search is tie-only for now; local/MTP panes show
+  that it is unavailable.
 - Twin panels with independent navigation history, breadcrumb, and a favorites
   sidebar (bookmarks).
 - Local file operations: copy, move, and delete, with a progress view. Delete

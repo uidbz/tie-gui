@@ -1955,3 +1955,47 @@ last played > 180 d; `log1p(plays)·(1−e^(−days/180))`), On this day (±3 d 
 earlier years), Favorites, Never played (in the library > 30 d), Your
 playlists. "See all" puts a shelf on the wall (`feedList`); track tiles play
 the album from that track (`playFromAlbum`).
+
+## tie-audio and tie-fm free-text search
+
+Both apps use the tie client's new `Search` request (tie `client/search.go`,
+`docs/search.md`) rather than building their own index.
+
+**Shared model.** `client.AudioSearchProfile` (title/album/album-artist/
+artist/filename, scoped to audio-file/audio-dir/audio-archive) and
+`client.FileSearchProfile` (filename/name, scoped to directory plus every
+file/archive type) are the vocabularies. Search is case/accent-folded,
+`words`-mode by default (different tokens may match different fields), and
+returns ranked subject hits with optional expanded attributes. No matches is a
+normal empty result. The server caches a corpus per collection and invalidates
+it on writes; the apps do not manage that.
+
+**tie-audio (`internal/data/search.go`, `internal/ui/browse.go`).**
+`Session.Search` expands the audio hits, fetches the album rows named by each
+track hit's `member-of`/`parent` in one `Expand`, then reuses
+`albumsFromRows` (extracted from `QueryAlbums`) so an album is one tile and a
+standalone track is a track tile. Results are re-ordered by the first hit that
+named each album. `data.SearchWithin` filters a result to the current wall's
+UID set for the "Current selection" checkbox. The UI is a new `feedSearch`
+wall feed:
+
+- desktop: a search row under the Covers/Table tabs (entry + "Current
+  selection" check + result status), installed by `decorateContent`;
+- compact: ☰ → "Search…" opens the same flow through a one-field dialog;
+- `startSearch` runs `ReadCustomAsync`, guards against a superseded query with
+  `feed != feedSearch || searchQuery != query`, and re-runs through
+  `reloadWall`; `clearSearch` restores the tag wall (when the selection still
+  has terms) or the latest wall. Submitting fewer than two characters clears.
+
+**tie-fm (`internal/fs/tie.go`, `internal/ui/filemanager.go`).**
+`TieFS.Search` implements the new `fs.Searcher` interface: it calls
+`FileSearchProfile`, maps expanded rows to `fs.Entry` (name from
+filename/name, path from `path`, `IsDir` from `tie-type`, size/date from
+filesize/tag-date) and drops entries without a path. The file manager has a
+search row under the breadcrumb, a toolbar search action that focuses it, and
+a Clear button/status line; `searchActive` makes `reload` re-run the query and
+makes `setPath`/`goBack`/`goUp` leave search mode. Results keep the server's
+rank with directories first; activating a row opens a file or enters a
+directory through the existing `activate` path. Search is offered only when
+the current provider implements `fs.Searcher` (tie); local/MTP panes explain
+that it is unavailable.

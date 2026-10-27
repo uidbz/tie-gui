@@ -575,11 +575,17 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 	if err != nil {
 		return nil, err
 	}
-	// tie import tags both the audio-dir and each of its files, so a query
-	// returns the album dir alongside all its tracks. Collect the dir UIDs
-	// first, then drop any single track that belongs to one of those dirs so
-	// each album shows as one tile. Standalone tracks (no shown parent dir)
-	// still appear.
+	return s.albumsFromRows(rows), nil
+}
+
+// albumsFromRows classifies expanded rows into the wall's album model. It is
+// shared by tag queries and free-text search: tie import tags both the album
+// directory and each of its tracks, so a multi-row result would otherwise show
+// an album tile plus one tile per track.
+func (s *Session) albumsFromRows(rows []client.Row) []Album {
+	// Collect the dir UIDs first, then drop any single track that belongs to
+	// one of those dirs so each album shows as one tile. Standalone tracks (no
+	// shown parent dir) still appear.
 	type classified struct {
 		album    Album
 		parents  []string
@@ -658,7 +664,7 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 		albums = append(albums, it.album)
 	}
 	s.rememberThumbs(albums)
-	return albums, nil
+	return albums
 }
 
 // LatestAlbums returns every album in the collection (audio dirs and audio

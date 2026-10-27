@@ -1,12 +1,14 @@
 package fs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -110,6 +112,72 @@ func (t *TieFS) List(uri string) ([]Entry, error) {
 		})
 	}
 	return entries, nil
+}
+
+// Search runs a free-text search over the tie collection's filenames and
+// directory names. It returns ranked entries and the total match count before
+// paging. Entries without a stored path are omitted: search results are for
+// navigation, and an entry with no path has nowhere to go.
+func (t *TieFS) Search(ctx context.Context, query string, offset, limit int) ([]Entry, int, error) {
+	spec := client.FileSearchProfile.Spec(query)
+	spec.Offset = offset
+	if limit > 0 {
+		spec.Limit = limit
+	}
+	spec.Expand = true
+
+	matches, total, err := t.tc.SearchContext(ctx, spec)
+	if err != nil {
+		return nil, 0, err
+	}
+	entries := make([]Entry, 0, len(matches))
+	for _, m := range matches {
+		attrs := m.Attributes
+		types := attrs[string(client.RelType)]
+		isDir := slices.Contains(types, client.TieDirectory.String())
+
+		name := firstAttribute(attrs, client.RelFilename)
+		if !isDir && name == "" {
+			name = firstAttribute(attrs, client.RelName)
+		}
+		rawPath := firstAttribute(attrs, client.RelPath)
+		if rawPath == "" {
+			continue
+		}
+		clean := strings.TrimPrefix(rawPath, client.FileURIScheme)
+		if name == "" {
+			name = path.Base(clean)
+		}
+		if name == "" {
+			name = m.Key
+		}
+		size, _ := strconv.ParseInt(firstAttribute(attrs, client.RelFilesize), 10, 64)
+		mod := time.Time{}
+		if at, ok := client.ParseMediaTime(firstAttribute(attrs, client.RelTagDate)); ok {
+			mod = at
+		}
+		entries = append(entries, Entry{
+			Name:    name,
+			Path:    tieURI(clean),
+			IsDir:   isDir,
+			Size:    size,
+			ModTime: mod,
+			Hash:    m.Key,
+			Tags:    attrs[string(client.RelTag)],
+		})
+	}
+	return entries, total, nil
+}
+
+// firstAttribute returns the first non-empty value of relation in an expanded
+// row, or "".
+func firstAttribute(attrs map[string][]string, relation client.Relation) string {
+	for _, v := range attrs[string(relation)] {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (t *TieFS) Materialize(e Entry) (string, error) {

@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"image/color"
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -81,6 +83,18 @@ type FileManager struct {
 	// wires it.
 	preview *previewController
 
+	// free-text search state (tie only). searchActive means the table is
+	// showing search results rather than a directory listing; searchBasePath is
+	// the location to restore when the search is cleared.
+	searchEntry    *widget.Entry
+	searchStatus   *widget.Label
+	searchClear    *widget.Button
+	searchActive   bool
+	searchQuery    string
+	searchTotal    int
+	searchBasePath string
+	searchCancel   context.CancelFunc
+
 	history []string
 	histIdx int
 }
@@ -140,6 +154,7 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 		widget.NewToolbarAction(theme.NavigateNextIcon(), fm.goForward),
 		widget.NewToolbarAction(theme.MoveUpIcon(), fm.goUp),
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() { fm.reload() }),
+		widget.NewToolbarAction(theme.SearchIcon(), fm.focusSearch),
 		widget.NewToolbarAction(theme.FolderNewIcon(), fm.newDir),
 		toolbarButtonItem{fm.terminalButton},
 		widget.NewToolbarSeparator(),
@@ -149,7 +164,19 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	fm.breadcrumb = container.NewHBox()
 	fm.tagPanel = NewTagPanel(fm)
 
-	top := container.NewVBox(fm.toolbar, fm.addr, fm.breadcrumb)
+	// Free-text search: one entry under the breadcrumb, a status line and a
+	// Clear button. Search is a temporary view of tie results; navigating away
+	// clears it.
+	fm.searchEntry = widget.NewEntry()
+	fm.searchEntry.SetPlaceHolder("Search filenames and directories…")
+	fm.searchEntry.OnSubmitted = fm.runSearch
+	fm.searchStatus = widget.NewLabel("")
+	fm.searchStatus.Hide()
+	fm.searchClear = widget.NewButton("Clear", fm.clearSearch)
+	fm.searchClear.Disable()
+	searchRow := container.NewBorder(nil, nil, fm.searchClear, nil, fm.searchEntry)
+
+	top := container.NewVBox(fm.toolbar, fm.addr, fm.breadcrumb, searchRow, fm.searchStatus)
 	center := fm.table.Instance
 	fm.content = container.NewBorder(top, nil, nil, fm.tagPanel.Container, center)
 
@@ -313,7 +340,127 @@ func (fm *FileManager) navigateTo(p string) {
 	fm.setPath(p)
 }
 
+// --- free-text search ---
+
+// focusSearch focuses the search entry (toolbar action).
+func (fm *FileManager) focusSearch() {
+	fm.markActive()
+	if fm.win != nil && fm.searchEntry != nil {
+		fm.win.Canvas().Focus(fm.searchEntry)
+	}
+}
+
+// runSearch runs a tie search and displays the ranked results in this pane's
+// table. It is the OnSubmitted handler of the search entry and also the reload
+// path while a search is active.
+func (fm *FileManager) runSearch(query string) {
+	query = strings.TrimSpace(query)
+	if len([]rune(query)) < 2 {
+		fm.clearSearch()
+		return
+	}
+	base := fm.searchBasePath
+	if !fm.searchActive || base == "" {
+		base = fm.pathValue()
+		fm.searchBasePath = base
+	}
+	provider := fm.registry.For(base)
+	searcher, ok := provider.(fs.Searcher)
+	if !ok {
+		dialog.ShowInformation("Search", "Search is available while browsing a tie collection.", fm.win)
+		return
+	}
+	if fm.searchCancel != nil {
+		fm.searchCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	fm.searchCancel = cancel
+	fm.searchActive = true
+	fm.searchQuery = query
+	fm.searchClear.Enable()
+	fm.searchStatus.SetText("Searching…")
+	fm.searchStatus.Show()
+
+	go func() {
+		entries, total, err := searcher.Search(ctx, query, 0, 500)
+		fyne.Do(func() {
+			if !fm.searchActive || fm.searchQuery != query {
+				return // a newer query won
+			}
+			if err != nil {
+				fm.searchStatus.SetText("")
+				fm.searchStatus.Hide()
+				dialog.ShowError(err, fm.win)
+				return
+			}
+			showHidden := fm.cfg != nil && fm.cfg.ShowHidden
+			entries = visibleEntries(entries, showHidden)
+			// Keep the server's rank within each group, but show directories
+			// before files: a result list is still a file browser.
+			sort.SliceStable(entries, func(i, j int) bool {
+				return entries[i].IsDir && !entries[j].IsDir
+			})
+			fm.entries = entries
+			fm.searchTotal = total
+			fm.table.ClearFilter()
+			fm.table.ResetPage()
+			fm.table.Refresh()
+			fm.refreshPreview()
+
+			text := fmt.Sprintf("%d result", total)
+			if total != 1 {
+				text += "s"
+			}
+			if total > len(entries) {
+				text += fmt.Sprintf(" (showing %d)", len(entries))
+			}
+			fm.searchStatus.SetText(fmt.Sprintf("%s for “%s”", text, query))
+			fm.searchStatus.Show()
+		})
+	}()
+}
+
+// clearSearch leaves the result view and restores the location search started
+// from.
+func (fm *FileManager) clearSearch() {
+	base := fm.searchBasePath
+	fm.cancelSearchState()
+	if fm.searchEntry != nil {
+		fm.searchEntry.SetText("")
+	}
+	if base != "" {
+		fm.setPath(base)
+	} else {
+		fm.reload()
+	}
+}
+
+// cancelSearchState drops the active query and its in-flight request without
+// touching the listing. setPath calls it before navigating, so opening a result
+// exits search mode.
+func (fm *FileManager) cancelSearchState() {
+	if fm.searchCancel != nil {
+		fm.searchCancel()
+		fm.searchCancel = nil
+	}
+	fm.searchActive = false
+	fm.searchQuery = ""
+	fm.searchTotal = 0
+	fm.searchBasePath = ""
+	if fm.searchStatus != nil {
+		fm.searchStatus.SetText("")
+		fm.searchStatus.Hide()
+	}
+	if fm.searchClear != nil {
+		fm.searchClear.Disable()
+	}
+}
+
 func (fm *FileManager) setPath(p string) {
+	fm.cancelSearchState()
+	if fm.searchEntry != nil {
+		fm.searchEntry.SetText("")
+	}
 	fm.currentPath.Set(p)
 	fm.addr.SetText(p)
 	fm.updateTerminalButton()
@@ -327,6 +474,10 @@ func (fm *FileManager) setPath(p string) {
 func (fm *FileManager) reload() {
 	fm.table.ClearSelection()
 	fm.selectedEntries = nil
+	if fm.searchActive {
+		fm.runSearch(fm.searchQuery)
+		return
+	}
 	provider := fm.registry.For(fm.pathValue())
 	var entries []fs.Entry
 	var err error
@@ -364,6 +515,10 @@ func visibleEntries(entries []fs.Entry, showHidden bool) []fs.Entry {
 }
 
 func (fm *FileManager) goUp() {
+	if fm.searchActive {
+		fm.clearSearch()
+		return
+	}
 	p := fm.pathValue()
 	if fs.IsTie(p) {
 		tp := strings.TrimPrefix(p, "tie:")
@@ -397,6 +552,10 @@ func (fm *FileManager) pushHistory(p string) {
 }
 
 func (fm *FileManager) goBack() {
+	if fm.searchActive {
+		fm.clearSearch()
+		return
+	}
 	if fm.histIdx <= 0 {
 		return
 	}

@@ -5,6 +5,7 @@
 package fs
 
 import (
+	"context"
 	"io"
 	"strings"
 	"time"
@@ -47,6 +48,15 @@ type TagStore interface {
 	ListFavoriteTags() ([]string, error)
 	AddFavoriteTag(tag string) error
 	RemoveFavoriteTag(tag string) error
+}
+
+// Searcher is implemented by backends that support free-text search over
+// their own namespace (tie). The UI type-asserts a FileSystem to Searcher to
+// enable the search box; local/MTP backends may implement it later.
+type Searcher interface {
+	// Search returns ranked entries and the total match count before paging.
+	// An empty query or no matches is an empty slice with a nil error.
+	Search(ctx context.Context, query string, offset, limit int) ([]Entry, int, error)
 }
 
 // StatInfo is a backend-neutral metadata summary for one entry, rendered by the

@@ -8,6 +8,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -29,6 +30,7 @@ const (
 	feedDir                    // a Files-tab directory listing
 	feedHome                   // the Home page (home.go)
 	feedList                   // a fixed album list (a Home shelf's "See all")
+	feedSearch                 // a free-text search result wall
 )
 
 // browsePage is the album cover wall: a gallery grid driven by a Tags/Files/
@@ -69,6 +71,18 @@ type browsePage struct {
 	wallTable *wallTable
 	// home is the Home page, built on first use.
 	home *homeView
+
+	// Free-text search state. searchEntry/searchStatus live in the desktop
+	// decorator; the compact layout reaches the same flow through the ☰ menu's
+	// "Search…" item. searchPrevFeed is the feed to restore when the query is
+	// cleared.
+	searchEntry    *widget.Entry
+	searchScope    *widget.Check
+	searchStatus   *widget.Label
+	searchBox      *fyne.Container
+	searchQuery    string
+	searchPrevFeed wallFeed
+
 	// onFeedChanged, when set, is called after the wall switched feeds (the
 	// App re-highlights its nav bar: Home vs Albums).
 	onFeedChanged func()
@@ -189,6 +203,7 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 		}
 		items := []*fyne.MenuItem{
 			fyne.NewMenuItem("Home", b.showHome),
+			fyne.NewMenuItem("Search…", b.promptSearch),
 			fyne.NewMenuItem(label, func() { b.fsTree.SetShowHidden(!b.fsTree.showHidden) }),
 			fyne.NewMenuItem("Reload albums", b.reloadWall),
 			// The full listing from anywhere (a tag wall, a Files directory):
@@ -439,6 +454,7 @@ func (b *browsePage) showSettingsTab() {
 
 // refreshAlbums re-queries the album wall for the current tag selection.
 func (b *browsePage) refreshAlbums(include, exclude []string) {
+	b.resetSearchUI()
 	// The wall no longer shows a directory listing, so a later "Reload
 	// albums" must not resurrect one over the tag results.
 	b.fsTree.mu.Lock()
@@ -457,10 +473,148 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 	b.showWall()
 }
 
+// ensureSearchBar builds the desktop search row once. The compact layout has
+// no decorator, so it uses the ☰ menu's "Search…" dialog instead; both paths
+// land in startSearch.
+func (b *browsePage) ensureSearchBar() fyne.CanvasObject {
+	if b.searchBox != nil {
+		return b.searchBox
+	}
+	b.searchEntry = widget.NewEntry()
+	b.searchEntry.SetPlaceHolder("Search albums, artists, tracks…")
+	b.searchEntry.OnSubmitted = func(s string) { b.startSearch(s) }
+	b.searchScope = widget.NewCheck("Current selection", nil)
+	b.searchStatus = widget.NewLabel("")
+	b.searchStatus.Hide()
+	row := container.NewBorder(nil, nil, b.searchScope, nil, b.searchEntry)
+	b.searchBox = container.NewVBox(row, b.searchStatus)
+	return b.searchBox
+}
+
+// promptSearch is the compact/layout-independent entry point: a one-field
+// dialog that feeds startSearch.
+func (b *browsePage) promptSearch() {
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder("Artist, album or track")
+	entry.SetText(b.searchQuery)
+	dialog.ShowCustomConfirm("Search", "Search", "Cancel", entry, func(ok bool) {
+		if ok {
+			b.startSearch(entry.Text)
+		}
+	}, b.win)
+}
+
+// startSearch runs a free-text search and shows the result as an album wall.
+// It is also the feed handler for reloadWall. "Current selection" restricts
+// the results to the albums already on a tag wall.
+func (b *browsePage) startSearch(query string) {
+	query = strings.TrimSpace(query)
+	if len([]rune(query)) < 2 {
+		b.clearSearch()
+		return
+	}
+	if b.feed != feedSearch {
+		b.searchPrevFeed = b.feed
+	}
+	b.albumOpen = false
+	b.fsTree.mu.Lock()
+	b.fsTree.currentDir = ""
+	b.fsTree.mu.Unlock()
+	b.feed = feedSearch
+	b.searchQuery = query
+	if b.searchEntry != nil && b.searchEntry.Text != query {
+		b.searchEntry.SetText(query)
+	}
+
+	var allowed map[string]bool
+	if b.searchScope != nil && b.searchScope.Checked && b.searchPrevFeed == feedTags {
+		allowed = make(map[string]bool, len(b.albums))
+		for _, a := range b.albums {
+			allowed[a.UID] = true
+		}
+	}
+
+	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
+		result, err := b.session.Search(query, 0)
+		if err != nil {
+			fmt.Println("Error searching albums:", err)
+			fyne.Do(func() {
+				if b.searchStatus != nil {
+					b.searchStatus.SetText("Search failed: " + err.Error())
+					b.searchStatus.Show()
+				}
+			})
+			return nil
+		}
+		if allowed != nil {
+			result = data.SearchWithin(result, allowed)
+		}
+		albums := result.Albums
+		fyne.Do(func() {
+			if b.feed != feedSearch || b.searchQuery != query {
+				return // superseded by a newer query or feed
+			}
+			b.setWallAlbums(albums)
+			if b.searchStatus != nil {
+				text := fmt.Sprintf("%d albums", len(albums))
+				if result.Total > len(albums) {
+					text += fmt.Sprintf(" · %d matches", result.Total)
+				}
+				b.searchStatus.SetText(text + " for “" + query + "”")
+				b.searchStatus.Show()
+			}
+		})
+		return b.readers(albums)
+	})
+	b.covers.Clear()
+	b.showWall()
+}
+
+// resetSearchUI clears the search row and status when the wall leaves the
+// search feed (a tag selection, Latest, a directory). startSearch owns the
+// opposite transition and does not call it.
+func (b *browsePage) resetSearchUI() {
+	b.searchQuery = ""
+	b.searchPrevFeed = feedNone
+	if b.searchEntry != nil {
+		b.searchEntry.SetText("")
+	}
+	if b.searchStatus != nil {
+		b.searchStatus.SetText("")
+		b.searchStatus.Hide()
+	}
+}
+
+// clearSearch leaves the result wall and returns to the feed that started the
+// search (tag selection or latest) when possible.
+func (b *browsePage) clearSearch() {
+	if b.feed != feedSearch {
+		return
+	}
+	if b.searchEntry != nil {
+		b.searchEntry.SetText("")
+	}
+	if b.searchStatus != nil {
+		b.searchStatus.SetText("")
+		b.searchStatus.Hide()
+	}
+	b.searchQuery = ""
+	prev := b.searchPrevFeed
+	b.searchPrevFeed = feedNone
+	if prev == feedTags {
+		if include, exclude := b.ts.SelectedTags(); len(include) > 0 || len(exclude) > 0 {
+			b.refreshAlbums(include, exclude)
+			return
+		}
+	}
+	b.refreshLatest()
+}
+
 // refreshLatest feeds the wall with every album in the collection, most
 // recently imported first (the startup "latest" page, and the wall for an
 // empty tag selection). Excluded tags in the current selection still apply.
 func (b *browsePage) refreshLatest() {
+	b.resetSearchUI()
 	_, exclude := b.ts.SelectedTags()
 	b.fsTree.mu.Lock()
 	b.fsTree.currentDir = ""
@@ -524,6 +678,9 @@ func (b *browsePage) reloadWall() {
 		b.fsTree.reset()
 		in, ex := b.ts.SelectedTags()
 		b.refreshAlbums(in, ex)
+	case feedSearch:
+		b.fsTree.reset()
+		b.startSearch(b.searchQuery)
 	}
 }
 

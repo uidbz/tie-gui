@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,6 +47,64 @@ func TestTieURI(t *testing.T) {
 // the filehost for retention to collect (shared content may still reference
 // it). Runs only when the local tie test-env is up, like the client package's
 // own integration tests.
+// TestTieSearchFindsFilesAndDirectories exercises the fs.Searcher
+// implementation used by the file manager's search box.
+func TestTieSearchFindsFilesAndDirectories(t *testing.T) {
+	tc := client.NewTieClient(tietest.Config())
+	if _, err := tc.ServerVersion(); err != nil {
+		t.Skipf("tie test-env not reachable: %v", err)
+	}
+	host, err := tc.ResolveHost("")
+	if err != nil {
+		t.Fatalf("ResolveHost: %v", err)
+	}
+
+	rootPath := fmt.Sprintf("/tie-fm-search-%d", time.Now().UnixNano())
+	root, err := tc.MkTieDirAll(client.FileURIScheme + rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tfs := NewTieFS(tc)
+	t.Cleanup(func() {
+		_ = tfs.Remove(Entry{Name: filepath.Base(rootPath), Path: "tie:" + rootPath, IsDir: true, Hash: string(root)})
+	})
+	if err := tfs.LabelDir("tie:"+rootPath, DirLabel{Name: "SearchFixtureDir"}); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "searchable-file.txt")
+	if err := os.WriteFile(src, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tc.WriteFile(host, root, "searchable-file.txt", src, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, total, err := tfs.Search(context.Background(), "searchable-file", 0, 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if total != 1 || len(entries) != 1 {
+		t.Fatalf("file search = %v (total %d), want one file", entries, total)
+	}
+	if entries[0].Name != "searchable-file.txt" || entries[0].IsDir {
+		t.Errorf("file entry = %+v", entries[0])
+	}
+	if entries[0].Path != tieURI(client.FileURIScheme+rootPath+"/searchable-file.txt") {
+		t.Errorf("file path = %q", entries[0].Path)
+	}
+
+	entries, total, err = tfs.Search(context.Background(), "SearchFixtureDir", 0, 10)
+	if err != nil {
+		t.Fatalf("directory search: %v", err)
+	}
+	if total != 1 || len(entries) != 1 {
+		t.Fatalf("directory search = %v (total %d), want one directory", entries, total)
+	}
+	if !entries[0].IsDir || entries[0].Name != "SearchFixtureDir" {
+		t.Errorf("directory entry = %+v", entries[0])
+	}
+}
+
 func TestTieRemoveDeletesTriplesNotBlob(t *testing.T) {
 	tc := client.NewTieClient(tietest.Config())
 	if _, err := tc.ServerVersion(); err != nil {

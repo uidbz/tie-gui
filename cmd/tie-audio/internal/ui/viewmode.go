@@ -32,7 +32,8 @@ func (b *browsePage) decorateContent(o fyne.CanvasObject) fyne.CanvasObject {
 	}
 	tabs := b.ensureViewTabs()
 	tabs.setActive(b.session.Cfg.BrowseView)
-	return container.NewBorder(tabs.object, nil, nil, nil, o)
+	head := container.NewVBox(tabs.object, b.ensureSearchBar())
+	return container.NewBorder(head, nil, nil, nil, o)
 }
 
 // setViewTabsEnabled turns the desktop view tabs on for browse content and off
