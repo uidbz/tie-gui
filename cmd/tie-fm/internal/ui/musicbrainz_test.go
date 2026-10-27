@@ -6,6 +6,8 @@ import (
 
 	"fyne.io/fyne/v2"
 
+	"github.com/uidbz/tie/client"
+
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/musicbrainz"
 )
@@ -97,6 +99,46 @@ func TestTieParentPath(t *testing.T) {
 		if got := tieParentPath(in); got != want {
 			t.Errorf("tieParentPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestApplyReleaseToGroupTagsOnly(t *testing.T) {
+	g := client.AlbumGroup{
+		Artist: "Local Artist", Album: "Local Album", Year: 2001,
+		Dest: "/local/2001 - Local Album",
+	}
+	rel := &musicbrainz.Release{
+		Title:  "MB Album",
+		Artist: musicbrainz.Artist{Name: "MB Artist"},
+		Year:   1999,
+	}
+
+	// Tags-only: the match is recorded but never rewrites identity/placement.
+	applyReleaseToGroup(&g, rel, "/{albumartist}/{year} - {album}", true)
+	if g.Artist != "Local Artist" || g.Album != "Local Album" ||
+		g.Year != 2001 || g.Dest != "/local/2001 - Local Album" {
+		t.Errorf("tags-only rewrote the group: %+v", g)
+	}
+
+	// A full match rewrites both the identity and the rendered destination.
+	applyReleaseToGroup(&g, rel, "/{albumartist}/{year} - {album}", false)
+	if g.Artist != "MB Artist" || g.Album != "MB Album" ||
+		g.Year != 1999 || g.Dest != "/MB Artist/1999 - MB Album" {
+		t.Errorf("full match = %+v", g)
+	}
+}
+
+func TestAlbumPlanSummaryTagsOnly(t *testing.T) {
+	plan := []client.AlbumGroup{{SourceDir: "/a", Size: 1024}}
+	matches := map[string]*musicbrainz.Release{"/a": {Title: "x"}}
+
+	full := albumPlanSummary(plan, []bool{true}, matches, false)
+	if strings.Contains(full, "tags only") {
+		t.Errorf("full-match summary mentions tags only: %q", full)
+	}
+	tagsOnly := albumPlanSummary(plan, []bool{true}, matches, true)
+	if !strings.Contains(tagsOnly, "(tags only)") {
+		t.Errorf("tags-only summary = %q", tagsOnly)
 	}
 }
 

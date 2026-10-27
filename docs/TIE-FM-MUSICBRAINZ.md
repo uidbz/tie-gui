@@ -5,7 +5,9 @@ the tie store. Two places use it:
 
 * **Import as albums…** (local directories): match each scanned album before or
   during review; the chosen release drives the album metadata, the rendered
-  destination, per-track titles/numbers and (optionally) cover art.
+  destination, per-track titles/numbers and (optionally) cover art — or, with
+  **Only import tags from MusicBrainz**, just adds the release's
+  genres/community tags.
 * **tie: paths**: right-click an album directory or an audio file →
   **MusicBrainz…** to match and re-tag an already imported item.
 
@@ -39,16 +41,24 @@ FetchCoverArt = true
 ## Album import
 
 1. Right-click local directories → **Import as albums…**.
-2. The form gains two options (defaults from the settings):
+2. The form gains three options (defaults from the settings):
    * **Look up releases on MusicBrainz** — after the scan, every album is
      searched and the best match (score ≥ 0.55) is applied automatically.
+   * **Only import tags from MusicBrainz (no metadata)** — keep the album's own
+     tags/placement and apply only the matched release's genres/community tags
+     after import (the same union the tag panel's tags-only action uses).
+     Requires the lookup; it disables the cover-art option and neither MBIDs
+     nor track/album metadata are written. The review dialog still shows the
+     match and lets you pick another release, but picking one does **not**
+     re-render the destination.
    * **Download missing cover art** — when the album has no cover/thumbnail and
      the release has a front image in the Cover Art Archive, it is downloaded
-     after import.
+     after import (not available in tags-only mode).
 3. In the review dialog each row shows `MB: Artist — Album (year)` when
    matched, plus an **MB…** button to search again/choose another release.
    Picking a release re-renders the destination from the template, so
-   `{albumartist}/{year} - {album}` uses the matched values.
+   `{albumartist}/{year} - {album}` uses the matched values (full-metadata
+   mode only).
 4. Import writes the normal tags first, then a single background pass applies:
    * album dir: `artist`, `album-artist`, `album`, `year`, genres as tags,
      `musicbrainz-release-id`, `musicbrainz-release-group-id`,
@@ -59,6 +69,9 @@ FetchCoverArt = true
    * `IndexCollection` refreshes the album summary/member-of edges;
    * the front cover becomes the album's `thumbnail` relation (blob uploaded
      with infinite retention) when cover art is enabled.
+   In tags-only mode the pass writes just the album directory's
+   genres/community tags (union with the tags entered for the import) and
+   nothing else.
    Track matching is by `(disc, track)`, then track number (single-disc),
    then normalised title, then remaining order — so files with partial tags
    still line up.

@@ -39,6 +39,7 @@ location is ignored — destinations come from the template (below).
 | **Destination** | The template rendering each album's virtual path (see below). Pre-filled from the tie config's `[ImportDest]` entry for the picked type, falling back to `/{albumartist}/{year} - {album}`. Switching the type re-fills it unless you edited the field. Empty = keep the on-disk source paths (the legacy behavior). |
 | **Remember as default for this type** | Writes the template into the tie config's `[ImportDest]` section for the picked dir-type, so future imports **and the `tie` CLI** render the same layout. |
 | **Tags** | A tag picker: type to search the collection's existing tags (↑/↓ + Enter/Space or click to pick), or press Enter on text no result is highlighted for to create a new tag. Picked tags appear as chips in a row below the search box; a chip's ✕ removes it. Applied to every imported track *and* to the album root, so the albums match tag queries (e.g. tie-audio's tag-driven cover wall). |
+| **MusicBrainz options** | **Look up releases on MusicBrainz** matches each album after the scan. **Only import tags from MusicBrainz (no metadata)** keeps the album's own metadata/placement and applies just the matched release's genres/community tags; it requires the lookup and disables cover art. See [MusicBrainz tagging](TIE-FM-MUSICBRAINZ.md). |
 
 The template is validated when you click **Scan** — an unknown or
 unterminated `{variable}` is rejected before the (potentially long) scan

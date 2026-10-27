@@ -71,8 +71,32 @@ func (fm *FileManager) importAsAlbums(entries []fs.Entry) {
 	remember := widget.NewCheck("Remember as default for this type", nil)
 	matchMB := widget.NewCheck("Look up releases on MusicBrainz", nil)
 	matchMB.SetChecked(fm.cfg.MusicBrainz.AutoMatch)
+	tagsOnly := widget.NewCheck("Only import tags from MusicBrainz (no metadata)", nil)
 	coverArt := widget.NewCheck("Download missing cover art", nil)
 	coverArt.SetChecked(fm.cfg.MusicBrainz.FetchCoverArt)
+
+	// Tags-only applies the release's genres/community tags and nothing else:
+	// no album identity/destination rewrite, no MBIDs, no track metadata and
+	// no cover art. It therefore requires a lookup and rules out cover art.
+	updateTagsOnly := func() {
+		if tagsOnly.Checked {
+			if !matchMB.Checked {
+				matchMB.SetChecked(true)
+			}
+			if coverArt.Checked {
+				coverArt.SetChecked(false)
+			}
+			coverArt.Disable()
+			return
+		}
+		coverArt.Enable()
+	}
+	tagsOnly.OnChanged = func(bool) { updateTagsOnly() }
+	matchMB.OnChanged = func(on bool) {
+		if !on && tagsOnly.Checked {
+			tagsOnly.SetChecked(false)
+		}
+	}
 
 	resolvedType := func() string {
 		if t := strings.TrimSpace(custom.Text); t != "" {
@@ -111,6 +135,7 @@ func (fm *FileManager) importAsAlbums(entries []fs.Entry) {
 			widget.NewFormItem("", remember),
 			widget.NewFormItem("Tags", tagSel),
 			widget.NewFormItem("", matchMB),
+			widget.NewFormItem("", tagsOnly),
 			widget.NewFormItem("", coverArt),
 		}, func(ok bool) {
 			if !ok {
@@ -129,7 +154,7 @@ func (fm *FileManager) importAsAlbums(entries []fs.Entry) {
 				fm.saveAlbumTemplate(tc, dirType, tmpl)
 			}
 			tags, _ := tagSel.SelectedTags()
-			fm.scanAlbumPlan(entries, tc.Config, dirType, tmpl, tags, matchMB.Checked, coverArt.Checked)
+			fm.scanAlbumPlan(entries, tc.Config, dirType, tmpl, tags, matchMB.Checked, tagsOnly.Checked, coverArt.Checked)
 		}, fm.win)
 	// The dialog sizes itself once from its MinSize; grow/shrink it as the
 	// tag search dropdown opens and closes and the chip row appears.
@@ -230,8 +255,10 @@ func albumImportRoots(entries []fs.Entry) []fs.Entry {
 // the others' albums. The finished plan (or the scan errors) returns to the
 // UI goroutine via fyne.Do. template overrides the tie config's ImportDest
 // entry for dirType (an empty string falls back to the config, then to
-// source-path placement).
-func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirType, template string, tags []string, matchMB, coverArt bool) {
+// source-path placement). tagsOnly keeps MusicBrainz matches informational:
+// they never rewrite the album identity/destination and only their
+// genres/community tags are applied after import.
+func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirType, template string, tags []string, matchMB, tagsOnly, coverArt bool) {
 	roots := make([]string, len(entries))
 	for i, e := range entries {
 		roots[i] = strings.TrimPrefix(e.Path, "file:")
@@ -268,7 +295,7 @@ func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirT
 		var matches map[string]*musicbrainz.Release
 		if matchMB && len(plan) > 0 {
 			fyne.Do(func() { status.SetText("Matching albums on MusicBrainz…") })
-			matches = fm.matchAlbumPlan(plan, template, func(msg string) {
+			matches = fm.matchAlbumPlan(plan, template, tagsOnly, func(msg string) {
 				fyne.Do(func() { status.SetText(msg) })
 			})
 		}
@@ -285,7 +312,7 @@ func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirT
 				}
 				return
 			}
-			fm.showAlbumPlan(plan, dirType, tags, template, matches, coverArt)
+			fm.showAlbumPlan(plan, dirType, tags, template, matches, coverArt, tagsOnly)
 		})
 	}()
 }
@@ -294,8 +321,10 @@ func (fm *FileManager) scanAlbumPlan(entries []fs.Entry, cfg client.Config, dirT
 // with its destination, track count, size and warnings, plus a MusicBrainz
 // button to pick/change the release match. Confirming imports exactly the
 // checked groups. Groups without a destination (no template rendered, no album
-// tag) cannot import and are fixed unchecked.
-func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, tags []string, template string, matches map[string]*musicbrainz.Release, coverArt bool) {
+// tag) cannot import and are fixed unchecked. tagsOnly makes the MusicBrainz
+// match informational only: picking a release does not rewrite the album
+// identity or destination.
+func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, tags []string, template string, matches map[string]*musicbrainz.Release, coverArt, tagsOnly bool) {
 	if matches == nil {
 		matches = map[string]*musicbrainz.Release{}
 	}
@@ -342,7 +371,7 @@ func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, t
 			detail.SetText(albumDetail(g, matches[g.SourceDir]))
 			check.OnChanged = func(on bool) {
 				selected[idx] = on
-				summary.SetText(albumPlanSummary(plan, selected, matches))
+				summary.SetText(albumPlanSummary(plan, selected, matches, tagsOnly))
 			}
 			check.SetChecked(selected[idx])
 			if g.Dest == "" {
@@ -363,14 +392,14 @@ func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, t
 				}
 				fm.showReleasePicker(q, matches[g.SourceDir], func(rel *musicbrainz.Release) {
 					matches[g.SourceDir] = rel
-					applyReleaseToGroup(g, rel, template)
+					applyReleaseToGroup(g, rel, template, tagsOnly)
 					selected[idx] = g.Dest != ""
 					list.Refresh()
-					summary.SetText(albumPlanSummary(plan, selected, matches))
+					summary.SetText(albumPlanSummary(plan, selected, matches, tagsOnly))
 				})
 			}
 		})
-	summary.SetText(albumPlanSummary(plan, selected, matches))
+	summary.SetText(albumPlanSummary(plan, selected, matches, tagsOnly))
 
 	// A transparent spacer gives the list a usable size: a bare List reports a
 	// tiny MinSize and the dialog would shrink to it.
@@ -389,7 +418,7 @@ func (fm *FileManager) showAlbumPlan(plan []client.AlbumGroup, dirType string, t
 				picked[g.SourceDir] = rel
 			}
 		}
-		fm.runAlbumImport(groups, dirType, tags, picked, coverArt)
+		fm.runAlbumImport(groups, dirType, tags, picked, coverArt, tagsOnly)
 	}, fm.win)
 }
 
@@ -405,9 +434,9 @@ func selectedGroups(plan []client.AlbumGroup, selected []bool) []client.AlbumGro
 }
 
 // matchAlbumPlan searches MusicBrainz for every planned album, applies the best
-// match to the group (artist/album/year and destination), and returns the
-// chosen releases keyed by SourceDir.
-func (fm *FileManager) matchAlbumPlan(plan []client.AlbumGroup, template string, status func(string)) map[string]*musicbrainz.Release {
+// match to the group (artist/album/year and destination) unless tagsOnly, and
+// returns the chosen releases keyed by SourceDir.
+func (fm *FileManager) matchAlbumPlan(plan []client.AlbumGroup, template string, tagsOnly bool, status func(string)) map[string]*musicbrainz.Release {
 	out := map[string]*musicbrainz.Release{}
 	p, err := openMusicBrainz(fm.cfg.MusicBrainz)
 	if err != nil {
@@ -442,7 +471,7 @@ func (fm *FileManager) matchAlbumPlan(plan []client.AlbumGroup, template string,
 		}
 		if len(rels) > 0 && rels[0].Score >= 0.55 {
 			rel := rels[0]
-			applyReleaseToGroup(g, &rel, template)
+			applyReleaseToGroup(g, &rel, template, tagsOnly)
 			out[g.SourceDir] = &rel
 		}
 	}
@@ -451,9 +480,11 @@ func (fm *FileManager) matchAlbumPlan(plan []client.AlbumGroup, template string,
 }
 
 // applyReleaseToGroup rewrites the plan group's album identity from a matched
-// release and re-renders its destination (when a template is in use).
-func applyReleaseToGroup(g *client.AlbumGroup, rel *musicbrainz.Release, template string) {
-	if rel == nil {
+// release and re-renders its destination (when a template is in use). In
+// tagsOnly mode the match leaves the group untouched: it only contributes
+// genre/community tags after the import.
+func applyReleaseToGroup(g *client.AlbumGroup, rel *musicbrainz.Release, template string, tagsOnly bool) {
+	if rel == nil || tagsOnly {
 		return
 	}
 	if artist := rel.DisplayArtist(); artist != "" {
@@ -517,7 +548,7 @@ func renderAlbumDest(template, artist, album string, year int) (string, bool) {
 // finished, a tie-browsing sibling panel reloads once, any MusicBrainz matches
 // are applied to the imported albums, and per-group failures are summarized
 // (one failed album does not abort the rest).
-func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string, tags []string, matches map[string]*musicbrainz.Release, coverArt bool) {
+func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string, tags []string, matches map[string]*musicbrainz.Release, coverArt, tagsOnly bool) {
 	remaining := len(groups)
 	var failed []string
 	done := func(op *fs.Op) {
@@ -529,7 +560,7 @@ func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string
 			if remaining > 0 {
 				return
 			}
-			fm.afterAlbumImports(groups, matches, coverArt, failed)
+			fm.afterAlbumImports(groups, matches, coverArt, tagsOnly, failed)
 		})
 	}
 	// The batch is one transfer: a conflict answer (Apply to All / Cancel) given
@@ -544,7 +575,9 @@ func (fm *FileManager) runAlbumImport(groups []client.AlbumGroup, dirType string
 
 // afterAlbumImports reloads the tie panes and applies MusicBrainz metadata to
 // the imported albums (one background pass, then a single summary dialog).
-func (fm *FileManager) afterAlbumImports(groups []client.AlbumGroup, matches map[string]*musicbrainz.Release, coverArt bool, failed []string) {
+// tagsOnly applies just the release's genre/community tags, leaving album and
+// track metadata untouched.
+func (fm *FileManager) afterAlbumImports(groups []client.AlbumGroup, matches map[string]*musicbrainz.Release, coverArt, tagsOnly bool, failed []string) {
 	if fm.other != nil && fm.other.isTie() {
 		fm.other.reload()
 	}
@@ -580,7 +613,13 @@ func (fm *FileManager) afterAlbumImports(groups []client.AlbumGroup, matches map
 			fyne.Do(func() { progLabel.SetText(label) })
 			full := rel
 			var aerr error
-			if !rel.HasTracks() {
+			lookup := !rel.HasTracks()
+			if tagsOnly {
+				// Search results carry no genres/community tags, so the
+				// tags-only mode always needs the full release.
+				lookup = rel.MBID != ""
+			}
+			if lookup {
 				if provider == nil {
 					provider, aerr = openMusicBrainz(cfg)
 					if aerr != nil {
@@ -593,7 +632,11 @@ func (fm *FileManager) afterAlbumImports(groups []client.AlbumGroup, matches map
 				cancel()
 			}
 			if aerr == nil {
-				aerr = applyReleaseToAlbum(tc, "tie:"+g.Dest, full, coverArt, cfg)
+				if tagsOnly {
+					aerr = applyReleaseTagsToAlbum(tc, "tie:"+g.Dest, full)
+				} else {
+					aerr = applyReleaseToAlbum(tc, "tie:"+g.Dest, full, coverArt, cfg)
+				}
 			}
 			if aerr != nil {
 				failed = append(failed, fmt.Sprintf("%s: %v", g.Dest, aerr))
@@ -653,7 +696,7 @@ func albumDetail(g client.AlbumGroup, rel *musicbrainz.Release) string {
 }
 
 // albumPlanSummary tallies the checked groups for the line above the list.
-func albumPlanSummary(plan []client.AlbumGroup, selected []bool, matches map[string]*musicbrainz.Release) string {
+func albumPlanSummary(plan []client.AlbumGroup, selected []bool, matches map[string]*musicbrainz.Release, tagsOnly bool) string {
 	n, matched := 0, 0
 	var size int64
 	for i, g := range plan {
@@ -668,6 +711,9 @@ func albumPlanSummary(plan []client.AlbumGroup, selected []bool, matches map[str
 	s := fmt.Sprintf("%d of %d albums selected · %s", n, len(plan), humanizeBytes(size))
 	if len(matches) > 0 {
 		s += fmt.Sprintf(" · %d of %d matched on MusicBrainz", matched, n)
+		if tagsOnly {
+			s += " (tags only)"
+		}
 	}
 	return s
 }

@@ -233,6 +233,18 @@ func addReleaseTagsOnly(tc *client.TieClient, uid client.DirUID, rel *musicbrain
 	return added, nil
 }
 
+// applyReleaseTagsToAlbum resolves an album's tie: path and unions only the
+// release's genre/community tags into it — the tags-only counterpart of
+// applyReleaseToAlbum.
+func applyReleaseTagsToAlbum(tc *client.TieClient, albumURI string, rel *musicbrainz.Release) error {
+	uid, err := tieDirUID(tc, albumURI)
+	if err != nil {
+		return err
+	}
+	_, err = addReleaseTagsOnly(tc, uid, rel)
+	return err
+}
+
 // musicBrainzTagUnion appends the release's genres and community tags to
 // current, case-insensitively de-duplicated, preserving existing spellings.
 func musicBrainzTagUnion(current, genres, community []string) (merged, added []string) {
