@@ -190,6 +190,8 @@ github.com/uidbz/tie v0.7.5-0.20261027232539-775e7c844593 h1:iD+6uIrvWKzWMloXH7b
 github.com/uidbz/tie v0.7.5-0.20261027232539-775e7c844593/go.mod h1:RUT3nqC6i9SdI6l5UeJD+fdts+B/s5NJHrSK9Xw+uko=
 github.com/uidbz/tie v0.7.5-0.20261027232633-897720da553f h1:K3IDGh4Gw9jtCes0rwVjNIX/hyK3pov5/o4AquwFNE8=
 github.com/uidbz/tie v0.7.5-0.20261027232633-897720da553f/go.mod h1:RUT3nqC6i9SdI6l5UeJD+fdts+B/s5NJHrSK9Xw+uko=
+github.com/uidbz/tie v0.7.5-0.20261027232733-a6fdd34c7da7 h1:muIFuLGyhCxxKquZy+MfreJXAHi8VVjrY0vmFbk/5f4=
+github.com/uidbz/tie v0.7.5-0.20261027232733-a6fdd34c7da7/go.mod h1:RUT3nqC6i9SdI6l5UeJD+fdts+B/s5NJHrSK9Xw+uko=
 github.com/ulikunitz/xz v0.5.8/go.mod h1:nbz6k7qbPmH4IRqmfOplQw/tblSgqTqBwxkY0oWt/14=
 github.com/ulikunitz/xz v0.5.16 h1:ld6NyySjx5lowVKwJvMRLnW5nxKX/xnpSiFYZ/Lxur0=
 github.com/ulikunitz/xz v0.5.16/go.mod h1:H9Rt/W6/Qj27PGauhQc6nfCDy7vHpzsOThBSaYDoEhw=
