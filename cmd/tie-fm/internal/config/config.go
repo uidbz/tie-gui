@@ -5,10 +5,12 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/uidbz/conf"
 	"github.com/uidbz/tie/client"
@@ -131,9 +133,18 @@ type Config struct {
 	Terminal string
 	// MusicBrainz configures album/track metadata lookups.
 	MusicBrainz MusicBrainz
+	// LeftPath/RightPath are the paths the two panels were showing when the
+	// app quit; they restore on next start (falling back to homeStart).
+	LeftPath  string
+	RightPath string
 
 	path string // where this config was loaded from / will be saved back to
 }
+
+// saveMu serializes config writes: menu handlers, bookmark edits, device
+// callbacks and transfer completion all call Save, and conf.WriteConfig is a
+// plain file write — concurrent saves interleave into torn or stale files.
+var saveMu sync.Mutex
 
 // terminalCandidates are tried (in order) when neither Config.Terminal nor
 // $TERMINAL names a terminal.
@@ -242,11 +253,12 @@ func DefaultTieConfig() client.Config {
 
 // Load reads the tie-fm config, creating a default one in the user config dir
 // when none exists yet. A file that exists but fails to parse is returned as an
-// error (so a broken config is never silently clobbered).
+// error (so a broken config is never silently clobbered); the returned config
+// still carries the file's path so callers know where the problem is.
 func Load() (Config, error) {
 	c := Config{}
 	path, err := conf.LoadConfig(appName, fileName, &c)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		c = Default()
 		userPath, perr := conf.PathUserConfigDir(appName, fileName)
 		if perr == nil {
@@ -258,7 +270,9 @@ func Load() (Config, error) {
 		return c, nil
 	}
 	if err != nil {
-		return Default(), err
+		d := Default()
+		d.path = path // surface the broken file's location, don't lose it
+		return d, err
 	}
 	c.path = path
 	if len(c.Bookmarks) == 0 {
@@ -285,8 +299,11 @@ func LoadTieConfig(path string) (client.Config, error) {
 }
 
 // Save writes the config back to the file it was loaded from, falling back to
-// the user config dir when the path is unknown.
+// the user config dir when the path is unknown. Saves are serialized: several
+// UI actions (bookmarks, toggles, transfers) persist concurrently.
 func (c Config) Save() error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
 	if c.path != "" {
 		return conf.WriteConfig(c.path, c)
 	}

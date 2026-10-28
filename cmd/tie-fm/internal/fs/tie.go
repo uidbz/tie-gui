@@ -361,7 +361,10 @@ func (t *TieFS) removeFile(e Entry) error {
 		return err
 	}
 	if parent, err := t.parentUID(e.Path); err == nil && parent != "" && containsDir(parents, parent) {
-		return t.detachChild(e.Hash, parent)
+		if err := t.detachChild(e.Hash, parent); err != nil {
+			return err
+		}
+		return t.tc.Sync()
 	}
 	if len(parents) == 0 {
 		return fmt.Errorf("tie: no parent directory recorded for %q", e.Name)
@@ -372,7 +375,7 @@ func (t *TieFS) removeFile(e Entry) error {
 			return err
 		}
 	}
-	return nil
+	return t.tc.Sync()
 }
 
 func (t *TieFS) removeDirEntry(e Entry) error {
@@ -391,7 +394,9 @@ func (t *TieFS) removeDirEntry(e Entry) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("tie: no parent directory recorded for %q", e.Name)
 	}
-	if err := t.removeDirContents(uid); err != nil {
+	// visited guards against parent-cycles (a corruption class `tie verify`
+	// detects): without it a cycle recurses until the stack overflows.
+	if err := t.removeDirContents(uid, map[client.DirUID]bool{}); err != nil {
 		return err
 	}
 	for _, parent := range targets {
@@ -399,13 +404,17 @@ func (t *TieFS) removeDirEntry(e Entry) error {
 			return err
 		}
 	}
-	return nil
+	return t.tc.Sync()
 }
 
 // removeDirContents recursively unlinks every file, archive and subdirectory
 // below uid. Subdirectories are unlinked from uid only, so a child linked under
-// another directory survives there.
-func (t *TieFS) removeDirContents(uid client.DirUID) error {
+// another directory survives there. visited makes the walk cycle-safe.
+func (t *TieFS) removeDirContents(uid client.DirUID, visited map[client.DirUID]bool) error {
+	if visited[uid] {
+		return nil
+	}
+	visited[uid] = true
 	dir, err := client.ReadTieDir(t.tc, uid)
 	if err != nil {
 		return err
@@ -421,7 +430,7 @@ func (t *TieFS) removeDirContents(uid client.DirUID) error {
 		}
 	}
 	for _, sub := range dir.SubDirs {
-		if err := t.removeDirContents(sub.Uid); err != nil {
+		if err := t.removeDirContents(sub.Uid, visited); err != nil {
 			return err
 		}
 		if err := t.deleteDir(sub.Uid, uid); err != nil {
@@ -433,30 +442,17 @@ func (t *TieFS) removeDirContents(uid client.DirUID) error {
 
 // detachChild removes the (key,"parent",parent) edge. When that was the key's
 // last parent, its per-hash metadata is dropped as well; the content blob is
-// left on the filehost. The sync makes the unlink durable before the caller
-// moves on to the next child.
+// left on the filehost. Callers Sync once per delete operation rather than per
+// child — a 1000-file tree is one durability round trip, not a thousand.
 func (t *TieFS) detachChild(key string, parent client.DirUID) error {
-	if err := client.DeleteFile(t.tc, key, parent); err != nil {
-		return err
-	}
-	return t.tc.Sync()
+	return client.DeleteFile(t.tc, key, parent)
 }
 
 // deleteDir removes an empty directory from the path tree, dropping its
-// metadata when no parent remains. The emptiness check keeps this package's
-// user-facing "not empty" wording; client.DeleteDir repeats it defensively.
+// metadata when no parent remains. client.DeleteDir performs the defensive
+// emptiness check itself (with its own error), so no pre-check listing here.
 func (t *TieFS) deleteDir(uid, parent client.DirUID) error {
-	dir, err := client.ReadTieDir(t.tc, uid)
-	if err != nil {
-		return err
-	}
-	if len(dir.SubDirs) > 0 || len(dir.Files) > 0 || len(dir.Archives) > 0 {
-		return fmt.Errorf("tie: directory %s is not empty", uid)
-	}
-	if err := client.DeleteDir(t.tc, uid, parent); err != nil {
-		return err
-	}
-	return t.tc.Sync()
+	return client.DeleteDir(t.tc, uid, parent)
 }
 
 // parentUID resolves the DirUID of uri's containing directory, returning ""
@@ -599,21 +595,63 @@ func (t *TieFS) ListAllTags() ([]string, error) {
 	return tags, err
 }
 
+// TagsFor resolves the tags of many subjects in one Expand round trip
+// (implements fs.BulkTagger; the listing UI fetches a page's tags with it
+// instead of one Get per row).
+func (t *TieFS) TagsFor(keys []string) (map[string][]string, error) {
+	if len(keys) == 0 {
+		return map[string][]string{}, nil
+	}
+	rows, err := t.tc.Expand(keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(rows))
+	for _, row := range rows {
+		tags := client.RowValues(row, client.RelTag)
+		if len(tags) > 0 {
+			out[row.Key] = tags
+		}
+	}
+	return out, nil
+}
+
 func (t *TieFS) FilesWithTags(include, exclude []string, offset, limit int) ([]Entry, int, error) {
 	files, total, err := t.tc.FilesWithTags("", include, exclude, offset, limit)
 	if err != nil {
 		return nil, 0, err
 	}
+	// A tag query only carries a basename, so the naive "/<name>" path is
+	// wrong for anything not at the tie root. For a directory the entry's
+	// Hash is its DirUID, so resolve its real stored path — otherwise
+	// entering it navigates to a bogus tie:/<name> with no contents. Files
+	// open via their content hash, so their display path can stay naive.
+	// One Expand for all directory results, instead of one Get per row.
+	dirPaths := map[string]string{}
+	var dirKeys []string
+	for _, f := range files {
+		if f.IsDir && f.Hash != "" {
+			dirKeys = append(dirKeys, f.Hash)
+		}
+	}
+	if len(dirKeys) > 0 {
+		if rows, err := t.tc.Expand(dirKeys); err == nil {
+			for _, row := range rows {
+				if p := client.RowFirst(row, client.RelPath); p != "" {
+					dirPaths[row.Key] = p
+				}
+			}
+		}
+	}
 	entries := make([]Entry, 0, len(files))
 	for _, f := range files {
-		// A tag query only carries a basename, so the naive "/<name>" path is
-		// wrong for anything not at the tie root. For a directory the entry's
-		// Hash is its DirUID, so resolve its real stored path — otherwise
-		// entering it navigates to a bogus tie:/<name> with no contents. Files
-		// open via their content hash, so their display path can stay naive.
 		p := tieURI("/" + f.Filename)
 		if f.IsDir {
-			if dp := t.dirPath(f.Hash); dp != "" {
+			dp := dirPaths[f.Hash]
+			if dp == "" {
+				dp = t.dirPath(f.Hash) // fall back for rows the Expand missed
+			}
+			if dp != "" {
 				p = tieURI(dp)
 			}
 		}

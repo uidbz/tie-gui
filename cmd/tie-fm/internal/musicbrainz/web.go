@@ -19,10 +19,36 @@ type webProvider struct {
 	ua     string
 	client *http.Client
 
-	mu         sync.Mutex
-	nextCall   time.Time
 	interval   time.Duration
 	retryDelay time.Duration
+}
+
+// webPacer enforces the ~1 request/second MusicBrainz guideline across ALL
+// webProvider instances, keyed by base URL. The UI opens a fresh provider per
+// settings dialog, album scan, or manual lookup, so a per-instance limiter
+// would let concurrent scans collectively exceed the public API's rate ceiling
+// — which it punishes with immediate 429/503s.
+type webPacer struct {
+	mu   sync.Mutex
+	next map[string]time.Time
+}
+
+var pacer = &webPacer{next: map[string]time.Time{}}
+
+func (p *webPacer) wait(ctx context.Context, base string, interval time.Duration) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d := time.Until(p.next[base]); d > 0 {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	p.next[base] = time.Now().Add(interval)
+	return nil
 }
 
 func openWeb(s Settings) (Provider, error) {
@@ -50,21 +76,10 @@ func (w *webProvider) Ping(ctx context.Context) error {
 	return err
 }
 
-// wait enforces the MusicBrainz ~1 request/second guideline.
+// wait enforces the MusicBrainz ~1 request/second guideline (shared across
+// provider instances via pacer).
 func (w *webProvider) wait(ctx context.Context) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if d := time.Until(w.nextCall); d > 0 {
-		t := time.NewTimer(d)
-		defer t.Stop()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
-		}
-	}
-	w.nextCall = time.Now().Add(w.interval)
-	return nil
+	return pacer.wait(ctx, w.base, w.interval)
 }
 
 func (w *webProvider) getJSON(ctx context.Context, path string, params url.Values, out any) error {
@@ -276,10 +291,6 @@ func releaseFromWS(r wsRelease) Release {
 		for _, m := range out.Mediums {
 			out.TrackCount += m.TrackCount
 		}
-	}
-	if r.TrackCount == 0 && out.TrackCount == 0 {
-		// Search results always carry a release-level track count.
-		out.TrackCount = 0
 	}
 	if len(out.Mediums) > 0 {
 		out.DiscCount = len(out.Mediums)

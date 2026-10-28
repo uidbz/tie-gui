@@ -38,7 +38,9 @@ func (td *TableData) SetIds(ids []string) error {
 	}
 
 	td.TableId = ids[0]
-	td.RowIds = ids[1:]
+	// Copy: sharing the caller's backing array lets later caller mutations
+	// silently rewrite the table's row ids.
+	td.RowIds = append([]string(nil), ids[1:]...)
 
 	return nil
 }
@@ -66,17 +68,19 @@ func NewTableData(tableName string) *TableData {
 }
 
 func (td *TableData) AddColumnFromTable(newColumnName, oldColumnName string, otherTable *TableData) error {
-	td.Columns = append(td.Columns, newColumnName)
-	if col, ok := otherTable.data[oldColumnName]; !ok {
+	col, ok := otherTable.data[oldColumnName]
+	if !ok {
 		return errors.New("Old column not found")
-	} else {
-		td.data[newColumnName] = col
-		if td.rowCount < len(col) {
-			td.rowCount = len(col)
-		}
-		td.RowIds = otherTable.RowIds
-		td.RowCategory = otherTable.RowCategory
 	}
+	// Only advertise the column once its data is in place: appending before
+	// the lookup leaves ColumnCount() counting a column with no cells.
+	td.Columns = append(td.Columns, newColumnName)
+	td.data[newColumnName] = col
+	if td.rowCount < len(col) {
+		td.rowCount = len(col)
+	}
+	td.RowIds = otherTable.RowIds
+	td.RowCategory = otherTable.RowCategory
 	return nil
 }
 
@@ -217,7 +221,10 @@ func (td *TableData) Sort(column string, ascending bool) {
 			td.data[x] = append(td.data[x], DataCell{cellType: cellIsEmpty})
 		}
 	}
-	sort.Sort(td.tableSorter)
+	// Stable sort keeps rows with equal keys (identical names/mtimes/sizes) in
+	// their previous relative order, so sorting "Modified" then "Name" doesn't
+	// scramble the first sort's result.
+	sort.Stable(td.tableSorter)
 }
 
 func (ts *tableSorter) Len() int {
@@ -234,6 +241,37 @@ func (ts *tableSorter) Swap(i, j int) {
 		col[i].cellType, col[j].cellType = col[j].cellType, col[i].cellType
 		col[i].Numeric, col[j].Numeric = col[j].Numeric, col[i].Numeric
 	}
+	// Row ids and the filter row-mapping are display-parallel to the columns:
+	// they must travel with the rows, or click/selection translation resolves
+	// to the wrong source rows after a sort.
+	td := ts.tableData
+	if i < len(td.RowMapping) && j < len(td.RowMapping) {
+		td.RowMapping[i], td.RowMapping[j] = td.RowMapping[j], td.RowMapping[i]
+	}
+	if i < len(td.RowIds) && j < len(td.RowIds) {
+		td.RowIds[i], td.RowIds[j] = td.RowIds[j], td.RowIds[i]
+	}
+}
+
+// CopyRowInto appends one row of td to dst, preserving each cell's type and
+// numeric sort key. In-page filtering uses this instead of flattening rows to
+// display strings: typed cells (sizes, dates) must keep their numeric sort
+// keys, or a filtered table sorts them lexicographically ("10 KiB" < "9 KiB").
+func (td *TableData) CopyRowInto(dst *TableData, row int) {
+	if len(dst.Columns) == 0 {
+		dst.Columns = append([]string{}, td.Columns...)
+	}
+	for _, col := range td.Columns {
+		var cell DataCell
+		if cells := td.data[col]; row >= 0 && row < len(cells) {
+			cell = cells[row]
+		}
+		if _, ok := dst.data[col]; !ok {
+			dst.data[col] = []DataCell{}
+		}
+		dst.data[col] = append(dst.data[col], cell)
+	}
+	dst.rowCount++
 }
 
 func (ts *tableSorter) Less(i, j int) bool {

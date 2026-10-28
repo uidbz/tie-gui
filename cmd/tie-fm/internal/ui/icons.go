@@ -25,6 +25,11 @@ var iconFS embed.FS
 type iconCache struct {
 	mu  sync.Mutex
 	res map[string]fyne.Resource // key: "<theme>/<name>"; nil value = known-missing
+
+	// names memoizes iconNamesFor per lowercase extension: FileIcon runs on
+	// every table cell paint, and rebuilding the candidate list (mime lookup +
+	// dedup) per row per refresh is pure waste.
+	names sync.Map // ext (lowercase, no dot) → []string
 }
 
 var icons = &iconCache{res: map[string]fyne.Resource{}}
@@ -38,7 +43,13 @@ func (c *iconCache) FileIcon(name string, variant fyne.ThemeVariant) fyne.Resour
 	if variant == theme.VariantDark {
 		themeName, alt = alt, themeName
 	}
-	for _, cand := range iconNamesFor(name) {
+	ext := strings.ToLower(strings.TrimPrefix(path.Ext(name), "."))
+	cands, ok := c.names.Load(ext)
+	if !ok {
+		cands = iconNamesFor(ext)
+		c.names.Store(ext, cands)
+	}
+	for _, cand := range cands.([]string) {
 		if r := c.load(themeName, cand); r != nil {
 			return r
 		}
@@ -67,10 +78,10 @@ func (c *iconCache) load(themeName, name string) fyne.Resource {
 	return res
 }
 
-// iconNamesFor returns Breeze mimetype icon-name candidates for a filename, most
-// specific first, ending in generic fallbacks that always exist in Breeze.
-func iconNamesFor(name string) []string {
-	ext := strings.ToLower(strings.TrimPrefix(path.Ext(name), "."))
+// iconNamesFor returns Breeze mimetype icon-name candidates for a lowercase
+// extension (no leading dot), most specific first, ending in generic fallbacks
+// that always exist in Breeze.
+func iconNamesFor(ext string) []string {
 	var c []string
 	add := func(n string) {
 		if n == "" {
@@ -119,10 +130,10 @@ var extIcon = map[string]string{
 	"xml":  "text-xml",
 	"json": "application-json",
 	"sh":   "application-x-shellscript", "bash": "application-x-shellscript", "zsh": "application-x-shellscript",
-	"py":  "text-x-python",
-	"go":  "text-x-go",
-	"js":  "application-javascript",
-	"c":   "text-x-csrc", "h": "text-x-chdr", "cpp": "text-x-c++src", "cc": "text-x-c++src", "hpp": "text-x-c++hdr",
+	"py": "text-x-python",
+	"go": "text-x-go",
+	"js": "application-javascript",
+	"c":  "text-x-csrc", "h": "text-x-chdr", "cpp": "text-x-c++src", "cc": "text-x-c++src", "hpp": "text-x-c++hdr",
 	"zip": "application-zip", "gz": "application-gzip", "tar": "application-x-tar",
 	"bz2": "application-x-bzip", "xz": "application-x-xz-compressed-tar", "7z": "application-x-7z-compressed",
 	"rar": "application-vnd.rar", "deb": "application-vnd.debian.binary-package",

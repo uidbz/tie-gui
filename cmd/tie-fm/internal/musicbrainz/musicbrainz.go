@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -281,11 +282,14 @@ func Normalize(s string) string {
 			space = false
 			b.WriteRune(r)
 		case r == '&':
-			if space && b.Len() > 0 {
+			// "&" is a word: pad it on BOTH sides, otherwise "Simon&Sophie"
+			// normalizes to "simonandsophie" and never matches the
+			// "simon and sophie" the rewrite exists to create.
+			if b.Len() > 0 {
 				b.WriteByte(' ')
 			}
-			space = false
 			b.WriteString("and")
+			space = true
 		case r > 127:
 			// Keep non-ASCII letters (Cyrillic, Greek, CJK...) as-is.
 			if space && b.Len() > 0 {
@@ -426,13 +430,13 @@ func ScoreRecording(q RecordingQuery, r Recording) float64 {
 		weight += 0.65
 	}
 	if q.Artist != "" {
-		total += 0.35 * Similarity(q.Artist, r.ArtistCredit)
+		sim := Similarity(q.Artist, r.ArtistCredit)
 		if r.Artist != "" {
-			alt := Similarity(q.Artist, r.Artist)
-			if alt > Similarity(q.Artist, r.ArtistCredit) {
-				total = total - 0.35*Similarity(q.Artist, r.ArtistCredit) + 0.35*alt
+			if alt := Similarity(q.Artist, r.Artist); alt > sim {
+				sim = alt
 			}
 		}
+		total += 0.35 * sim
 		weight += 0.35
 	}
 	if weight == 0 {
@@ -459,17 +463,11 @@ func RankRecordings(q RecordingQuery, recs []Recording) []Recording {
 }
 
 func sortReleases(rs []Release) {
-	for i := 1; i < len(rs); i++ {
-		for j := i; j > 0 && rs[j].Score > rs[j-1].Score; j-- {
-			rs[j], rs[j-1] = rs[j-1], rs[j]
-		}
-	}
+	// Stable sort keeps API/relevance order for equal scores and avoids the
+	// O(n²) insertion sort copying fat structs over 1000-candidate sets.
+	sort.SliceStable(rs, func(i, j int) bool { return rs[i].Score > rs[j].Score })
 }
 
 func sortRecordings(rs []Recording) {
-	for i := 1; i < len(rs); i++ {
-		for j := i; j > 0 && rs[j].Score > rs[j-1].Score; j-- {
-			rs[j], rs[j-1] = rs[j-1], rs[j]
-		}
-	}
+	sort.SliceStable(rs, func(i, j int) bool { return rs[i].Score > rs[j].Score })
 }

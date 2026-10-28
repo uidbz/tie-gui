@@ -7,6 +7,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -95,9 +96,35 @@ type FileManager struct {
 	searchBasePath string
 	searchCancel   context.CancelFunc
 
+	// reloadGen counts reload requests (UI goroutine only). A background list
+	// fetch only publishes its result when its generation is still the latest,
+	// so rapid navigation can't have older listings land after newer ones.
+	// reloadWG tracks in-flight fetches; waitReload is the test seam.
+	reloadGen int
+	reloadWG  sync.WaitGroup
+
+	// initialLoad marks the constructor's first setPath so the first listing
+	// loads synchronously (see reloadNow).
+	initialLoad bool
+
+	// openWG tracks in-flight openEntry materializations; waitOpen is the
+	// test seam for the async open path.
+	openWG sync.WaitGroup
+
+	// deleteWG tracks in-flight deleteEntries goroutines; waitDeletes is the
+	// test seam.
+	deleteWG sync.WaitGroup
+
 	history []string
 	histIdx int
 }
+
+// waitOpen blocks until all in-flight openEntry downloads/launches finished.
+func (fm *FileManager) waitOpen() { fm.openWG.Wait() }
+
+// waitDeletes blocks until all in-flight deleteEntries goroutines finished
+// (including the reload they trigger). Test seam.
+func (fm *FileManager) waitDeletes() { fm.deleteWG.Wait() }
 
 func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations, cfg *config.Config, win fyne.Window) *FileManager {
 	fm := &FileManager{
@@ -193,6 +220,7 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	fm.wrapper = container.NewStack(bg, fm.content, fm.activeBorder)
 
 	fm.pushHistory(startPath)
+	fm.initialLoad = true
 	fm.setPath(startPath)
 	return fm
 }
@@ -381,7 +409,9 @@ func (fm *FileManager) runSearch(query string) {
 	fm.searchStatus.SetText("Searching…")
 	fm.searchStatus.Show()
 
+	fm.reloadWG.Add(1)
 	go func() {
+		defer fm.reloadWG.Done()
 		entries, total, err := searcher.Search(ctx, query, 0, 500)
 		fyne.Do(func() {
 			if !fm.searchActive || fm.searchQuery != query {
@@ -466,9 +496,13 @@ func (fm *FileManager) setPath(p string) {
 	fm.updateTerminalButton()
 	fm.table.ClearFilter()
 	fm.table.ResetPage()
-	fm.reload()
 	fm.updateBreadcrumb()
 	fm.tagPanel.OnLocationChanged()
+	// reload last: it kicks off a background fetch whose result is published
+	// via fyne.Do, and nothing after it may touch widgets concurrently with a
+	// fetch that could complete instantly (the Fyne test driver even runs Do
+	// inline — any later widget work here races the apply).
+	fm.reload()
 }
 
 func (fm *FileManager) reload() {
@@ -478,25 +512,128 @@ func (fm *FileManager) reload() {
 		fm.runSearch(fm.searchQuery)
 		return
 	}
+	// The initial listing (during NewFileManager) loads synchronously: the
+	// constructor keeps wiring widgets right after setPath, and first paint
+	// must see a complete listing. Every later reload is async.
+	if fm.initialLoad {
+		fm.initialLoad = false
+		fm.reloadNow()
+		return
+	}
 	provider := fm.registry.For(fm.pathValue())
+	query := fm.queryActive()
+	var ts fs.TagStore
+	if query {
+		ts, _ = provider.(fs.TagStore)
+	}
+	// Snapshot everything the fetch goroutine reads: the UI may navigate or
+	// change the query before the goroutine runs, and these fields belong to
+	// the UI goroutine.
+	path := fm.pathValue()
+	include, exclude := fm.queryInclude, fm.queryExclude
+	// Generation guard: when several reloads overlap (rapid navigation), only
+	// the newest one may publish its listing.
+	gen := fm.reloadGen
+	fm.reloadGen++
+	fm.reloadWG.Add(1)
+	go func() {
+		defer fm.reloadWG.Done()
+		fm.fetchAndApply(gen, provider, query, ts, path, include, exclude, true)
+	}()
+}
+
+// reloadNow runs the list fetch and apply directly on the calling (UI)
+// goroutine. Reserved for the initial load in NewFileManager.
+func (fm *FileManager) reloadNow() {
+	provider := fm.registry.For(fm.pathValue())
+	query := fm.queryActive()
+	var ts fs.TagStore
+	if query {
+		ts, _ = provider.(fs.TagStore)
+	}
+	gen := fm.reloadGen
+	fm.reloadGen++
+	fm.fetchAndApply(gen, provider, query, ts, fm.pathValue(), fm.queryInclude, fm.queryExclude, false)
+}
+
+// fetchAndApply fetches a listing (and bulk-fetches its first page's tags) on
+// the calling goroutine and publishes it; async publishes via fyne.Do. The
+// generation guard drops results of reloads superseded during the fetch.
+func (fm *FileManager) fetchAndApply(gen int, provider fs.FileSystem, query bool, ts fs.TagStore, path string, include, exclude []string, async bool) {
 	var entries []fs.Entry
 	var err error
-	if fm.queryActive() {
-		if ts, ok := provider.(fs.TagStore); ok {
-			entries, _, err = ts.FilesWithTags(fm.queryInclude, fm.queryExclude, 0, -1)
-		}
+	if query && ts != nil {
+		entries, _, err = ts.FilesWithTags(include, exclude, 0, -1)
 	} else {
-		entries, err = provider.List(fm.pathValue())
+		entries, err = provider.List(path)
 	}
+	if err == nil {
+		fm.prefetchTags(provider, entries)
+	}
+	apply := func() {
+		if gen != fm.reloadGen-1 {
+			return // a newer reload superseded this one
+		}
+		if err != nil {
+			dialog.ShowError(err, fm.win)
+			entries = nil
+		}
+		showHidden := fm.cfg != nil && fm.cfg.ShowHidden
+		fm.entries = visibleEntries(entries, showHidden)
+		fm.applySort()
+		fm.table.Refresh()
+		fm.refreshPreview()
+	}
+	if async {
+		fyne.Do(apply)
+	} else {
+		apply()
+	}
+}
+
+// waitReload blocks until all in-flight reload fetches have been published.
+// Test seam: navigation/reload fetches run on goroutines, so tests set up
+// listings by waiting for the reload the navigation started.
+func (fm *FileManager) waitReload() {
+	fm.reloadWG.Wait()
+}
+
+// prefetchTags fills the Tags of tie entries in one bulk round trip
+// (fs.BulkTagger) instead of a GetTags per row during table paint. Only the
+// first displayed page needs tags eagerly; later pages fall back to the
+// bulk-per-page fetch in buildPage.
+func (fm *FileManager) prefetchTags(provider fs.FileSystem, entries []fs.Entry) {
+	bulk, ok := provider.(fs.BulkTagger)
+	if !ok {
+		return
+	}
+	limit := pageSize
+	if limit > len(entries) {
+		limit = len(entries)
+	}
+	var keys []string
+	for _, e := range entries[:limit] {
+		if e.Hash != "" && e.Tags == nil {
+			keys = append(keys, e.Hash)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	tags, err := bulk.TagsFor(keys)
 	if err != nil {
-		dialog.ShowError(err, fm.win)
-		entries = nil
+		return // buildPage falls back to per-row fetches
 	}
-	showHidden := fm.cfg != nil && fm.cfg.ShowHidden
-	fm.entries = visibleEntries(entries, showHidden)
-	fm.applySort()
-	fm.table.Refresh()
-	fm.refreshPreview()
+	for i := range entries[:limit] {
+		if entries[i].Hash == "" {
+			continue
+		}
+		if t, ok := tags[entries[i].Hash]; ok {
+			entries[i].Tags = t
+		} else {
+			entries[i].Tags = []string{}
+		}
+	}
 }
 
 // visibleEntries drops dot-files (names with a leading ".") unless showHidden
@@ -520,12 +657,14 @@ func (fm *FileManager) goUp() {
 		return
 	}
 	p := fm.pathValue()
-	if fs.IsTie(p) {
-		tp := strings.TrimPrefix(p, "tie:")
+	if scheme := fs.SchemeOf(p); scheme != "file" {
+		// Any remote scheme (tie:, mtp:) carries a plain slash path after the
+		// scheme prefix — handle them uniformly.
+		tp := strings.TrimPrefix(p, scheme+":")
 		if tp == "/" || tp == "" {
 			return
 		}
-		fm.navigateTo("tie:" + parentPath(tp))
+		fm.navigateTo(scheme + ":" + parentPath(tp))
 		return
 	}
 	if p == "/" {
@@ -590,9 +729,9 @@ type crumb struct {
 func breadcrumbSegments(p string) []crumb {
 	scheme := ""
 	body := p
-	if fs.IsTie(p) {
-		scheme = "tie:"
-		body = strings.TrimPrefix(p, "tie:")
+	if s := fs.SchemeOf(p); s != "file" {
+		scheme = s + ":"
+		body = strings.TrimPrefix(p, scheme)
 	}
 	if body == "" {
 		body = "/"
@@ -622,16 +761,42 @@ func (fm *FileManager) buildPage(offset, limit int) *tablewidget.TableData {
 	page := fm.entries[offset:end]
 	fm.pageEntries = page
 
-	// Lazily load tags for tie entries on this page.
+	// Lazily load tags for tie entries on this page: one bulk round trip per
+	// page (fs.BulkTagger), falling back to per-entry fetches only on backends
+	// without bulk support.
 	if ts, ok := fm.registry.For(fm.pathValue()).(fs.TagStore); ok {
+		var keys []string
 		for i := range page {
 			e := &fm.entries[offset+i]
 			if e.Hash != "" && e.Tags == nil {
-				if tags, err := ts.GetTags(*e); err == nil {
-					if tags == nil {
-						tags = []string{}
+				keys = append(keys, e.Hash)
+			}
+		}
+		if len(keys) > 0 {
+			if bulk, ok := ts.(fs.BulkTagger); ok {
+				if tags, err := bulk.TagsFor(keys); err == nil {
+					for i := range page {
+						e := &fm.entries[offset+i]
+						if e.Hash != "" && e.Tags == nil {
+							if t, ok := tags[e.Hash]; ok {
+								e.Tags = t
+							} else {
+								e.Tags = []string{}
+							}
+						}
 					}
-					e.Tags = tags
+				}
+			} else {
+				for i := range page {
+					e := &fm.entries[offset+i]
+					if e.Hash != "" && e.Tags == nil {
+						if tags, err := ts.GetTags(*e); err == nil {
+							if tags == nil {
+								tags = []string{}
+							}
+							e.Tags = tags
+						}
+					}
 				}
 			}
 		}
@@ -709,23 +874,24 @@ func (fm *FileManager) applySort() {
 	asc := fm.sortAsc
 	sort.SliceStable(fm.entries, func(i, j int) bool {
 		a, b := fm.entries[i], fm.entries[j]
-		var less bool
+		// Descending swaps the operands instead of negating the result:
+		// `return !less` would report equal rows as mutually less, which
+		// violates the strict-weak-ordering contract of SliceStable.
+		if !asc {
+			a, b = b, a
+		}
 		switch col {
 		case "Size":
-			less = a.Size < b.Size
+			return a.Size < b.Size
 		case "Modified":
-			less = a.ModTime.Before(b.ModTime)
+			return a.ModTime.Before(b.ModTime)
 		case "Tags":
-			less = strings.Join(a.Tags, ",") < strings.Join(b.Tags, ",")
+			return strings.Join(a.Tags, ",") < strings.Join(b.Tags, ",")
 		case "": // type column: directories first
-			less = a.IsDir && !b.IsDir
+			return a.IsDir && !b.IsDir
 		default: // Name
-			less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
+			return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 		}
-		if asc {
-			return less
-		}
-		return !less
 	})
 }
 
@@ -787,6 +953,8 @@ func (fm *FileManager) openEntry(e fs.Entry) {
 	}
 	if hasAssoc && assoc.Stream {
 		if s, ok := provider.(fs.Streamer); ok {
+			// StreamURL only resolves the configured filehost URL (no network);
+			// the player fetches the bytes itself.
 			if url, err := s.StreamURL(e); err == nil {
 				if err := launch(fm.cfg, url, e.Name); err != nil {
 					dialog.ShowError(err, fm.win)
@@ -795,12 +963,24 @@ func (fm *FileManager) openEntry(e fs.Entry) {
 			}
 		}
 	}
-	local, err := provider.Materialize(e)
-	if err != nil {
-		dialog.ShowError(err, fm.win)
+	// Materialize downloads remote (tie, mtp) content to a temp file — a full
+	// blob transfer that must not run on the UI goroutine.
+	if !fs.IsLocal(e.Path) {
+		fm.openWG.Add(1)
+		go func() {
+			defer fm.openWG.Done()
+			local, err := provider.Materialize(e)
+			if err != nil {
+				fyne.Do(func() { dialog.ShowError(err, fm.win) })
+				return
+			}
+			if err := launch(fm.cfg, local, e.Name); err != nil {
+				fyne.Do(func() { dialog.ShowError(err, fm.win) })
+			}
+		}()
 		return
 	}
-	if err := launch(fm.cfg, local, e.Name); err != nil {
+	if err := launch(fm.cfg, fs.LocalPath(e.Path), e.Name); err != nil {
 		dialog.ShowError(err, fm.win)
 	}
 }
@@ -885,17 +1065,26 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 
 // showProperties opens a read-only dialog summarizing an entry's tie metadata,
 // sourced from the shared client Stat aggregation via the fs.Stater backend.
+// The Stat aggregation walks the entry's subtree server-side, so it runs off
+// the UI goroutine; the dialog opens when the data is in.
 func (fm *FileManager) showProperties(e fs.Entry) {
 	st, ok := fm.registry.For(e.Path).(fs.Stater)
 	if !ok {
 		return
 	}
-	info, err := st.Stat(e)
-	if err != nil {
-		dialog.ShowError(err, fm.win)
-		return
-	}
+	go func() {
+		info, err := st.Stat(e)
+		fyne.Do(func() {
+			if err != nil {
+				dialog.ShowError(err, fm.win)
+				return
+			}
+			fm.showStatDialog(e, info)
+		})
+	}()
+}
 
+func (fm *FileManager) showStatDialog(e fs.Entry, info fs.StatInfo) {
 	var items []*widget.FormItem
 	add := func(label, value string) {
 		if value != "" {
@@ -1260,8 +1449,8 @@ func (fm *FileManager) extractArchives(archives []fs.Entry, dest fs.Entry) {
 	destPath := fm.pathValue()
 	done := func(op *fs.Op) {
 		fyne.Do(func() {
-			if op.Err != nil {
-				dialog.ShowError(fmt.Errorf("extracting %s: %w", op.A.Name, op.Err), fm.win)
+			if _, err := op.State(); err != nil {
+				dialog.ShowError(fmt.Errorf("extracting %s: %w", op.A.Name, err), fm.win)
 			}
 			if fm.pathValue() == destPath {
 				fm.reload()
@@ -1329,11 +1518,16 @@ func (fm *FileManager) newDir() {
 			if name == "" {
 				return
 			}
-			if err := maker.Mkdir(fm.pathValue(), name); err != nil {
-				dialog.ShowError(err, fm.win)
-				return
-			}
-			fm.reload()
+			go func() {
+				err := maker.Mkdir(fm.pathValue(), name)
+				fyne.Do(func() {
+					if err != nil {
+						dialog.ShowError(err, fm.win)
+						return
+					}
+					fm.reload()
+				})
+			}()
 		}, fm.win)
 }
 
@@ -1357,11 +1551,16 @@ func (fm *FileManager) newFile() {
 			if name == "" {
 				return
 			}
-			if err := maker.CreateFile(fm.pathValue(), name); err != nil {
-				dialog.ShowError(err, fm.win)
-				return
-			}
-			fm.reload()
+			go func() {
+				err := maker.CreateFile(fm.pathValue(), name)
+				fyne.Do(func() {
+					if err != nil {
+						dialog.ShowError(err, fm.win)
+						return
+					}
+					fm.reload()
+				})
+			}()
 		}, fm.win)
 }
 
@@ -1414,7 +1613,15 @@ func deletePromptText(set []fs.Entry) string {
 	if len(set) == 0 {
 		return ""
 	}
-	tie := fs.IsTie(set[0].Path)
+	// Decide the tie wording from the whole set, not just set[0]: mixed
+	// selections are possible through the drag menus.
+	tie := false
+	for _, e := range set {
+		if fs.IsTie(e.Path) {
+			tie = true
+			break
+		}
+	}
 	if len(set) == 1 {
 		e := set[0]
 		if !tie {
@@ -1481,7 +1688,9 @@ func (fm *FileManager) confirmDelete(set []fs.Entry) {
 // its whole subtree), and a multi-item delete would otherwise freeze the app.
 func (fm *FileManager) deleteEntries(set []fs.Entry) {
 	set = append([]fs.Entry(nil), set...) // the caller's selection may change
+	fm.deleteWG.Add(1)
 	go func() {
+		defer fm.deleteWG.Done()
 		var failed []string
 		for _, e := range set {
 			if err := fm.deleteEntry(e); err != nil {
@@ -1489,12 +1698,13 @@ func (fm *FileManager) deleteEntries(set []fs.Entry) {
 			}
 		}
 		fyne.Do(func() {
-			fm.reload()
-			if len(failed) == 0 {
-				return
+			if len(failed) > 0 {
+				dialog.ShowError(fmt.Errorf("could not delete %d of %d items:\n\n%s",
+					len(failed), len(set), strings.Join(failed, "\n")), fm.win)
 			}
-			dialog.ShowError(fmt.Errorf("could not delete %d of %d items:\n\n%s",
-				len(failed), len(set), strings.Join(failed, "\n")), fm.win)
+			// reload last (see setPath): it starts a fetch whose apply touches
+			// widgets, and the error dialog above must not overlap it.
+			fm.reload()
 		})
 	}()
 }

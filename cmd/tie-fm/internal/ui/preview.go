@@ -324,6 +324,8 @@ func (p *previewController) onTileTapped(t *gallery.Tile) {
 	switch r := t.Info.CustomReader.(type) {
 	case *tieFileReader:
 		entry = r.entry
+	case *dirReader:
+		entry = r.entry
 	case *entryReader:
 		entry = r.entry
 	}
@@ -378,6 +380,15 @@ func (p *previewController) openVideo(e fs.Entry) {
 		return
 	}
 	fyne.Do(func() {
+		// Preview may have been toggled off (or the pane navigated away)
+		// while the player spun up: a hidden pane must not start audio.
+		if !p.on || p.gallery == nil {
+			player.Close()
+			if tmpFile != "" {
+				os.Remove(tmpFile)
+			}
+			return
+		}
 		var onClose func()
 		if tmpFile != "" {
 			onClose = func() { os.Remove(tmpFile) }

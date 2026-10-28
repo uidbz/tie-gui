@@ -66,16 +66,16 @@ type gvfsVolumeRec struct {
 
 // (ssssbbbbbbbbuasa{ss}sa{sv})
 type gvfsDriveRec struct {
-	ID            string
-	Name          string
-	GIcon         string
-	SymbolicGIcon string
+	ID                             string
+	Name                           string
+	GIcon                          string
+	SymbolicGIcon                  string
 	B1, B2, B3, B4, B5, B6, B7, B8 bool
-	U             uint32
-	VolumeIDs     []string
-	Identifiers   map[string]string
-	SortKey       string
-	Expansion     map[string]dbus.Variant
+	U                              uint32
+	VolumeIDs                      []string
+	Identifiers                    map[string]string
+	SortKey                        string
+	Expansion                      map[string]dbus.Variant
 }
 
 // (ssssssbsassa{sv})
@@ -145,8 +145,18 @@ func (g *gvfsClient) mount(busDevKey string) (gvfsMount, error) {
 		if call.Err != nil {
 			return gvfsMount{}, fmt.Errorf("gvfs: mounting %s failed: %w", vol.Name, call.Err)
 		}
-		if vol, err = g.findVolume(node); err != nil {
-			return gvfsMount{}, err
+		// VolumeMount is asynchronous: reading the mount id once right after
+		// the call usually catches it mid-flight (still empty), which would
+		// make unmount a silent no-op and leak the FUSE mount. Poll for it the
+		// same way resolveFusePath polls for the fuse directory.
+		for i := 0; i < 20 && vol.MountID == ""; i++ {
+			time.Sleep(100 * time.Millisecond)
+			if vol, err = g.findVolume(node); err != nil {
+				return gvfsMount{}, err
+			}
+		}
+		if vol.MountID == "" {
+			return gvfsMount{}, fmt.Errorf("gvfs: mount of %s did not complete", vol.Name)
 		}
 	}
 	path, err := g.resolveFusePath(vol.ActivationRoot)
@@ -162,6 +172,14 @@ func (g *gvfsClient) unmount(m gvfsMount) error {
 	}
 	obj := g.conn.Object(mtpMonitorService, remoteVolMonPath)
 	return obj.Call(ifaceRemoteVolMon+".MountUnmount", 0, m.mountID, "", uint32(0), "").Err
+}
+
+// close releases the session-bus connection.
+func (g *gvfsClient) close() {
+	if g != nil && g.conn != nil {
+		g.conn.Close()
+		g.conn = nil
+	}
 }
 
 func (g *gvfsClient) findVolume(node string) (gvfsVolumeRec, error) {
@@ -185,7 +203,11 @@ func (g *gvfsClient) resolveFusePath(activationRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	base := filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "gvfs")
+	base := os.Getenv("XDG_RUNTIME_DIR")
+	if base == "" {
+		base = filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
+	}
+	base = filepath.Join(base, "gvfs")
 	// The mount reply can precede gvfsd-fuse exposing the path; poll briefly.
 	var lastErr error
 	for i := 0; i < 20; i++ {
@@ -205,21 +227,29 @@ func findMTPFuseDir(base, host string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("gvfs: fuse mount unavailable (gvfsd-fuse not running?): %w", err)
 	}
-	var mtpEntries []string
+	var sole string // sole fallback, only when its host cannot be decoded at all
 	for _, e := range ents {
 		name := e.Name()
 		if !strings.HasPrefix(name, "mtp:host=") {
 			continue
 		}
-		mtpEntries = append(mtpEntries, name)
 		enc := strings.TrimPrefix(name, "mtp:host=")
-		if dec, err := url.PathUnescape(enc); err == nil && dec == host {
+		dec, err := url.PathUnescape(enc)
+		if err != nil {
+			if sole == "" {
+				sole = name
+			}
+			continue
+		}
+		// A decoded host that differs is a *different* device: guessing it
+		// would navigate the wrong phone, so only an undecodable sole entry
+		// may be used as a fallback.
+		if dec == host {
 			return filepath.Join(base, name), nil
 		}
 	}
-	// Fall back to the sole MTP mount when the host can't be matched exactly.
-	if len(mtpEntries) == 1 {
-		return filepath.Join(base, mtpEntries[0]), nil
+	if sole != "" {
+		return filepath.Join(base, sole), nil
 	}
 	return "", errors.New("gvfs: mount not yet visible under " + base)
 }

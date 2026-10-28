@@ -37,6 +37,15 @@ type TagPanel struct {
 	loadedEntries []fs.Entry
 	loadedTags    map[string][]string // hash -> full tag list
 	loadedCommon  []string            // tags common to all loadedEntries
+
+	// editorGen bumps whenever the editor's loaded selection is replaced
+	// (selection or location change). In-flight load/write goroutines check
+	// it before applying, so a late reply for a stale selection can never
+	// write tags onto entries of a previous listing.
+	editorGen int
+	// writeGen bumps per editor write; only the newest write's outcome is
+	// applied to the loaded state.
+	writeGen int
 }
 
 func NewTagPanel(fm *FileManager) *TagPanel {
@@ -102,6 +111,7 @@ func (tp *TagPanel) showEditor(n int) {
 }
 
 func (tp *TagPanel) clearEditorState() {
+	tp.editorGen++
 	tp.loadedEntries = nil
 	tp.loadedTags = map[string][]string{}
 	tp.loadedCommon = nil
@@ -110,6 +120,7 @@ func (tp *TagPanel) clearEditorState() {
 
 // OnLocationChanged shows/hides the panel and reloads the tag universe.
 func (tp *TagPanel) OnLocationChanged() {
+	tp.editorGen++
 	if !tp.fm.isTie() {
 		tp.Container.Hide()
 		return
@@ -121,50 +132,81 @@ func (tp *TagPanel) OnLocationChanged() {
 }
 
 // reloadTags feeds every tag into the search tries and pins the persisted
-// favorites into both quick-pick lists.
+// favorites into both quick-pick lists. The store round trips run off the UI
+// goroutine; a stale reply (location changed meanwhile) is dropped.
 func (tp *TagPanel) reloadTags() {
 	ts, ok := tp.tagStore()
 	if !ok {
 		return
 	}
-	tags, err := ts.ListAllTags()
-	if err != nil {
-		return
-	}
-	tp.filter.ClearAllTags()
-	tp.editor.ClearAllTags()
-	for _, t := range tags {
-		tp.filter.AddTag(t)
-		tp.editor.AddTag(t)
-	}
-	if fav, err := ts.ListFavoriteTags(); err == nil {
-		tp.favorites = fav
-	}
-	tp.filter.SetFavoritesWithStars(tp.favorites)
-	tp.editor.SetFavorites(tp.favorites)
+	go func() {
+		tags, err := ts.ListAllTags()
+		var fav []string
+		var favErr error
+		if err == nil {
+			fav, favErr = ts.ListFavoriteTags()
+		}
+		fyne.Do(func() {
+			// Drop replies for a superseded store (config/collection switch
+			// or navigation to another location): the tag universe of one tie
+			// store must never bleed into another.
+			if cur, ok := tp.tagStore(); !ok || cur != ts {
+				return
+			}
+			if err != nil {
+				return
+			}
+			tp.filter.ClearAllTags()
+			tp.editor.ClearAllTags()
+			for _, t := range tags {
+				tp.filter.AddTag(t)
+				tp.editor.AddTag(t)
+			}
+			if favErr == nil {
+				tp.favorites = fav
+			} else {
+				tp.favorites = nil // don't carry another store's favorites over
+			}
+			tp.filter.SetFavoritesWithStars(tp.favorites)
+			tp.editor.SetFavorites(tp.favorites)
+		})
+	}()
 }
 
 // onToggleFavorite pins/unpins a tag in the tie store (shared across clients).
+// The write plus the favorites re-read run off the UI goroutine.
 func (tp *TagPanel) onToggleFavorite(tag string, starred bool) {
 	ts, ok := tp.tagStore()
 	if !ok {
 		return
 	}
-	var err error
-	if starred {
-		err = ts.AddFavoriteTag(tag)
-	} else {
-		err = ts.RemoveFavoriteTag(tag)
-	}
-	if err != nil {
-		dialog.ShowError(err, tp.fm.win)
-		return
-	}
-	if fav, lerr := ts.ListFavoriteTags(); lerr == nil {
-		tp.favorites = fav
-	}
-	tp.filter.SetFavoritesWithStars(tp.favorites)
-	tp.editor.SetFavorites(tp.favorites)
+	go func() {
+		var err error
+		if starred {
+			err = ts.AddFavoriteTag(tag)
+		} else {
+			err = ts.RemoveFavoriteTag(tag)
+		}
+		var fav []string
+		var lerr error
+		if err == nil {
+			fav, lerr = ts.ListFavoriteTags()
+		}
+		fyne.Do(func() {
+			if err != nil {
+				dialog.ShowError(err, tp.fm.win)
+				return
+			}
+			if cur, ok := tp.tagStore(); !ok || cur != ts {
+				return // store changed while writing
+			}
+			if lerr == nil {
+				tp.favorites = fav
+			}
+			tp.filter.SetFavoritesWithStars(tp.favorites)
+			tp.editor.SetFavorites(tp.favorites)
+		})
+	}()
 }
 
 func (tp *TagPanel) onFilterChanged() {
@@ -184,20 +226,29 @@ func (tp *TagPanel) onFilterChanged() {
 	if !ok {
 		return
 	}
-	related, err := ts.CoTags(include, exclude)
-	if err != nil {
-		return
-	}
-	tp.filter.SetListLabel("Related tags")
-	tp.filter.SetFavorites(related)
+	go func() {
+		related, err := ts.CoTags(include, exclude)
+		fyne.Do(func() {
+			if err != nil {
+				return
+			}
+			if cur, ok := tp.tagStore(); !ok || cur != ts {
+				return // query or location changed while fetching
+			}
+			tp.filter.SetListLabel("Related tags")
+			tp.filter.SetFavorites(related)
+		})
+	}()
 }
 
 // OnSelectionChanged loads the selected file(s)' tags into the editor and swaps
 // the panel to the editor section, or reverts to the filter when nothing is
-// selected.
+// selected. The tag fetch runs off the UI goroutine (one bulk round trip when
+// the backend supports it); a reply for a superseded selection is dropped.
 func (tp *TagPanel) OnSelectionChanged() {
+	tp.editorGen++
 	if !tp.fm.isTie() || len(tp.fm.selectedEntries) == 0 {
-		tp.clearEditorState()
+		tp.clearEditorStateKeepGen()
 		tp.showFilter()
 		return
 	}
@@ -206,32 +257,72 @@ func (tp *TagPanel) OnSelectionChanged() {
 		return
 	}
 	var entries []fs.Entry
-	loaded := map[string][]string{}
 	for _, e := range tp.fm.selectedEntries {
 		if e.Hash == "" {
 			continue // directories and untracked rows can't be tagged
 		}
-		tags, err := ts.GetTags(e)
-		if err != nil {
-			continue
-		}
 		entries = append(entries, e)
-		loaded[e.Hash] = tags
 	}
 	if len(entries) == 0 {
-		tp.clearEditorState()
+		tp.clearEditorStateKeepGen()
 		tp.showFilter()
 		return
 	}
-	tp.loadedEntries = entries
-	tp.loadedTags = loaded
-	tp.loadedCommon = commonTags(entries, loaded)
-	tp.editor.SetSelected(tp.loadedCommon) // does not fire OnSelectedChanged
-	tp.showEditor(len(entries))
+	gen := tp.editorGen
+	go func() {
+		loaded := map[string][]string{}
+		if bulk, ok := ts.(fs.BulkTagger); ok {
+			keys := make([]string, 0, len(entries))
+			for _, e := range entries {
+				keys = append(keys, e.Hash)
+			}
+			tags, err := bulk.TagsFor(keys)
+			if err != nil {
+				return
+			}
+			for _, e := range entries {
+				loaded[e.Hash] = tags[e.Hash]
+			}
+		} else {
+			for _, e := range entries {
+				tags, err := ts.GetTags(e)
+				if err != nil {
+					continue
+				}
+				loaded[e.Hash] = tags
+			}
+		}
+		fyne.Do(func() {
+			if gen != tp.editorGen {
+				return // selection changed while loading
+			}
+			if len(loaded) == 0 {
+				tp.clearEditorStateKeepGen()
+				tp.showFilter()
+				return
+			}
+			tp.loadedEntries = entries
+			tp.loadedTags = loaded
+			tp.loadedCommon = commonTags(entries, loaded)
+			tp.editor.SetSelected(tp.loadedCommon) // does not fire OnSelectedChanged
+			tp.showEditor(len(entries))
+		})
+	}()
+}
+
+// clearEditorStateKeepGen clears the editor without bumping the generation a
+// concurrent OnSelectionChanged already advanced.
+func (tp *TagPanel) clearEditorStateKeepGen() {
+	tp.loadedEntries = nil
+	tp.loadedTags = map[string][]string{}
+	tp.loadedCommon = nil
+	tp.editor.ClearSelected()
 }
 
 // onEditorChanged applies the editor's change as a delta (added/removed tags)
-// to every selected file, preserving each file's non-common tags.
+// to every selected file, preserving each file's non-common tags. The writes
+// run off the UI goroutine; only the newest write's outcome updates the
+// loaded state, so a superseded edit can't corrupt it.
 func (tp *TagPanel) onEditorChanged() {
 	if !tp.fm.isTie() || len(tp.loadedEntries) == 0 {
 		return
@@ -246,16 +337,37 @@ func (tp *TagPanel) onEditorChanged() {
 	if len(added) == 0 && len(removed) == 0 {
 		return
 	}
-	for _, e := range tp.loadedEntries {
-		tags := applyDelta(tp.loadedTags[e.Hash], added, removed)
-		if err := ts.SetTags(e, tags); err != nil {
-			dialog.ShowError(err, tp.fm.win)
-			return
+	gen := tp.editorGen
+	entries := append([]fs.Entry(nil), tp.loadedEntries...)
+	before := tp.loadedTags
+	write := tp.writeGen
+	tp.writeGen++
+	go func() {
+		after := map[string][]string{}
+		var failed error
+		for _, e := range entries {
+			tags := applyDelta(before[e.Hash], added, removed)
+			if err := ts.SetTags(e, tags); err != nil {
+				failed = err
+				break
+			}
+			after[e.Hash] = tags
 		}
-		tp.loadedTags[e.Hash] = tags
-		tp.fm.updateEntryTags(e.Hash, tags)
-	}
-	tp.loadedCommon = newCommon
+		fyne.Do(func() {
+			if gen != tp.editorGen || write != tp.writeGen-1 {
+				return // selection or a newer write moved on
+			}
+			if failed != nil {
+				dialog.ShowError(failed, tp.fm.win)
+				return
+			}
+			tp.loadedTags = after
+			for hash, tags := range after {
+				tp.fm.updateEntryTags(hash, tags)
+			}
+			tp.loadedCommon = newCommon
+		})
+	}()
 }
 
 // commonTags returns the tags present on every entry, sorted.

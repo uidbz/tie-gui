@@ -120,6 +120,9 @@ func (ctx *TableWidget) lastPage() {
 	if err != nil {
 		return
 	}
+	if max < 1 {
+		max = 1
+	}
 	ctx.currentPage.Set(max)
 	ctx.Refresh()
 	ctx.ScrollToTop()
@@ -149,6 +152,16 @@ func NewTableWidget(title string, pageSize int) *TableWidget {
 		i, err := strconv.Atoi(s)
 		if err != nil {
 			return
+		}
+		// Clamp to an existing page; the entry accepts any integer, and an
+		// out-of-range jump used to land the table on a blank page.
+		if max, terr := ctx.totalPages.Get(); terr == nil {
+			if i < 1 {
+				i = 1
+			}
+			if i > max {
+				i = max
+			}
 		}
 		ctx.currentPage.Set(i)
 		ctx.Refresh()
@@ -216,16 +229,36 @@ func (ctx *TableWidget) ShowFilter() {
 }
 
 func (ctx *TableWidget) Refresh() {
+	totalCount := ctx.RowCount()
+	pageSize := ctx.pageSize
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	totalPages := (totalCount + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1 // an empty listing still has one (empty) page
+	}
 	page, err := ctx.currentPage.Get()
 	if err != nil {
 		return
 	}
-	ctx.Offset = (page - 1) * ctx.pageSize
-	data := ctx.Data(ctx.Offset, ctx.pageSize)
-	totalCount := ctx.RowCount()
+	// Clamp to a real page: a page-jump past the end, a shrinking listing or an
+	// empty listing must not push Offset past the data (or negative from page
+	// 0) — previously that produced an empty table with a bogus page number.
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	if cur, _ := ctx.currentPage.Get(); cur != page {
+		ctx.currentPage.Set(page)
+	}
+	ctx.Offset = (page - 1) * pageSize
+	data := ctx.Data(ctx.Offset, pageSize)
 
 	ctx.totalResults.Set(totalCount)
-	ctx.totalPages.Set((totalCount + ctx.pageSize - 1) / ctx.pageSize)
+	ctx.totalPages.Set(totalPages)
 
 	// The footer (filter + page controls) would otherwise take a strip from
 	// every listing even though most fit on one page. Keep it out of the way
@@ -307,25 +340,26 @@ func (ctx *TableWidget) cellOnDrop(row int, absPos fyne.Position) {
 }
 
 func (ctx *TableWidget) filter(text string) {
-	ctx.filteredData = NewTableData("filtered data")
-	ctx.filteredData.Columns = append([]string{}, ctx.currentData.Columns...)
-	ctx.filteredData.RowMapping = []int{}
+	fd := NewTableData("filtered data")
+	fd.Columns = append([]string{}, ctx.currentData.Columns...)
+	fd.RowMapping = []int{}
 
 	for i := 0; i < ctx.currentData.RowCount(); i++ {
-		stringRow := make([]string, ctx.currentData.ColumnCount())
 		found := false
 		for j := 0; j < ctx.currentData.ColumnCount(); j++ {
-			val := ctx.currentData.Get(j, i)
-			if !found && contains(val, text) {
+			if !found && contains(ctx.currentData.Get(j, i), text) {
 				found = true
 			}
-			stringRow[j] = val
 		}
 		if found {
-			ctx.filteredData.AddStringRow(ctx.currentData.Columns, stringRow)
-			ctx.filteredData.RowMapping = append(ctx.filteredData.RowMapping, i)
+			// Copy cells verbatim (typed, with numeric sort keys) rather than
+			// re-adding display strings: sorting a filtered table by size or
+			// date must still compare numbers, not lexicographic text.
+			ctx.currentData.CopyRowInto(fd, i)
+			fd.RowMapping = append(fd.RowMapping, i)
 		}
 	}
+	ctx.filteredData = fd
 }
 
 func contains(haystack, needle string) bool {

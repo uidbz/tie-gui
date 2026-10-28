@@ -210,13 +210,23 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 			tieURLCheck.Checked = assoc.TieURL
 		} else {
 			// New association: pre-check for media extensions until the user
-			// toggles the checkbox explicitly.
+			// toggles the checkbox explicitly. SetChecked fires OnChanged, so
+			// the programmatic pre-check must be flagged — otherwise the first
+			// automatic toggle (typing "mp4") would count as a manual edit and
+			// freeze the pre-check for every later extension change.
 			streamTouched := false
-			streamCheck.OnChanged = func(bool) { streamTouched = true }
+			mutating := false
+			streamCheck.OnChanged = func(bool) {
+				if !mutating {
+					streamTouched = true
+				}
+			}
 			streamCheck.SetChecked(false)
 			extEntry.OnChanged = func(s string) {
 				if !streamTouched {
+					mutating = true
 					streamCheck.SetChecked(isStreamable(s))
+					mutating = false
 				}
 			}
 		}
@@ -232,12 +242,29 @@ func ShowFileAssociations(win fyne.Window, cfg *config.Config) {
 					return
 				}
 				newExt := config.ExtKey("." + strings.TrimPrefix(extEntry.Text, "."))
-				// If the key was renamed, drop the old entry.
-				if ext != "" && newExt != ext {
-					cfg.SetApp(ext, config.AppAssoc{})
+				apply := func() {
+					// If the key was renamed, drop the old entry.
+					if ext != "" && newExt != ext {
+						cfg.SetApp(ext, config.AppAssoc{})
+					}
+					cfg.SetApp(newExt, config.AppAssoc{Command: cmdEntry.Text, Stream: streamCheck.Checked, TieURL: tieURLCheck.Checked})
+					save()
 				}
-				cfg.SetApp(newExt, config.AppAssoc{Command: cmdEntry.Text, Stream: streamCheck.Checked, TieURL: tieURLCheck.Checked})
-				save()
+				// Renaming onto an existing extension replaces that association;
+				// confirm instead of silently clobbering it.
+				if newExt != "" && newExt != ext {
+					if _, clash := cfg.FileApps[newExt]; clash {
+						dialog.ShowConfirm("Replace association",
+							fmt.Sprintf("An association for .%s already exists. Replace it?", newExt),
+							func(yes bool) {
+								if yes {
+									apply()
+								}
+							}, win)
+						return
+					}
+				}
+				apply()
 			}, win)
 	}
 

@@ -94,6 +94,7 @@ func TestPreviewToggle(t *testing.T) {
 	ops := fs.NewOperations(registry)
 	cfg := config.Default()
 	fm := NewFileManager(dir, registry, ops, &cfg, win)
+	fm.waitReload() // initial listing loads off the UI goroutine
 
 	galCfg := testGalleryConfig()
 	galCfg.General.ThumbnailDir = t.TempDir()
@@ -163,6 +164,7 @@ func TestPreviewTapAssociation(t *testing.T) {
 	ops := fs.NewOperations(registry)
 	cfg := config.Default()
 	fm := NewFileManager(dir, registry, ops, &cfg, win)
+	fm.waitReload() // initial listing loads off the UI goroutine
 
 	galCfg := testGalleryConfig()
 	galCfg.General.ThumbnailDir = t.TempDir()

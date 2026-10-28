@@ -214,6 +214,11 @@ func NewFlexTable(data *TableData, onClick func(row int)) *FlexTable {
 func (t *FlexTable) SetData(data *TableData) {
 	t.data = data
 	t.dataGen++
+	// Selection indices address rows of the previous data; a page/filter/data
+	// change silently re-points them at unrelated rows (and shift-clicks at a
+	// stale anchor), so a data swap starts with a clean slate.
+	t.selectedRows = map[int]bool{}
+	t.selAnchor = -1
 	t.table.CreateHeader = func() fyne.CanvasObject {
 		return NewHeader("", t.headerBgColor, t)
 	}
@@ -538,8 +543,9 @@ func NewHeader(columnName string, bgColor color.Color, table *FlexTable) *Header
 }
 
 func (h *Header) SetText(columnName string) {
-	h.label.Text = columnName
-	h.label.Refresh()
+	// SetText (not a raw field write) so the label's property/theme invalidation
+	// runs; a direct .Text assignment can leave stale rendering in Fyne 2.8.
+	h.label.SetText(columnName)
 }
 
 func (h *Header) CreateRenderer() fyne.WidgetRenderer {
@@ -564,7 +570,13 @@ func (h *Header) RefreshSortIcon() {
 }
 
 func (h *Header) Tapped(_ *fyne.PointEvent) {
-	h.table.sortAsc = !h.table.sortAsc
+	// First click on a column starts ascending; only re-clicking the current
+	// sort column flips the direction.
+	if h.table.sortCol == h.colId {
+		h.table.sortAsc = !h.table.sortAsc
+	} else {
+		h.table.sortAsc = true
+	}
 	h.table.sortCol = h.colId
 	if h.table.OnSort != nil {
 		h.table.OnSort(h.colId, h.table.sortAsc)

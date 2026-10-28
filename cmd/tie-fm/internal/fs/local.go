@@ -26,9 +26,8 @@ func (l *LocalFS) List(path string) ([]Entry, error) {
 	}
 	entries := make([]Entry, 0, len(dirents))
 	for _, d := range dirents {
-		if strings.HasPrefix(d.Name(), ".") {
-			continue
-		}
+		// No dot-file filtering here: the UI applies the single ShowHidden
+		// policy (visibleEntries) uniformly across backends.
 		info, err := d.Info()
 		if err != nil {
 			continue

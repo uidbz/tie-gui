@@ -25,6 +25,7 @@ type opView struct {
 	list    *widget.List
 	mu      sync.Mutex
 	samples map[*fs.Op]*sample
+	stop    chan struct{} // closed by the returned stop func to end the ticker
 }
 
 // sample tracks the previous byte count and a smoothed transfer rate for one op.
@@ -35,9 +36,10 @@ type sample struct {
 }
 
 // NewFileOpView returns a list widget that shows a labelled progress bar per
-// active file operation, with a live byte count and transfer speed.
-func NewFileOpView(ops *fs.Operations) *widget.List {
-	v := &opView{ops: ops, samples: map[*fs.Op]*sample{}}
+// active file operation, with a live byte count and transfer speed, plus a
+// stop function that ends the sampling ticker goroutine.
+func NewFileOpView(ops *fs.Operations) (*widget.List, func()) {
+	v := &opView{ops: ops, samples: map[*fs.Op]*sample{}, stop: make(chan struct{})}
 	v.list = widget.NewList(
 		func() int { return len(v.ops.Active()) },
 		func() fyne.CanvasObject {
@@ -89,14 +91,19 @@ func NewFileOpView(ops *fs.Operations) *widget.List {
 			stop.OnTapped = func() { op.Cancel() }
 		})
 	go v.tick()
-	return v.list
+	return v.list, func() { close(v.stop) }
 }
 
 // tick periodically resamples per-op speed and repaints while any op is active.
 func (v *opView) tick() {
 	t := time.NewTicker(refreshInterval)
 	defer t.Stop()
-	for range t.C {
+	for {
+		select {
+		case <-v.stop:
+			return
+		case <-t.C:
+		}
 		active := v.ops.Active()
 		if len(active) == 0 {
 			continue
@@ -115,22 +122,23 @@ func (v *opView) updateRates(active []*fs.Op) {
 	live := make(map[*fs.Op]bool, len(active))
 	for _, op := range active {
 		live[op] = true
+		read, _ := op.Progress()
 		s := v.samples[op]
 		if s == nil {
-			v.samples[op] = &sample{lastBytes: op.TotalBytesRead, lastAt: now}
+			v.samples[op] = &sample{lastBytes: read, lastAt: now}
 			continue
 		}
 		dt := now.Sub(s.lastAt).Seconds()
 		if dt <= 0 {
 			continue
 		}
-		inst := float64(op.TotalBytesRead-s.lastBytes) / dt
+		inst := float64(read-s.lastBytes) / dt
 		if s.rate == 0 {
 			s.rate = inst
 		} else {
 			s.rate = 0.6*s.rate + 0.4*inst // EWMA smoothing
 		}
-		s.lastBytes = op.TotalBytesRead
+		s.lastBytes = read
 		s.lastAt = now
 	}
 	for op := range v.samples {
@@ -150,16 +158,17 @@ func (v *opView) rowText(op *fs.Op) string {
 	v.mu.Unlock()
 
 	name := op.A.Name
-	if op.TotalSize > 0 {
-		line := fmt.Sprintf("%s  —  %s / %s", name, humanBytes(op.TotalBytesRead), humanBytes(op.TotalSize))
+	read, total := op.Progress()
+	if total > 0 {
+		line := fmt.Sprintf("%s  —  %s / %s", name, humanBytes(read), humanBytes(total))
 		if op.IsPaused() {
 			line += "  ·  paused"
-		} else if rate > 0 && op.Status == fs.StatusRunning {
+		} else if st, _ := op.State(); rate > 0 && st == fs.StatusRunning {
 			line += "  ·  " + humanRate(rate)
 		}
 		return line
 	}
-	return fmt.Sprintf("%s  —  %s", name, humanBytes(op.TotalBytesRead))
+	return fmt.Sprintf("%s  —  %s", name, humanBytes(read))
 }
 
 // humanBytes formats a byte count with a binary (KiB-scale) unit.

@@ -88,8 +88,8 @@ func TestExtractMultiEntryWrapsInFolder(t *testing.T) {
 	if got := readFile(t, filepath.Join(dir, "photos", "sub", "b.txt")); got != "B" {
 		t.Errorf("sub/b.txt = %q", got)
 	}
-	if op.TotalSize != 2 || op.TotalBytesRead != 2 {
-		t.Errorf("progress = %d/%d, want 2/2", op.TotalBytesRead, op.TotalSize)
+	if read, total := op.Progress(); total != 2 || read != 2 {
+		t.Errorf("progress = %d/%d, want 2/2", read, total)
 	}
 
 	extractLocal(t, reg, archive, dir)

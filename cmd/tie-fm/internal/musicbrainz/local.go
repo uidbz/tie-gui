@@ -14,9 +14,8 @@ import (
 // localProvider reads the full MusicBrainz PostgreSQL database (schema
 // "musicbrainz" plus "cover_art_archive").
 type localProvider struct {
-	db        *sql.DB
-	coverBase string
-	timeout   time.Duration
+	db      *sql.DB
+	timeout time.Duration
 }
 
 func openLocal(s Settings) (Provider, error) {
@@ -30,7 +29,11 @@ func openLocal(s Settings) (Provider, error) {
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxIdleTime(5 * time.Minute)
-	return &localProvider{db: db, coverBase: s.CoverArtBaseURL, timeout: 30 * time.Second}, nil
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &localProvider{db: db, timeout: timeout}, nil
 }
 
 func (l *localProvider) Kind() string { return SourceLocal }
@@ -40,8 +43,11 @@ func (l *localProvider) Close() error { return l.db.Close() }
 func (l *localProvider) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	var n int
-	return l.db.QueryRowContext(ctx, `SELECT count(*) FROM musicbrainz.release LIMIT 1`).Scan(&n)
+	var one int
+	// Probe the schema cheaply: count(*) over the ~2.5M-row release table (a
+	// LIMIT on an aggregate is meaningless) made every health check a full
+	// scan.
+	return l.db.QueryRowContext(ctx, `SELECT 1 FROM musicbrainz.release LIMIT 1`).Scan(&one)
 }
 
 func (l *localProvider) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -62,8 +68,8 @@ func (l *localProvider) resolveArtists(ctx context.Context, name string) ([]int6
 	}{
 		{`SELECT id FROM musicbrainz.artist WHERE name = $1 ORDER BY edits_pending, id LIMIT 25`, name},
 		{`SELECT artist FROM musicbrainz.artist_alias WHERE name = $1 LIMIT 25`, name},
-		{`SELECT id FROM musicbrainz.artist WHERE name ILIKE $1 || '%' ORDER BY length(name), id LIMIT 25`, name},
-		{`SELECT id FROM musicbrainz.artist WHERE name ILIKE '%' || $1 || '%' ORDER BY length(name), id LIMIT 25`, name},
+		{`SELECT id FROM musicbrainz.artist WHERE name ILIKE $1 || '%' ORDER BY length(name), id LIMIT 25`, escapeLike(name)},
+		{`SELECT id FROM musicbrainz.artist WHERE name ILIKE '%' || $1 || '%' ORDER BY length(name), id LIMIT 25`, escapeLike(name)},
 	}
 	for _, st := range stages {
 		rows, err := l.db.QueryContext(ctx, st.query, st.arg)
@@ -101,6 +107,17 @@ func dedupeIDs(ids []int64) []int64 {
 		}
 	}
 	return out
+}
+
+// escapeLike neutralizes LIKE/ILIKE metacharacters in user-supplied names:
+// "24_carat" must match literally (not "24Xcarat"), and a stray "%" must not
+// turn an index-backed prefix match into a full table scan. Postgres treats
+// backslash as the default LIKE escape character in parameter values.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 const releaseSelect = `
@@ -259,7 +276,11 @@ func (l *localProvider) queryReleases(ctx context.Context, artistIDs []int64, al
 			len(args)))
 	}
 	if stage != matchAny {
-		args = append(args, album)
+		arg := album
+		if stage != matchExact {
+			arg = escapeLike(album)
+		}
+		args = append(args, arg)
 		ph := fmt.Sprintf("$%d", len(args))
 		switch stage {
 		case matchExact:
@@ -511,9 +532,9 @@ func (l *localProvider) SearchRecordings(ctx context.Context, q RecordingQuery) 
 		idByMBID[rr.rec.MBID] = rr.id
 	}
 	recs = RankRecordings(q, recs)
-	if len(recs) > 10 {
-		recs = recs[:10]
-	}
+	// RankRecordings already honors q.Limit; the old hard truncation to 10
+	// made the local backend answer 25-item queries with 10 while the web
+	// backend returned 25 — the backends must stay interchangeable.
 	if len(recs) > 0 {
 		ids := make([]int64, 0, len(recs))
 		for _, rec := range recs {
@@ -537,7 +558,11 @@ func (l *localProvider) queryRecordings(ctx context.Context, artistIDs []int64, 
 			len(args)))
 	}
 	if stage != matchAny {
-		args = append(args, title)
+		arg := title
+		if stage != matchExact {
+			arg = escapeLike(title)
+		}
+		args = append(args, arg)
 		ph := fmt.Sprintf("$%d", len(args))
 		switch stage {
 		case matchExact:

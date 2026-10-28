@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -228,6 +229,7 @@ func TestDeleteEntriesRemovesSelection(t *testing.T) {
 	}
 	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
 	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
+	fm.waitReload() // the initial listing now loads off the UI goroutine
 
 	var set []fs.Entry
 	for _, e := range fm.entries {
@@ -255,6 +257,10 @@ func TestDeleteEntriesRemovesSelection(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
 		t.Fatalf("unselected file was deleted: %v", err)
 	}
+	// Join the post-delete reload so its goroutine can't bleed (with its
+	// widget updates) into the next test under the race detector.
+	fm.waitDeletes()
+	fm.waitReload()
 }
 
 // TestContextMenuDeleteUsesSelection checks Delete acts on the whole selection
@@ -478,6 +484,7 @@ func TestTerminalToolbarItemState(t *testing.T) {
 	dir := t.TempDir()
 	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
 	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
+	fm.waitReload()
 	if fm.terminalButton == nil {
 		t.Fatal("terminal toolbar item missing")
 	}
@@ -498,5 +505,55 @@ func TestTerminalToolbarItemState(t *testing.T) {
 	fm.updateTerminalButton()
 	if fm.terminalButton.Disabled() {
 		t.Error("terminal action stayed disabled after returning to a local path")
+	}
+}
+
+// stubSearchFS is a tie backend whose only extra capability is search: List
+// returns a fixed directory and Search returns ranked hits.
+type stubSearchFS struct{}
+
+func (s *stubSearchFS) Scheme() string { return "tie" }
+func (s *stubSearchFS) List(path string) ([]fs.Entry, error) {
+	return []fs.Entry{{Name: "songs", Path: path + "/songs", IsDir: true}}, nil
+}
+func (s *stubSearchFS) Materialize(e fs.Entry) (string, error) { return e.Path, nil }
+func (s *stubSearchFS) Search(ctx context.Context, query string, offset, limit int) ([]fs.Entry, int, error) {
+	return []fs.Entry{
+		{Name: "ballads.mp3", Path: "tie:/music/ballads.mp3", Hash: "h1"},
+		{Name: "best-ballads", Path: "tie:/music/best-ballads", IsDir: true, Hash: "d1"},
+	}, 2, nil
+}
+
+// TestSearchShowsResults is the end-to-end regression test for the tie
+// free-text search feature (fs.Searcher behind the pane's search row):
+// submitting a query swaps the table to the ranked results with a status
+// line, directories first, and clearing restores the original listing.
+func TestSearchShowsResults(t *testing.T) {
+	test.NewApp()
+	search := &stubSearchFS{}
+	registry := fs.NewRegistry(fs.NewLocalFS(), search)
+	fm := NewFileManager("tie:/music", registry, fs.NewOperations(registry), nil, nil)
+	fm.waitReload()
+
+	fm.searchEntry.OnSubmitted("ballads")
+	fm.waitReload()
+
+	if !fm.searchActive {
+		t.Fatal("search did not become active")
+	}
+	if len(fm.entries) != 2 || fm.entries[0].Name != "best-ballads" || fm.entries[1].Name != "ballads.mp3" {
+		t.Fatalf("results = %v, want the ranked entries with the directory first", fm.entries)
+	}
+	if want := "2 results for “ballads”"; fm.searchStatus.Text != want {
+		t.Errorf("search status = %q, want %q", fm.searchStatus.Text, want)
+	}
+
+	fm.clearSearch()
+	fm.waitReload()
+	if fm.searchActive {
+		t.Fatal("clearSearch left search active")
+	}
+	if len(fm.entries) != 1 || fm.entries[0].Name != "songs" {
+		t.Fatalf("listing not restored after clearing search: %v", fm.entries)
 	}
 }

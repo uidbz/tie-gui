@@ -62,7 +62,7 @@ func (o *Operations) Extract(archive, destDir Entry, done func(*Op)) *Op {
 	if o.reg != nil {
 		op.destFS = o.reg.For(destDir.Path)
 	}
-	o.queued <- op
+	o.push(op)
 	return op
 }
 
@@ -210,7 +210,7 @@ func (op *Op) doExtract() error {
 	if err := walkArchive(op.ctx, local, op.A.Name, func(m archiveMember, _ archives.FileInfo) error {
 		members = append(members, m)
 		if !m.isDir {
-			op.TotalSize += m.size
+			op.addTotal(m.size)
 		}
 		return nil
 	}); err != nil {
@@ -253,7 +253,7 @@ func (op *Op) doExtract() error {
 	if err != nil {
 		return err
 	}
-	op.Status = StatusCompleted
+	op.setStatus(StatusCompleted, nil)
 	return nil
 }
 

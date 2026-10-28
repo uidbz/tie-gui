@@ -135,6 +135,7 @@ func TestOpenEntryTieURL(t *testing.T) {
 	cfg.SetApp("jpg", config.AppAssoc{Command: "tie-view %f", Stream: true, TieURL: true})
 
 	fm := NewFileManager(t.TempDir(), registry, ops, &cfg, win)
+	fm.waitReload() // initial listing loads off the UI goroutine
 
 	// Tie entry: handed over as its tie:/path (readable, and the receiver
 	// can open the containing directory), no materialization.
@@ -157,6 +158,7 @@ func TestOpenEntryTieURL(t *testing.T) {
 
 	// Tie entry without a content hash: falls back to a materialized copy.
 	fm.openEntry(fs.Entry{Name: "pic.jpg", Path: "tie:/x/pic.jpg"})
+	fm.waitOpen() // materialization runs off the UI goroutine now
 	got = targets()
 	if len(got) != 3 || got[2] != tie.materializedPath {
 		t.Fatalf("openEntry hashless tie entry launched %v, want the materialized path", got)
@@ -166,6 +168,7 @@ func TestOpenEntryTieURL(t *testing.T) {
 	cfg.SetApp("jpg", config.AppAssoc{Command: "tie-view %f"})
 	tie.materialized = false
 	fm.openEntry(fs.Entry{Name: "pic.jpg", Path: "tie:/x/pic.jpg", Hash: "abc123"})
+	fm.waitOpen()
 	if got = targets(); len(got) != 4 || got[3] != tie.materializedPath {
 		t.Fatalf("openEntry plain association launched %v, want the materialized path", got)
 	}

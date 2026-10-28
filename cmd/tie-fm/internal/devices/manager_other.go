@@ -13,7 +13,12 @@ type Manager struct{ OnChange func() }
 
 func NewManager(*fs.MTPManager) *Manager { return &Manager{} }
 
-func (m *Manager) Start()                        {}
-func (m *Manager) Devices() []Device             { return nil }
-func (m *Manager) Mount(Device) (string, error)  { return "", errors.New("removable devices not supported on this platform") }
-func (m *Manager) Eject(Device) error            { return errors.New("removable devices not supported on this platform") }
+func (m *Manager) Start()            {}
+func (m *Manager) Close()            {}
+func (m *Manager) Devices() []Device { return nil }
+func (m *Manager) Mount(Device) (string, error) {
+	return "", errors.New("removable devices not supported on this platform")
+}
+func (m *Manager) Eject(Device) error {
+	return errors.New("removable devices not supported on this platform")
+}

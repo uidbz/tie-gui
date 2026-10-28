@@ -5,6 +5,7 @@ package devices
 import (
 	"bytes"
 	"errors"
+	"strings"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -42,6 +43,9 @@ func newUDisks() (*udisksClient, error) {
 type managedObjects = map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 
 func (u *udisksClient) managed() (managedObjects, error) {
+	if u.conn == nil {
+		return nil, errors.New("udisks: connection closed")
+	}
 	var objs managedObjects
 	obj := u.conn.Object(udisksService, udisksObjMgr)
 	err := obj.Call(ifaceObjMgr+".GetManagedObjects", 0).Store(&objs)
@@ -98,21 +102,38 @@ func (u *udisksClient) driveIsRemovable(objs managedObjects, drive dbus.ObjectPa
 
 // Mount ensures the device is mounted and returns the mount path.
 func (u *udisksClient) Mount(bd blockDevice) (string, error) {
-	if bd.mountPoint != "" {
-		return bd.mountPoint, nil
+	// Don't trust the snapshot's mountPoint: the device may have been
+	// unmounted (or auto-mounted elsewhere) between the scan and the click.
+	// Ask udisks to mount, and resolve the live path from managed() when the
+	// call reports "already mounted" or returns no path.
+	if u.conn == nil {
+		return "", errors.New("udisks: connection closed")
 	}
-	var mountPath string
 	obj := u.conn.Object(udisksService, bd.obj)
+	var mountPath string
 	err := obj.Call(ifaceFS+".Mount", 0, map[string]dbus.Variant{}).Store(&mountPath)
+	if err == nil && mountPath != "" {
+		return mountPath, nil
+	}
+	if objs, merr := u.managed(); merr == nil {
+		if ifaces, ok := objs[bd.obj]; ok {
+			if mp := firstMountPoint(ifaces[ifaceFS]["MountPoints"]); mp != "" {
+				return mp, nil
+			}
+		}
+	}
 	if err != nil {
 		return "", err
 	}
-	return mountPath, nil
+	return "", errors.New("udisks: mount succeeded but reported no mount path")
 }
 
 // Eject unmounts the filesystem and powers the drive off (best effort), so the
 // stick can be physically removed.
 func (u *udisksClient) Eject(bd blockDevice) error {
+	if u.conn == nil {
+		return errors.New("udisks: connection closed")
+	}
 	fsObj := u.conn.Object(udisksService, bd.obj)
 	if call := fsObj.Call(ifaceFS+".Unmount", 0, map[string]dbus.Variant{}); call.Err != nil {
 		// Not fatal if it was already unmounted; keep going to power off.
@@ -128,15 +149,22 @@ func (u *udisksClient) Eject(bd blockDevice) error {
 }
 
 // watch invokes onChange whenever udisks2 reports device or mount changes.
+// The matches are restricted to the udisks2 sender (and its manager object for
+// the ObjectManager signals): an unfiltered PropertiesChanged match fires for
+// every property change on the whole system bus, turning a busy desktop into
+// a refresh storm (each one runs a GetManagedObjects + libmtp rescan).
 func (u *udisksClient) watch(onChange func()) error {
 	if err := u.conn.AddMatchSignal(
 		dbus.WithMatchInterface(ifaceObjMgr),
+		dbus.WithMatchObjectPath(udisksObjMgr),
+		dbus.WithMatchSender(udisksService),
 	); err != nil {
 		return err
 	}
 	if err := u.conn.AddMatchSignal(
 		dbus.WithMatchInterface(ifacePropsName),
 		dbus.WithMatchMember("PropertiesChanged"),
+		dbus.WithMatchSender(udisksService),
 	); err != nil {
 		return err
 	}
@@ -150,6 +178,25 @@ func (u *udisksClient) watch(onChange func()) error {
 	return nil
 }
 
+// close removes the signal subscription and closes the system-bus connection.
+func (u *udisksClient) close() {
+	if u.conn == nil {
+		return
+	}
+	u.conn.RemoveMatchSignal(
+		dbus.WithMatchInterface(ifaceObjMgr),
+		dbus.WithMatchObjectPath(udisksObjMgr),
+		dbus.WithMatchSender(udisksService),
+	)
+	u.conn.RemoveMatchSignal(
+		dbus.WithMatchInterface(ifacePropsName),
+		dbus.WithMatchMember("PropertiesChanged"),
+		dbus.WithMatchSender(udisksService),
+	)
+	u.conn.Close()
+	u.conn = nil
+}
+
 func blockLabel(objs managedObjects, block map[string]dbus.Variant, drive dbus.ObjectPath) string {
 	if l, _ := block["IdLabel"].Value().(string); l != "" {
 		return l
@@ -157,11 +204,11 @@ func blockLabel(objs managedObjects, block map[string]dbus.Variant, drive dbus.O
 	if d := objs[drive][ifaceDrive]; d != nil {
 		vendor, _ := d["Vendor"].Value().(string)
 		model, _ := d["Model"].Value().(string)
-		if label := trimSpace(vendor + " " + model); label != "" {
+		if label := strings.TrimSpace(vendor + " " + model); label != "" {
 			return label
 		}
 	}
-	if dev := firstMountPoint(block["Device"]); dev != "" {
+	if dev := decodeByteString(block["Device"]); dev != "" {
 		return dev
 	}
 	return "USB storage"
@@ -172,21 +219,23 @@ func variantBool(v dbus.Variant) (bool, bool) {
 	return b, ok
 }
 
-// firstMountPoint decodes a udisks2 bytestring property (NUL-terminated) or the
-// first entry of an array of them.
-func firstMountPoint(v dbus.Variant) string {
+// decodeByteString decodes a udisks2 bytestring property (NUL-terminated),
+// e.g. the Block "Device" node.
+func decodeByteString(v dbus.Variant) string {
 	switch val := v.Value().(type) {
+	case []byte:
+		return string(bytes.TrimRight(val, "\x00"))
 	case [][]byte:
 		if len(val) == 0 {
 			return ""
 		}
 		return string(bytes.TrimRight(val[0], "\x00"))
-	case []byte:
-		return string(bytes.TrimRight(val, "\x00"))
 	}
 	return ""
 }
 
-func trimSpace(s string) string {
-	return string(bytes.TrimSpace([]byte(s)))
+// firstMountPoint decodes a udisks2 bytestring property (NUL-terminated) or the
+// first entry of an array of them.
+func firstMountPoint(v dbus.Variant) string {
+	return decodeByteString(v)
 }

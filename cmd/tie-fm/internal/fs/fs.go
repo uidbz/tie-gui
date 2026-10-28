@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,6 +49,14 @@ type TagStore interface {
 	ListFavoriteTags() ([]string, error)
 	AddFavoriteTag(tag string) error
 	RemoveFavoriteTag(tag string) error
+}
+
+// BulkTagger is an optional TagStore capability: resolve the tags of many
+// subjects in one round trip. The listing UI prefers it over per-row GetTags,
+// which is N+1 network calls for a page of tie entries.
+type BulkTagger interface {
+	// TagsFor maps each key to its tags (keys without tags may be absent).
+	TagsFor(keys []string) (map[string][]string, error)
 }
 
 // Searcher is implemented by backends that support free-text search over
@@ -212,7 +221,10 @@ func LocalPath(path string) string {
 }
 
 // Registry resolves a path to the FileSystem that serves its scheme.
+// Providers can be swapped at runtime (tie config/collection switches) while
+// transfer and thumbnail goroutines resolve paths, so access is guarded.
 type Registry struct {
+	mu    sync.RWMutex
 	local FileSystem
 	tie   FileSystem
 	mtp   FileSystem
@@ -224,13 +236,23 @@ func NewRegistry(local, tie FileSystem) *Registry {
 
 // SetTie replaces the provider serving tie: paths (used when the user selects a
 // different tie config at runtime).
-func (r *Registry) SetTie(tie FileSystem) { r.tie = tie }
+func (r *Registry) SetTie(tie FileSystem) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tie = tie
+}
 
 // SetMTP sets the provider serving mtp: paths (connected phones/media devices).
-func (r *Registry) SetMTP(mtp FileSystem) { r.mtp = mtp }
+func (r *Registry) SetMTP(mtp FileSystem) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mtp = mtp
+}
 
 // For returns the provider for path's scheme.
 func (r *Registry) For(path string) FileSystem {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	switch SchemeOf(path) {
 	case "tie":
 		return r.tie

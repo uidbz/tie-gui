@@ -15,17 +15,21 @@ import (
 func waitDone(t *testing.T, op *Op) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError && op.Status != StatusCancelled {
+	for {
+		st, err := op.State()
+		if st == StatusCancelled {
+			t.Fatalf("operation was cancelled: %v", err)
+		}
+		if st == StatusError {
+			t.Fatalf("operation failed: %v", err)
+		}
+		if st == StatusCompleted {
+			return
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("operation did not finish in time")
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if op.Status == StatusCancelled {
-		t.Fatalf("operation was cancelled: %v", op.Err)
-	}
-	if op.Status == StatusError {
-		t.Fatalf("operation failed: %v", op.Err)
 	}
 }
 
@@ -169,8 +173,8 @@ func TestCopyConflictCancel(t *testing.T) {
 	op := ops.Copy(src, dst, nil)
 	waitSettled(t, op)
 
-	if op.Status != StatusCancelled || !errors.Is(op.Err, ErrCancelled) {
-		t.Fatalf("Status = %v, Err = %v; want StatusCancelled with ErrCancelled", op.Status, op.Err)
+	if st, err := op.State(); st != StatusCancelled || !errors.Is(err, ErrCancelled) {
+		t.Fatalf("Status = %v, Err = %v; want StatusCancelled with ErrCancelled", st, err)
 	}
 	got, _ := os.ReadFile(filepath.Join(destDir, "src.txt"))
 	if string(got) != "old content" {
@@ -351,8 +355,8 @@ func TestTransferCancelStopsRemaining(t *testing.T) {
 	pending := transferCopies(t, ops.NewTransfer(len(names)), srcDir, destDir, names...)
 	for _, op := range pending {
 		waitSettled(t, op)
-		if op.Status != StatusCancelled || !errors.Is(op.Err, ErrCancelled) {
-			t.Fatalf("Status = %v, Err = %v; want every item StatusCancelled", op.Status, op.Err)
+		if st, err := op.State(); st != StatusCancelled || !errors.Is(err, ErrCancelled) {
+			t.Fatalf("Status = %v, Err = %v; want every item StatusCancelled", st, err)
 		}
 	}
 
@@ -596,7 +600,7 @@ func (f *fakePlainImportFS) Import(destDir, srcPath, name string) error {
 func waitSettled(t *testing.T, op *Op) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for op.Status != StatusCompleted && op.Status != StatusError && op.Status != StatusCancelled {
+	for st, _ := op.State(); st != StatusCompleted && st != StatusError && st != StatusCancelled; st, _ = op.State() {
 		if time.Now().After(deadline) {
 			t.Fatal("operation did not finish in time")
 		}
@@ -742,11 +746,11 @@ func TestImportDirTypeUnsupportedBackendFails(t *testing.T) {
 	op := ops.CopyAs(src, Entry{Path: "tie:/music", IsDir: true}, "audio-dir", nil)
 	waitSettled(t, op)
 
-	if op.Status != StatusError {
-		t.Fatalf("Status = %v, want StatusError", op.Status)
+	if st, _ := op.State(); st != StatusError {
+		t.Fatalf("Status = %v, want StatusError", st)
 	}
-	if op.Err == nil || !strings.Contains(op.Err.Error(), "directory types") {
-		t.Fatalf("Err = %v, want a directory-types error", op.Err)
+	if _, err := op.State(); err == nil || !strings.Contains(err.Error(), "directory types") {
+		t.Fatalf("Err = %v, want a directory-types error", err)
 	}
 }
 
@@ -1200,11 +1204,11 @@ func TestImportTagsUnsupportedBackendFails(t *testing.T) {
 	op := ops.ImportAlbum(g, "audio-dir", []string{"jazz"}, nil)
 	waitSettled(t, op)
 
-	if op.Status != StatusError {
-		t.Fatalf("Status = %v, want StatusError", op.Status)
+	if st, _ := op.State(); st != StatusError {
+		t.Fatalf("Status = %v, want StatusError", st)
 	}
-	if op.Err == nil || !strings.Contains(op.Err.Error(), "tagging") {
-		t.Fatalf("Err = %v, want a tagging error", op.Err)
+	if _, err := op.State(); err == nil || !strings.Contains(err.Error(), "tagging") {
+		t.Fatalf("Err = %v, want a tagging error", err)
 	}
 }
 

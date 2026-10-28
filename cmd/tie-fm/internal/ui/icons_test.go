@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -19,7 +21,7 @@ func TestIconNamesFor(t *testing.T) {
 		"noext":       "application-octet-stream",
 	}
 	for name, want := range cases {
-		got := iconNamesFor(name)
+		got := iconNamesFor(strings.ToLower(strings.TrimPrefix(filepath.Ext(name), ".")))
 		if len(got) == 0 || got[0] != want {
 			t.Errorf("iconNamesFor(%q) first = %v, want %q", name, got, want)
 		}

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"os"
 	"sort"
 	"strings"
 
@@ -33,16 +34,13 @@ func main() {
 	mainWin := application.NewWindow("tie-fm")
 
 	appCfg, cfgErr := config.Load()
-	if cfgErr != nil {
-		appCfg = config.Default()
-	}
 
 	// The tie client is built from the configured tie config (a local server by
 	// default) but only connects when a tie: path is visited; connection errors
 	// surface as dialogs at that point. The bound collection is tie-fm's own
 	// profile selection (TieCollection, preferring the "files" entry when
 	// unset), not the tie config's shared DefaultCollection.
-	tieCfg, _ := config.LoadTieConfig(appCfg.TieConfig)
+	tieCfg, tieCfgErr := config.LoadTieConfig(appCfg.TieConfig)
 	tc := client.NewTieClientFor(tieCfg, tieconfig.AppCollection(tieCfg, appCfg.TieCollection, config.DefaultTieCollection))
 
 	registry := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(tc))
@@ -62,7 +60,7 @@ func main() {
 	// transparent spacer fixes its height (a bare List reports a tiny MinSize),
 	// and the whole panel is hidden while no operation is active so it collapses
 	// when idle instead of leaving an empty strip.
-	opsView := ui.NewFileOpView(ops)
+	opsView, stopOpsView := ui.NewFileOpView(ops)
 	opsSpacer := canvas.NewRectangle(color.Transparent)
 	opsSpacer.SetMinSize(fyne.NewSize(0, 120))
 	opsPanel := container.NewBorder(
@@ -89,8 +87,9 @@ func main() {
 		})
 	}
 
-	left := ui.NewFileManager(homeStart(appCfg), registry, ops, &appCfg, mainWin)
-	right := ui.NewFileManager(homeStart(appCfg), registry, ops, &appCfg, mainWin)
+	leftStart, rightStart := startPaths(appCfg)
+	left := ui.NewFileManager(leftStart, registry, ops, &appCfg, mainWin)
+	right := ui.NewFileManager(rightStart, registry, ops, &appCfg, mainWin)
 	left.SetSibling(right)
 	right.SetSibling(left)
 
@@ -388,17 +387,76 @@ func main() {
 
 	mainWin.SetContent(content)
 	mainWin.Resize(fyne.NewSize(1100, 700))
+
+	// Surface startup config problems instead of silently running on defaults
+	// that a later save would persist over the user's (broken) files.
+	if cfgErr != nil {
+		dialog.ShowError(fmt.Errorf("reading tie-fm config (%s): %w", appCfg.Path(), cfgErr), mainWin)
+	}
+	if tieCfgErr != nil {
+		dialog.ShowError(fmt.Errorf("reading tie config: %w", tieCfgErr), mainWin)
+	}
+
+	// Quit cleanly: persist the panel paths, cancel running transfers, and
+	// stop the ops-view ticker before the window closes. Without this,
+	// closing with an active transfer deadlocks: the ops goroutine can be
+	// blocked on a conflict dialog whose window is gone, so shutdown waits
+	// forever on a goroutine that can never finish.
+	quitApp := func() {
+		appCfg.LeftPath = left.CurrentPath()
+		appCfg.RightPath = right.CurrentPath()
+		_ = appCfg.Save()
+		stopOpsView()
+		devMgr.Close()
+		mainWin.Close()
+	}
+	mainWin.SetCloseIntercept(func() {
+		running := ops.Active()
+		if len(running) == 0 {
+			quitApp()
+			return
+		}
+		dialog.ShowConfirm("Transfers running",
+			fmt.Sprintf("%d file operation(s) are still running. Quit and cancel them?", len(running)),
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				for _, op := range running {
+					op.Cancel()
+				}
+				quitApp()
+			}, mainWin)
+	})
+
 	mainWin.SetMaster()
 	mainWin.ShowAndRun()
 }
 
+// startPaths resolves the paths the two panels open on: the ones saved at the
+// last quit, else the same default homeStart picks for both.
+func startPaths(cfg config.Config) (string, string) {
+	def := homeStart(cfg)
+	l, r := cfg.LeftPath, cfg.RightPath
+	if l == "" {
+		l = def
+	}
+	if r == "" {
+		r = def
+	}
+	return l, r
+}
+
 // homeStart returns the path the panels should open on: the first non-tie
-// bookmark, else "/".
+// bookmark, else the user's home directory, else "/".
 func homeStart(cfg config.Config) string {
 	for _, bm := range cfg.Bookmarks {
 		if !fs.IsTie(bm.Path) {
 			return bm.Path
 		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
 	}
 	return "/"
 }
