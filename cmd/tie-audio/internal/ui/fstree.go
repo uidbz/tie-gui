@@ -43,6 +43,11 @@ type tieFSTree struct {
 	dirs     map[string]*client.Directory // dir path -> cached listing
 	branches map[string]bool              // node ID -> is a directory
 	files    map[string]tieFSNode         // leaf node ID -> file entry
+	// loading marks paths whose listing fetch is in flight: a Fyne tree
+	// re-asks childUIDs on every layout pass, so without this an uncached
+	// directory would kick a new network fetch (and spam a possibly dead
+	// server) per pass.
+	loading map[string]bool
 
 	// currentDir is the directory whose listing the cover wall currently
 	// shows ("" when the wall is fed by a tag query), so reload can re-read
@@ -68,6 +73,7 @@ func newTieFSTree(page *browsePage) *tieFSTree {
 		// the whole tree renders empty.
 		branches: map[string]bool{"": true, "/": true},
 		files:    make(map[string]tieFSNode),
+		loading:  make(map[string]bool),
 	}
 	tree := widget.NewTree(
 		t.childUIDs,
@@ -91,11 +97,26 @@ func (t *tieFSTree) childUIDs(uid widget.TreeNodeID) []widget.TreeNodeID {
 	if uid == "" {
 		return []widget.TreeNodeID{"/"}
 	}
-	dir, err := t.readDir(uid)
-	if err != nil {
-		fmt.Println("Error reading tie dir", uid, ":", err)
-		return nil
+	// The tree calls this during layout, so it must never block: an uncached
+	// directory kicks a background fetch and renders empty until the fetch
+	// lands and refreshes the tree.
+	t.mu.Lock()
+	d, ok := t.dirs[uid]
+	inflight := t.loading[uid]
+	if !ok && !inflight {
+		t.loading[uid] = true
 	}
+	t.mu.Unlock()
+	if !ok {
+		if !inflight {
+			t.kickFetch(uid)
+		}
+		return nil // renders once the fetch lands and refreshes the tree
+	}
+	if d == nil {
+		return nil // cached failure (already logged when it happened)
+	}
+	dir := *d
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -214,18 +235,51 @@ func (t *tieFSTree) openTrack(f tieFSNode) {
 }
 
 // showDir replaces the cover wall with the albums and tracks of the
-// directory at dirPath.
+// directory at dirPath. The listing read and the per-subdirectory title
+// lookups run on a fetch goroutine (never the UI thread); the wall swap
+// happens in a single fyne.Do, dropped if a newer wall feed started while
+// the directory loaded.
 func (t *tieFSTree) showDir(dirPath string) {
-	dir, err := t.readDir(dirPath)
-	if err != nil {
-		fmt.Println("Error reading tie dir", dirPath, ":", err)
-		return
-	}
-	t.mu.Lock()
-	t.currentDir = dirPath
-	t.mu.Unlock()
-	t.page.feed = feedDir
-	t.showListing(dir)
+	gen := t.page.nextWallGen()
+	sess := t.page.sess()
+	go func() {
+		dir, err := t.readDirFor(sess, dirPath)
+		if err != nil {
+			fmt.Println("Error reading tie dir", dirPath, ":", err)
+			return
+		}
+		albums := t.albumsFor(sess, dir)
+		fyne.Do(func() {
+			if gen != t.page.wallGen || t.page.sess() != sess {
+				return // superseded by a newer feed or a session swap
+			}
+			t.mu.Lock()
+			t.currentDir = dirPath
+			t.mu.Unlock()
+			t.page.feed = feedDir
+			t.page.setWallAlbums(albums)
+			t.page.viewer.ReadCustomAsync(func() []gallery.CustomReader { return t.page.readers(albums) })
+			t.page.showWall()
+		})
+	}()
+}
+
+// kickFetch fetches one directory listing off the UI goroutine (for a
+// childUIDs cache miss) and refreshes the tree when it lands.
+func (t *tieFSTree) kickFetch(dirPath string) {
+	sess := t.page.sess()
+	go func() {
+		_, err := t.readDirFor(sess, dirPath)
+		if err != nil {
+			fmt.Println("Error reading tie dir", dirPath, ":", err)
+		}
+		fyne.Do(func() {
+			t.mu.Lock()
+			delete(t.loading, dirPath)
+			t.mu.Unlock()
+			t.tree.Refresh()
+		})
+	}()
 }
 
 // reset drops every cached listing and title, re-seeds the tree's branch set
@@ -256,11 +310,11 @@ func (t *tieFSTree) reload() {
 	}
 }
 
-// showListing replaces the cover wall with the albums of a directory
-// listing: each subdirectory becomes an album tile, followed by the
-// directory's standalone audio files as single-track albums and its
-// audio-archives as archive albums.
-func (t *tieFSTree) showListing(dir client.Directory) {
+// albumsFor turns a directory listing into wall albums: each subdirectory
+// becomes an album tile, followed by the directory's standalone audio files
+// as single-track albums and its audio-archives as archive albums. Runs on
+// the caller's (fetch) goroutine — subTitle does store lookups.
+func (t *tieFSTree) albumsFor(sess *data.Session, dir client.Directory) []data.Album {
 	albums := make([]data.Album, 0, len(dir.SubDirs)+len(dir.Files))
 	// SubDirs arrives from a map iteration; sort by name for a stable wall,
 	// matching the tree's child order. The root's self-edge is skipped.
@@ -286,7 +340,7 @@ func (t *tieFSTree) showListing(dir client.Directory) {
 		albums = append(albums, data.Album{
 			UID:   string(sub.Uid),
 			Kind:  data.AlbumDir,
-			Title: t.subTitle(sub.Uid, fsBaseName(p)),
+			Title: t.subTitle(sess, sub.Uid, fsBaseName(p)),
 		})
 	}
 	for _, f := range dir.Files {
@@ -301,16 +355,14 @@ func (t *tieFSTree) showListing(dir client.Directory) {
 		}
 		albums = append(albums, data.Album{UID: a.Hash, Kind: data.AlbumArchive, Title: a.Filename})
 	}
-	t.page.setWallAlbums(albums)
-	t.page.viewer.ReadCustomAsync(func() []gallery.CustomReader { return t.page.readers(albums) })
-	t.page.showWall()
+	return albums
 }
 
 // subTitle resolves a subdirectory's display title: its own "album" or
 // "name" triple when recorded (saved playlists carry one), else the fallback
 // (the folder name). The lookup is cached like the directory listings so a
 // re-shown wall doesn't re-query per entry.
-func (t *tieFSTree) subTitle(uid client.DirUID, fallback string) string {
+func (t *tieFSTree) subTitle(sess *data.Session, uid client.DirUID, fallback string) string {
 	t.mu.Lock()
 	key := "title:" + string(uid)
 	cached, ok := t.dirs[key]
@@ -322,7 +374,7 @@ func (t *tieFSTree) subTitle(uid client.DirUID, fallback string) string {
 		return cached.Paths[0]
 	}
 	title := ""
-	if row, err := t.page.sess().Tie.Get(string(uid)); err == nil {
+	if row, err := sess.Tie.Get(string(uid)); err == nil {
 		title = client.RowFirst(row, client.RelAlbum)
 		if title == "" {
 			title = client.RowFirst(row, client.RelName)
@@ -341,15 +393,24 @@ func (t *tieFSTree) subTitle(uid client.DirUID, fallback string) string {
 	return title
 }
 
-// readDir returns the (cached) listing of the directory at dirPath. A path
-// not tied to any DirUID yields an empty listing — uncached, so a directory
-// imported at that path later this session appears on the next read. Failures
-// are cached: otherwise a dead server makes the tree widget re-query in a
-// tight loop on every refresh (the tree re-asks childUIDs per layout pass),
-// spamming the dead server and starving the UI. Successful listings are
-// cached for the session; a wall reload (reloadWall) and a collection switch
-// drop the cache.
+// readDir returns the (cached) listing of the directory at dirPath, using
+// the current session (only safe to call from the UI goroutine; fetch paths
+// use readDirFor with the session they captured).
 func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
+	return t.readDirFor(t.page.sess(), dirPath)
+}
+
+// readDirFor returns the (cached) listing of the directory at dirPath
+// through sess. A path not tied to any DirUID yields an empty listing —
+// uncached, so a directory imported at that path later this session appears
+// on the next read. Failures are cached: otherwise a dead server makes the
+// tree widget re-query in a tight loop on every refresh (the tree re-asks
+// childUIDs per layout pass), spamming the dead server and starving the UI.
+// Successful listings are cached for the session; a wall reload (reloadWall)
+// and a collection switch drop the cache. Results fetched through a session
+// that has since been swapped out are returned but NOT cached — they belong
+// to the old collection. Safe to call from fetch goroutines.
+func (t *tieFSTree) readDirFor(sess *data.Session, dirPath string) (client.Directory, error) {
 	t.mu.Lock()
 	d, ok := t.dirs[dirPath]
 	t.mu.Unlock()
@@ -360,12 +421,10 @@ func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 		return *d, nil
 	}
 
-	tc := t.page.sess().Tie
+	tc := sess.Tie
 	uid, err := tc.DirUIDFromPath(dirPath)
 	if err != nil {
-		t.mu.Lock()
-		t.dirs[dirPath] = nil
-		t.mu.Unlock()
+		t.cacheDir(dirPath, nil, sess)
 		return client.Directory{}, err
 	}
 	if uid == "" {
@@ -376,15 +435,22 @@ func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 	}
 	dir, err := client.ReadTieDir(tc, uid)
 	if err != nil {
-		t.mu.Lock()
-		t.dirs[dirPath] = nil
-		t.mu.Unlock()
+		t.cacheDir(dirPath, nil, sess)
 		return client.Directory{}, err
 	}
-	t.mu.Lock()
-	t.dirs[dirPath] = &dir
-	t.mu.Unlock()
+	t.cacheDir(dirPath, &dir, sess)
 	return dir, nil
+}
+
+// cacheDir stores a listing (nil = failure) unless the session it was read
+// through is no longer live — a collection switch dropped that cache.
+func (t *tieFSTree) cacheDir(dirPath string, d *client.Directory, sess *data.Session) {
+	if t.page.sess() != sess {
+		return
+	}
+	t.mu.Lock()
+	t.dirs[dirPath] = d
+	t.mu.Unlock()
 }
 
 // fsBaseName returns the last segment of a slash path ("" for "/").

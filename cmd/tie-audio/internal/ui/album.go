@@ -17,9 +17,19 @@ import (
 // openAlbum loads an album's tracks off the UI goroutine, then shows the track
 // list. Playback actions arrive in Phase 2.
 func (b *browsePage) openAlbum(a data.Album) {
+	// Archive albums resolve via a blob download + member hashing that can
+	// take tens of seconds: only the newest open may swap the view, or a
+	// slow archive yanks the page back over whatever the user opened next.
+	b.albumGen++
+	gen := b.albumGen
 	go func() {
 		tracks, err := b.sess().AlbumTracks(a)
-		fyne.Do(func() { b.showAlbumView(a, tracks, err) })
+		fyne.Do(func() {
+			if gen != b.albumGen {
+				return
+			}
+			b.showAlbumView(a, tracks, err)
+		})
 	}()
 }
 

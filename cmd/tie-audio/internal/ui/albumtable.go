@@ -173,6 +173,10 @@ type trackTable struct {
 	sortKey string
 	sortAsc bool
 
+	// columnsDialogOpen guards the Columns dialog against a second open
+	// while one is already up.
+	columnsDialogOpen bool
+
 	// lastWidth is the most recent laid-out width of the table container, used to
 	// size the stretch (title) column so it fits whatever pane the table lives in
 	// (full window, or a split pane beside the queue) and adapts to resizes.
@@ -664,19 +668,24 @@ func (at *trackTable) setColumns(keys []string) {
 // then hidden ones); a checkbox selects visibility and the up/down buttons
 // reorder. apply is called with the checked columns in list order.
 func (at *trackTable) showColumnsDialog() {
+	if at.columnsDialogOpen {
+		return // a double click must not stack dialogs
+	}
+	at.columnsDialogOpen = true
 	showTableColumnsDialog(at.win, at.cols, at.opts.availableCols, func(keys []string) {
 		at.setColumns(keys)
 		if at.onColumnsChanged != nil {
 			at.onColumnsChanged(keys)
 		}
-	})
+	}, func() { at.columnsDialogOpen = false })
 }
 
 // showTableColumnsDialog is the column toggle/reorder dialog shared by the
 // track table and the browse wall's album table: visible lists the currently
 // shown columns in order, available the full catalog, and apply receives the
-// new visible key set on Apply.
-func showTableColumnsDialog(win fyne.Window, visible, available []albumColumn, apply func(keys []string)) {
+// new visible key set on Apply. closed runs when the dialog goes away
+// (either button), so callers can guard against re-opening it.
+func showTableColumnsDialog(win fyne.Window, visible, available []albumColumn, apply func(keys []string), closed func()) {
 	order := make([]string, 0, len(available))
 	checks := map[string]bool{}
 	for _, c := range visible {
@@ -722,6 +731,9 @@ func showTableColumnsDialog(win fyne.Window, visible, available []albumColumn, a
 	rebuild()
 
 	d := dialog.NewCustomConfirm("Columns", "Apply", "Cancel", container.NewVScroll(list), func(ok bool) {
+		if closed != nil {
+			closed()
+		}
 		if !ok {
 			return
 		}

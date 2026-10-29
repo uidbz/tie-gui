@@ -66,6 +66,10 @@ type wallTable struct {
 	sortKey string
 	sortAsc bool
 
+	// columnsDialogOpen guards the Columns dialog against a second open
+	// while one is already up.
+	columnsDialogOpen bool
+
 	// lastWidth is the most recent laid-out width of the table container, used
 	// to size the stretch (title) column (see trackTable.lastWidth).
 	lastWidth float32
@@ -371,10 +375,14 @@ func (wt *wallTable) setColumns(keys []string) {
 
 // showColumnsDialog lets the user toggle and reorder columns (regular layout).
 func (wt *wallTable) showColumnsDialog() {
+	if wt.columnsDialogOpen {
+		return // a double click must not stack dialogs
+	}
+	wt.columnsDialogOpen = true
 	showTableColumnsDialog(wt.win, wt.cols, allWallColumns, func(keys []string) {
 		wt.setColumns(keys)
 		wt.page.saveWallColumns(keys)
-	})
+	}, func() { wt.columnsDialogOpen = false })
 }
 
 // --- View-mode plumbing (browsePage) ---

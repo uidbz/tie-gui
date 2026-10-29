@@ -141,6 +141,19 @@ type browsePage struct {
 	// collection's tags in the sidebar.
 	tagGen int
 
+	// wallGen numbers the album-wall feed fetches (refreshAlbums,
+	// refreshLatest, startSearch, directory listings) and albumGen numbers
+	// openAlbum; both are bumped on the UI goroutine only. A reply whose
+	// generation is no longer current — the user picked another tag, started
+	// a newer search or switched collections while it was in flight — is
+	// dropped (rendered nothing AND no gallery readers), so the last
+	// completion cannot win over the last request.
+	wallGen  int
+	albumGen int
+	// coTagGen numbers refineTags; refineTags runs on its own goroutine, so
+	// the counter is atomic.
+	coTagGen atomic.Uint64
+
 	// wallStale marks the gallery's contents as swapped without a re-render
 	// (clearAlbums), so the next showBrowse must reload the grid. Otherwise
 	// returning to the wall just re-shows it, keeping the scroll position.
@@ -251,6 +264,11 @@ func (b *browsePage) setSession(s *data.Session) { b.session.Store(s) }
 // onSessionSwapped refreshes everything that was cached per connection or
 // collection after adoptSession installs a new session.
 func (b *browsePage) onSessionSwapped() {
+	// Invalidate every in-flight reply from the old session: wall feeds and
+	// search readers, album opens and co-tag refreshes.
+	b.wallGen++
+	b.albumGen++
+	b.coTagGen.Add(1)
 	b.fsTree.reset()
 	b.loadTags()
 	if b.home != nil {
@@ -485,16 +503,38 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 	b.fsTree.currentDir = ""
 	b.fsTree.mu.Unlock()
 	b.feed = feedTags
+	gen := b.nextWallGen()
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		albums, err := b.sess().QueryAlbums(include, exclude)
 		if err != nil {
 			fmt.Println("Error querying albums:", err)
 			return nil
 		}
-		fyne.Do(func() { b.setWallAlbums(albums) })
+		stale := true
+		fyne.Do(func() {
+			if gen == b.wallGen {
+				stale = false
+				b.setWallAlbums(albums)
+			}
+		})
+		// Superseded fetches must not hand the gallery readers either: the
+		// readers ReadCustomAsync returns get applied regardless of any UI
+		// bookkeeping.
+		if stale {
+			return nil
+		}
 		return b.readers(albums)
 	})
 	b.showWall()
+}
+
+// nextWallGen stamps the start of a wall feed fetch (UI goroutine only).
+// The fetch closure then re-checks gen == b.wallGen inside fyne.Do (fyne.Do
+// blocks until the UI goroutine has run it, so the decision is safely
+// published): a newer feed, search or session swap has taken over the wall.
+func (b *browsePage) nextWallGen() int {
+	b.wallGen++
+	return b.wallGen
 }
 
 // ensureSearchBar builds the desktop search row once. The compact layout has
@@ -546,6 +586,7 @@ func (b *browsePage) startSearch(query string) {
 	b.fsTree.mu.Unlock()
 	b.feed = feedSearch
 	b.searchQuery = query
+	gen := b.nextWallGen()
 	if b.searchEntry != nil && b.searchEntry.Text != query {
 		b.searchEntry.SetText(query)
 	}
@@ -563,7 +604,7 @@ func (b *browsePage) startSearch(query string) {
 		if err != nil {
 			fmt.Println("Error searching albums:", err)
 			fyne.Do(func() {
-				if b.searchStatus != nil {
+				if gen == b.wallGen && b.searchStatus != nil {
 					b.searchStatus.SetText("Search failed: " + err.Error())
 					b.searchStatus.Show()
 				}
@@ -574,10 +615,12 @@ func (b *browsePage) startSearch(query string) {
 			result = data.SearchWithin(result, allowed)
 		}
 		albums := result.Albums
+		stale := true
 		fyne.Do(func() {
-			if b.feed != feedSearch || b.searchQuery != query {
+			if gen != b.wallGen || b.feed != feedSearch || b.searchQuery != query {
 				return // superseded by a newer query or feed
 			}
+			stale = false
 			b.setWallAlbums(albums)
 			if b.searchStatus != nil {
 				text := fmt.Sprintf("%d albums", len(albums))
@@ -588,9 +631,11 @@ func (b *browsePage) startSearch(query string) {
 				b.searchStatus.Show()
 			}
 		})
+		if stale {
+			return nil // the readers would replace a newer wall
+		}
 		return b.readers(albums)
 	})
-	b.covers.Clear()
 	b.showWall()
 }
 
@@ -644,13 +689,23 @@ func (b *browsePage) refreshLatest() {
 	b.fsTree.currentDir = ""
 	b.fsTree.mu.Unlock()
 	b.feed = feedLatest
+	gen := b.nextWallGen()
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
 		albums, err := b.sess().LatestAlbumsExcluding(exclude)
 		if err != nil {
 			fmt.Println("Error querying latest albums:", err)
 			return nil
 		}
-		fyne.Do(func() { b.setWallAlbums(albums) })
+		stale := true
+		fyne.Do(func() {
+			if gen == b.wallGen {
+				stale = false
+				b.setWallAlbums(albums)
+			}
+		})
+		if stale {
+			return nil
+		}
 		return b.readers(albums)
 	})
 	b.showWall()
@@ -835,6 +890,7 @@ func (b *browsePage) setStarred(tag string, starred bool) {
 // refineTags narrows the sidebar to tags co-occurring with the current
 // selection; an empty selection restores the default quick-pick list.
 func (b *browsePage) refineTags(include, exclude []string) {
+	gen := b.coTagGen.Add(1)
 	if len(include) == 0 && len(exclude) == 0 {
 		fyne.Do(func() {
 			b.ts.ClearAllTags()
@@ -851,6 +907,9 @@ func (b *browsePage) refineTags(include, exclude []string) {
 		return
 	}
 	fyne.Do(func() {
+		if gen != b.coTagGen.Load() {
+			return // a newer selection's co-tags already landed
+		}
 		b.ts.ClearAllTags()
 		for _, tag := range coTags {
 			b.ts.AddTag(tag)

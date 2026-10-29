@@ -48,6 +48,9 @@ type queuePage struct {
 	// revealPending asks the next status refresh to scroll to the playing
 	// track (revealCurrentSoon).
 	revealPending bool
+	// saveDialogOpen guards the "Save as playlist" form against a second
+	// open while one is already up.
+	saveDialogOpen bool
 
 	table     *trackTable
 	list      *queueList
@@ -444,15 +447,17 @@ func (q *queuePage) removeRange(start, count int) {
 	}
 	q.rebuildTracks()
 
+	// Arm the poll skip for the whole backend round: without it a 500 ms
+	// status poll landing mid-removal repaints the pre-removal queue (the
+	// flicker guard noteEnqueued/noteQueueReplaced already have).
+	q.pending++
 	go func() {
+		defer q.endQueueMutation()
 		for i := start + count - 1; i >= start; i-- {
 			if err := q.be().Remove(i); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
 				return
 			}
-		}
-		if s, err := q.be().Status(); err == nil {
-			fyne.Do(func() { q.applyStatus(s) })
 		}
 	}()
 }
@@ -556,16 +561,11 @@ func (q *queuePage) insertTracksAt(gap int, urls []string, meta []data.Track) {
 		return
 	}
 	q.transport.AppendQueue(urls, meta)
+	q.pending++
 	go func() {
+		defer q.endQueueMutation()
 		if err := q.be().Insert(gap, urls...); err != nil {
 			fyne.Do(func() { dialog.ShowError(err, q.win) })
-			return
-		}
-		// Insert blocks until the backend has applied the add (and the move),
-		// so the status fetched here already lists the tracks; update the
-		// table now rather than at the next poll tick.
-		if s, err := q.be().Status(); err == nil {
-			fyne.Do(func() { q.applyStatus(s) })
 		}
 	}()
 }
@@ -681,7 +681,11 @@ func (q *queuePage) commit(moves [][2]int) {
 	if len(moves) == 0 {
 		return
 	}
+	// Keep status polls from undoing the optimistic local order until the
+	// backend has applied the moves (see the pending guard in applyStatus).
+	q.pending++
 	go func() {
+		defer q.endQueueMutation()
 		for _, m := range moves {
 			if err := q.be().MoveItems(m[0], 1, m[1]); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
@@ -713,19 +717,15 @@ func (q *queuePage) shuffle() {
 		}
 	}
 	q.rebuildTracks()
-	go func() {
-		for _, m := range moves {
-			if err := q.be().MoveItems(m[0], 1, m[1]); err != nil {
-				fyne.Do(func() { dialog.ShowError(err, q.win) })
-				return
-			}
-		}
-	}()
+	q.commit(moves)
 }
 
 // saveQueue prompts for a name and persists the current queue as a tie playlist
 // (an ordered audio-dir), so it reappears as an album tile under the playlist tag.
 func (q *queuePage) saveQueue() {
+	if q.saveDialogOpen {
+		return // a double click must not stack save dialogs (or duplicate playlists)
+	}
 	if len(q.playlist) == 0 {
 		dialog.ShowInformation("Save playlist", "The playlist is empty.", q.win)
 		return
@@ -737,7 +737,9 @@ func (q *queuePage) saveQueue() {
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("Playlist name")
 	form := []*widget.FormItem{widget.NewFormItem("Name", entry)}
+	q.saveDialogOpen = true
 	dialog.ShowForm("Save as playlist", "Save", "Cancel", form, func(ok bool) {
+		q.saveDialogOpen = false
 		if !ok {
 			return
 		}
@@ -768,13 +770,11 @@ func (q *queuePage) clearPlaylist() {
 		}
 		q.playlist = q.playlist[:0]
 		q.rebuildTracks()
+		q.pending++
 		go func() {
+			defer q.endQueueMutation()
 			if err := q.be().Clear(); err != nil {
 				fyne.Do(func() { dialog.ShowError(err, q.win) })
-				return
-			}
-			if s, err := q.be().Status(); err == nil {
-				fyne.Do(func() { q.applyStatus(s) })
 			}
 		}()
 	}, q.win)
