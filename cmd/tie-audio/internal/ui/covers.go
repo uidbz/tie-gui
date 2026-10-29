@@ -5,6 +5,7 @@ import (
 	"errors"
 	"image"
 	"sync"
+	"sync/atomic"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -38,7 +39,8 @@ const coverLimit = 120
 // every row; a fetch *failure* is not cached, so a cover that was merely
 // unreachable (server down, transient error) is retried on the next ask.
 type coverStore struct {
-	session *data.Session
+	// session swaps atomically (adoptSession); fetch goroutines load it once.
+	session atomic.Pointer[data.Session]
 
 	mu    sync.Mutex
 	imgs  map[string]image.Image // album UID → cover; nil entry = known coverless
@@ -53,12 +55,19 @@ type coverStore struct {
 }
 
 func newCoverStore(session *data.Session) *coverStore {
-	return &coverStore{
-		session:  session,
+	c := &coverStore{
 		imgs:     map[string]image.Image{},
 		inflight: map[string][]func(image.Image){},
 	}
+	c.session.Store(session)
+	return c
 }
+
+// sess returns the live session (swapped atomically on settings changes).
+func (c *coverStore) sess() *data.Session { return c.session.Load() }
+
+// setSession points the cover store at a rebuilt session.
+func (c *coverStore) setSession(s *data.Session) { c.session.Store(s) }
 
 // Lookup returns a cached cover without touching the network. ok is false when
 // the album has not been resolved yet; the returned image is nil when the album
@@ -132,7 +141,7 @@ func (c *coverStore) decode(albumUID string) (image.Image, error) {
 	if c.decodeFn != nil {
 		return c.decodeFn(albumUID)
 	}
-	blob, err := c.session.CoverBytesForUID(albumUID)
+	blob, err := c.sess().CoverBytesForUID(albumUID)
 	if err != nil {
 		return nil, err
 	}

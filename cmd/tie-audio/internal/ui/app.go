@@ -196,12 +196,59 @@ type App struct {
 	// (a.session is replaced on settings save, on the UI goroutine).
 	recorder *history.Recorder
 	live     atomic.Pointer[data.Session]
+	// sessionGen guards concurrent applySession rebuilds (UI goroutine only).
+	sessionGen int
 }
 
 // setSession installs a (new) session everywhere the App holds one.
 func (a *App) setSession(s *data.Session) {
 	a.session = s
 	a.live.Store(s)
+}
+
+// applySession rebuilds the data session from cfg off the UI goroutine —
+// the tie TOML read, client construction and (for the local backend) audio
+// device init all belong off the event thread — then adopts the result.
+// Rapid saves/switches: only the newest rebuild installs.
+func (a *App) applySession(cfg config.AppConfig) {
+	a.sessionGen++
+	gen := a.sessionGen
+	go func() {
+		s := data.NewSession(cfg)
+		fyne.Do(func() {
+			if gen != a.sessionGen {
+				return // superseded by a newer rebuild
+			}
+			a.adoptSession(s)
+		})
+	}()
+}
+
+// adoptSession installs a freshly built session everywhere. Sessions are
+// never mutated in place: in-flight operations keep using the old (still
+// valid) session and the pages' generation guards drop their superseded
+// results, so a settings save can never tear a live client.
+func (a *App) adoptSession(s *data.Session) {
+	a.setSession(s)
+	a.browse.setSession(s)
+	a.queue.setSession(s)
+	a.covers.setSession(s)
+	// Cached artwork was resolved against the old connection/collection:
+	// the same album UID can mean different images elsewhere.
+	a.covers.Clear()
+	// The playback backend may have changed: rewire the transport's poll
+	// and action target (stops and closes the old one) and let the media
+	// bridge know whether local playback is now in charge.
+	a.player.SetBackend(s.Backend)
+	a.hookPlayNotifier()
+	if a.recorder != nil {
+		a.recorder.Kick()
+	}
+	a.media.SetEnabled(playback.IsLocal(s.Backend))
+	a.browse.onSessionSwapped()
+	if s.BackendErr != nil {
+		dialog.ShowError(fmt.Errorf("local playback unavailable, using pwplay remote: %w", s.BackendErr), a.win)
+	}
 }
 
 // startHistory wires and starts the play-history recorder.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -35,8 +36,10 @@ import (
 // currently-playing index is a backend row — a sorted view would desync all
 // three.
 type queuePage struct {
-	win       fyne.Window
-	session   *data.Session
+	win fyne.Window
+	// session swaps atomically on settings/connection changes (adoptSession);
+	// queue action goroutines load it per operation.
+	session   atomic.Pointer[data.Session]
 	transport *player
 	covers    *coverStore
 	back      func() // restore the album cover wall (compact back button)
@@ -87,20 +90,26 @@ type queuePage struct {
 // cached) so a backend swap from the settings page — which updates
 // a.queue.session — reaches every queue operation without re-wiring.
 func (q *queuePage) be() playback.PlaybackBackend {
-	return q.session.Backend
+	return q.sess().Backend
 }
+
+// sess returns the live session (swapped atomically on settings changes).
+func (q *queuePage) sess() *data.Session { return q.session.Load() }
+
+// setSession points the queue at a rebuilt session.
+func (q *queuePage) setSession(s *data.Session) { q.session.Store(s) }
 
 // newQueuePage builds the queue view once; show() (re)binds it to the live poll.
 func newQueuePage(win fyne.Window, session *data.Session, transport *player, covers *coverStore, compact bool, back func(), onColumnsChanged func([]string)) *queuePage {
 	q := &queuePage{
 		win:       win,
-		session:   session,
 		transport: transport,
 		covers:    covers,
 		compact:   compact,
 		back:      back,
 		current:   -1,
 	}
+	q.session.Store(session)
 
 	q.table = newTrackTable(win, nil, session.Cfg.QueueColumns,
 		nil, // single-tap selects (multiSelect); double-tap plays via onDoubleTap
@@ -733,7 +742,7 @@ func (q *queuePage) saveQueue() {
 			return
 		}
 		go func() {
-			_, err := q.session.SaveQueueAsPlaylist(entry.Text, hashes)
+			_, err := q.sess().SaveQueueAsPlaylist(entry.Text, hashes)
 			fyne.Do(func() {
 				if err != nil {
 					dialog.ShowError(err, q.win)

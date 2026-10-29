@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -9,11 +8,10 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	pwclient "github.com/uidbz/pwplay/client"
 	tieclient "github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/config"
-	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
-	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 	"github.com/uidbz/tie-gui/tieconfig"
 )
 
@@ -166,41 +164,32 @@ func (a *App) buildSettingsTab() *container.TabItem {
 			dialog.ShowError(err, a.win)
 			return
 		}
-		a.setSession(data.NewSession(cfg))
-		a.browse.session = a.session
-		a.queue.session = a.session
-		// The playback backend may have changed: rewire the transport's poll
-		// and action target (stops and closes the old one) and let the media
-		// bridge know whether local playback is now in charge.
-		a.player.SetBackend(a.session.Backend)
-		a.hookPlayNotifier()
-		if a.recorder != nil {
-			a.recorder.Kick()
-		}
-		a.media.SetEnabled(playback.IsLocal(a.session.Backend))
-		// The cover store fetches through the session's filehost, so it has to
-		// follow the swap — and its cached art was resolved against the old
-		// one.
-		a.covers.session = a.session
-		a.covers.Clear()
-		a.browse.loadTags()
-		if a.browse.home != nil {
-			a.browse.home.reset()
-		}
-		if a.session.BackendErr != nil {
-			dialog.ShowError(fmt.Errorf("local playback unavailable, using pwplay remote: %w", a.session.BackendErr), a.win)
-			return
-		}
+		// Rebuild the data session from the new config off the UI goroutine
+		// (config read, client construction, audio-device init) and adopt it
+		// when ready; adoptSession rewires every holder.
+		a.applySession(cfg)
 		dialog.ShowInformation("Saved", "Settings saved.", a.win)
 	})
 
-	test := widget.NewButton("Test pwplay connection", func() {
-		s := data.NewSession(current())
-		if err := s.PingPwplay(); err != nil {
-			dialog.ShowError(err, a.win)
-			return
-		}
-		dialog.ShowInformation("Connected", "pwplay server reachable.", a.win)
+	var test *widget.Button
+	test = widget.NewButton("Test pwplay connection", func() {
+		srv := current().PwplayServer
+		test.Disable()
+		// Ping off the UI goroutine: the pwplay client has no timeout, so a
+		// black-holed host would otherwise freeze the window. Do NOT build a
+		// full data.Session here — for backend=local that would spin up an
+		// audio engine nobody ever closes.
+		go func() {
+			_, err := pwclient.New(srv).Status()
+			fyne.Do(func() {
+				test.Enable()
+				if err != nil {
+					dialog.ShowError(err, a.win)
+					return
+				}
+				dialog.ShowInformation("Connected", "pwplay server reachable.", a.win)
+			})
+		}()
 	})
 
 	// No Back button: in the regular layout the page is a sidebar tab, and in
@@ -217,35 +206,28 @@ func (a *App) buildSettingsTab() *container.TabItem {
 	// the dropdown switches this app to it immediately and remembers the
 	// choice in tie-audio's own config — the tie file's shared
 	// DefaultCollection is only touched by Apply, so the apps don't fight
-	// over it. Both paths swap the client in place (the tie-view
-	// struct-overwrite pattern), so every existing *TieClient holder (browse
-	// page, queue page) sees the new collection, then reload the tag sidebar
-	// and clear the album wall (stale albums from the prior collection can
-	// neither display nor be opened).
+	// over it. Both paths rebuild the data session from the applied config
+	// (the live client is never mutated in place, so background fetchers
+	// keep a valid old session) and adoptSession clears everything cached
+	// per connection: cover cache, tree listings, tags and the album wall.
 	switchCollection := func(name string) {
-		a.session.Cfg.TieCollection = name
-		if err := config.Save(a.session.Cfg); err != nil {
+		cfg := a.session.Cfg
+		cfg.TieCollection = name
+		if err := config.Save(cfg); err != nil {
 			dialog.ShowError(err, a.win)
+			return
 		}
-		// The same album UID can resolve to different artwork in another
-		// collection, so the cover cache (wall tiles, queue rows, transport)
-		// must not carry over — nor may the Files tab's directory listings.
-		a.covers.Clear()
-		a.browse.fsTree.reset()
-		a.browse.loadTags()
-		a.browse.clearAlbums()
-		// A switch lands on the same default view as a launch.
-		a.browse.applyStartupPage()
+		a.applySession(cfg)
 	}
 	connEditor := tieconfig.Editor(a.session.Tie.Config, tieconfig.ResolvePath(a.session.Cfg.TieConfig),
 		a.session.Collection,
 		func(name string) {
-			a.session.SetCollection(name)
 			switchCollection(name)
 		},
 		func(saved tieclient.Config) {
-			a.session.SetTieConfig(saved)
-			switchCollection(a.session.Collection)
+			// The editor has written the tie config file; rebuilding the
+			// session (which reads it back) applies the new connection.
+			a.applySession(a.session.Cfg)
 		})
 
 	connLabel := widget.NewLabelWithStyle("Connection (tie config)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})

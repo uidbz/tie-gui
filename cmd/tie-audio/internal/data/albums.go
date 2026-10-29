@@ -278,7 +278,13 @@ func (s *Session) coverBytes(uid, thumbHash string) ([]byte, error) {
 		}
 		hintErr = err
 	}
-	row, _ := s.Tie.Get(uid) // an absent subject yields a zero Row
+	row, err := s.Tie.Get(uid) // an absent subject yields a zero Row
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
+		// A store outage must surface as a retryable failure: the cover
+		// store caches ErrNoCover forever, and a downed server must not
+		// settle every album as coverless.
+		return nil, err
+	}
 	if th := client.RowFirst(row, "thumbnail"); th != "" && th != thumbHash {
 		if b, err := s.fetchBlob(th); err == nil { // the relation was created by another view/client
 			return b, nil
@@ -286,7 +292,11 @@ func (s *Session) coverBytes(uid, thumbHash string) ([]byte, error) {
 	}
 	// ReadTieDir on a non-directory subject yields an empty listing rather
 	// than an error, so a standalone track falls through to probing itself.
-	if dir, err := client.ReadTieDir(s.Tie, client.DirUID(uid)); err == nil {
+	dir, dirErr := client.ReadTieDir(s.Tie, client.DirUID(uid))
+	if dirErr != nil && !errors.Is(dirErr, client.ErrNotFound) {
+		return nil, dirErr // store outage: retryable, not a "no cover" verdict
+	}
+	if dirErr == nil {
 		if hash := dirCoverHash(dir); hash != "" {
 			return s.coverFromBlob(uid, hash)
 		}
@@ -573,6 +583,11 @@ func (s *Session) QueryAlbums(include, exclude []string) ([]Album, error) {
 		Limit:   -1,
 	})
 	if err != nil {
+		// A zero-match reverse query answers ErrNotFound ("key has no
+		// associated values") — an empty wall, not an outage.
+		if errors.Is(err, client.ErrNotFound) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return s.albumsFromRows(rows), nil
@@ -693,6 +708,10 @@ func (s *Session) LatestAlbumsExcluding(exclude []string) ([]Album, error) {
 			Limit:   -1,
 		})
 		if err != nil {
+			// Fresh/empty collection: zero hits arrive as ErrNotFound.
+			if errors.Is(err, client.ErrNotFound) {
+				continue
+			}
 			return nil, err
 		}
 		rows = append(rows, r...)
@@ -1006,7 +1025,9 @@ func trackAlbumUID(parents []string, exclude string) string {
 }
 
 // playlistTracks returns the ordered tracks of a saved playlist (current or
-// legacy) in two round trips: the playlist row and one Expand of its tracks.
+// legacy): the playlist row, one Expand of its tracks, and (only when
+// uncached) one Expand classifying every distinct album parent as a disc
+// folder — no per-track round trips.
 func (s *Session) playlistTracks(uid string) ([]Track, error) {
 	p, err := s.Tie.ReadPlaylist(uid)
 	if err != nil {
@@ -1028,14 +1049,38 @@ func (s *Session) playlistTracks(uid string) ([]Track, error) {
 			continue
 		}
 		// Each track keeps its own album (and cover) in the queue.
-		t := trackFromRow(r, uid)
-		if t.AlbumUID != "" {
-			// A track below a disc folder: the album is one level up.
-			if up := s.discFolderAlbum(t.AlbumUID); up != "" {
-				t.AlbumUID = up
+		tracks = append(tracks, trackFromRow(r, uid))
+	}
+
+	// A track below a disc folder belongs to the album one level up. The
+	// distinct album parents are already known from the track Expand, so one
+	// more Expand classifies every disc folder at once (the per-UID cache
+	// keeps repeats free).
+	var pending []string
+	seen := map[string]bool{}
+	for _, t := range tracks {
+		if t.AlbumUID != "" && !seen[t.AlbumUID] && !s.discCached(t.AlbumUID) {
+			seen[t.AlbumUID] = true
+			pending = append(pending, t.AlbumUID)
+		}
+	}
+	if len(pending) > 0 {
+		if prows, err := s.Tie.Expand(pending); err == nil {
+			for _, r := range prows {
+				up := ""
+				if client.RowHas(r, client.RelType, client.TypeDisc) {
+					up = client.RowFirst(r, client.RelParent)
+				}
+				s.setDiscUp(r.Key, up)
 			}
 		}
-		tracks = append(tracks, t)
+	}
+	for i := range tracks {
+		if tracks[i].AlbumUID != "" {
+			if up := s.discFolderAlbum(tracks[i].AlbumUID); up != "" {
+				tracks[i].AlbumUID = up
+			}
+		}
 	}
 	return tracks, nil
 }
@@ -1043,23 +1088,41 @@ func (s *Session) playlistTracks(uid string) ([]Track, error) {
 // discFolderAlbum returns the album above a disc folder ("" when uid is not
 // a disc folder). Cached per session: playlists repeat albums.
 func (s *Session) discFolderAlbum(uid string) string {
-	s.discMu.Lock()
-	if v, ok := s.discUp[uid]; ok {
-		s.discMu.Unlock()
+	if v, ok := s.getDiscUp(uid); ok {
 		return v
 	}
-	s.discMu.Unlock()
 	up := ""
 	if row, err := s.Tie.Get(uid); err == nil && client.RowHas(row, client.RelType, client.TypeDisc) {
 		up = client.RowFirst(row, client.RelParent)
 	}
+	s.setDiscUp(uid, up)
+	return up
+}
+
+// getDiscUp reports the cached disc folder → parent album resolution
+// ("" = not a disc folder).
+func (s *Session) getDiscUp(uid string) (string, bool) {
+	s.discMu.Lock()
+	defer s.discMu.Unlock()
+	v, ok := s.discUp[uid]
+	return v, ok
+}
+
+// setDiscUp records a disc folder resolution; used by the batched playlist
+// classification and the single-UID fallback.
+func (s *Session) setDiscUp(uid, up string) {
 	s.discMu.Lock()
 	if s.discUp == nil {
 		s.discUp = map[string]string{}
 	}
 	s.discUp[uid] = up
 	s.discMu.Unlock()
-	return up
+}
+
+// discCached reports whether uid's classification is already known.
+func (s *Session) discCached(uid string) bool {
+	_, ok := s.getDiscUp(uid)
+	return ok
 }
 
 // SaveQueueAsPlaylist persists an ordered list of track hashes as a new tie

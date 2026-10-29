@@ -68,7 +68,8 @@ func TestDesktopNowPlayingApply(t *testing.T) {
 }
 
 func TestNowPlayingModeDesktopOnly(t *testing.T) {
-	page := &browsePage{session: &data.Session{Cfg: config.AppConfig{BrowseView: config.BrowseNowPlaying}}}
+	page := &browsePage{}
+	page.session.Store(&data.Session{Cfg: config.AppConfig{BrowseView: config.BrowseNowPlaying}})
 	if !page.nowPlayingMode() {
 		t.Error("desktop page did not report now-playing mode")
 	}

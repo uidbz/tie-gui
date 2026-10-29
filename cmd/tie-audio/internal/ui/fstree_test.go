@@ -159,7 +159,9 @@ func TestNewTieFSTreeRoot(t *testing.T) {
 	newTestApp(t)
 	cfg := client.DefaultConfig()
 	cfg.TripleStoreURL = "http://127.0.0.1:1"
-	tree := newTieFSTree(&browsePage{session: &data.Session{Tie: client.NewTieClient(cfg)}}).tree
+	page := &browsePage{}
+	page.session.Store(&data.Session{Tie: client.NewTieClient(cfg)})
+	tree := newTieFSTree(page).tree
 	if got := tree.ChildUIDs(""); len(got) != 1 || got[0] != "/" {
 		t.Fatalf("ChildUIDs(\"\") = %v, want [\"/\"]", got)
 	}

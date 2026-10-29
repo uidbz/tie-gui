@@ -322,7 +322,7 @@ func (t *tieFSTree) subTitle(uid client.DirUID, fallback string) string {
 		return cached.Paths[0]
 	}
 	title := ""
-	if row, err := t.page.session.Tie.Get(string(uid)); err == nil {
+	if row, err := t.page.sess().Tie.Get(string(uid)); err == nil {
 		title = client.RowFirst(row, client.RelAlbum)
 		if title == "" {
 			title = client.RowFirst(row, client.RelName)
@@ -360,7 +360,7 @@ func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 		return *d, nil
 	}
 
-	tc := t.page.session.Tie
+	tc := t.page.sess().Tie
 	uid, err := tc.DirUIDFromPath(dirPath)
 	if err != nil {
 		t.mu.Lock()

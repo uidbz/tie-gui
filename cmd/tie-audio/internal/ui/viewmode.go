@@ -12,7 +12,7 @@ import (
 // now-playing cover instead of the album grid/table. The compact layout has
 // its own full-screen Now Playing page, so it always keeps the album views.
 func (b *browsePage) nowPlayingMode() bool {
-	return !b.compact && b.session.Cfg.BrowseView == config.BrowseNowPlaying
+	return !b.compact && b.sess().Cfg.BrowseView == config.BrowseNowPlaying
 }
 
 // ensureViewTabs builds the desktop view selector on first use.
@@ -31,7 +31,7 @@ func (b *browsePage) decorateContent(o fyne.CanvasObject) fyne.CanvasObject {
 		return o
 	}
 	tabs := b.ensureViewTabs()
-	tabs.setActive(b.session.Cfg.BrowseView)
+	tabs.setActive(b.sess().Cfg.BrowseView)
 	head := container.NewVBox(tabs.object, b.ensureSearchBar())
 	return container.NewBorder(head, nil, nil, nil, o)
 }
@@ -60,14 +60,14 @@ func (b *browsePage) setBrowseView(view string) {
 	if view != config.BrowseCovers && view != config.BrowseTable && view != config.BrowseNowPlaying {
 		return
 	}
-	if b.session.Cfg.BrowseView == view {
+	if b.sess().Cfg.BrowseView == view {
 		if b.feed != feedHome {
 			b.showWall()
 		}
 		return
 	}
-	b.session.Cfg.BrowseView = view
-	if err := config.Save(b.session.Cfg); err != nil {
+	b.sess().Cfg.BrowseView = view
+	if err := config.Save(b.sess().Cfg); err != nil {
 		dialog.ShowError(err, b.win)
 	}
 	b.albumOpen = false

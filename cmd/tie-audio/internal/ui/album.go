@@ -18,7 +18,7 @@ import (
 // list. Playback actions arrive in Phase 2.
 func (b *browsePage) openAlbum(a data.Album) {
 	go func() {
-		tracks, err := b.session.AlbumTracks(a)
+		tracks, err := b.sess().AlbumTracks(a)
 		fyne.Do(func() { b.showAlbumView(a, tracks, err) })
 	}()
 }
@@ -114,7 +114,7 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 		// The compact layout ignores the persisted column set: it is a desktop
 		// choice that does not fit a phone, and there is no columns dialog here
 		// to change it with.
-		colKeys := b.session.Cfg.AlbumColumns
+		colKeys := b.sess().Cfg.AlbumColumns
 		opts := trackTableOpts{sortable: true, builtinColumnsButton: true}
 		if b.compact {
 			colKeys = nil
@@ -207,8 +207,8 @@ func (v *albumNowPlaying) setCover(image.Image) {}
 // saveAlbumColumns persists the album track-table's visible-column set/order to
 // the app config so it survives across sessions.
 func (b *browsePage) saveAlbumColumns(keys []string) {
-	b.session.Cfg.AlbumColumns = keys
-	if err := config.Save(b.session.Cfg); err != nil {
+	b.sess().Cfg.AlbumColumns = keys
+	if err := config.Save(b.sess().Cfg); err != nil {
 		dialog.ShowError(err, b.win)
 	}
 }
@@ -216,8 +216,8 @@ func (b *browsePage) saveAlbumColumns(keys []string) {
 // saveQueueColumns persists the queue table's visible-column set/order,
 // independently of the album columns.
 func (b *browsePage) saveQueueColumns(keys []string) {
-	b.session.Cfg.QueueColumns = keys
-	if err := config.Save(b.session.Cfg); err != nil {
+	b.sess().Cfg.QueueColumns = keys
+	if err := config.Save(b.sess().Cfg); err != nil {
 		dialog.ShowError(err, b.win)
 	}
 }
@@ -227,7 +227,7 @@ func (b *browsePage) saveQueueColumns(keys []string) {
 // feed the transport's URL→Track registry so the queue can render full columns.
 func (b *browsePage) streamable(tracks []data.Track) (urls []string, meta []data.Track) {
 	for _, t := range tracks {
-		url := b.session.StreamURL(t.Hash)
+		url := b.sess().StreamURL(t.Hash)
 		if url == "" {
 			continue
 		}
@@ -258,7 +258,7 @@ func (b *browsePage) playTracks(tracks []data.Track, start int) {
 		if b.queue != nil {
 			defer b.queue.endQueueMutation()
 		}
-		if err := b.session.Backend.PlayAlbum(urls); err != nil {
+		if err := b.sess().Backend.PlayAlbum(urls); err != nil {
 			fyne.Do(func() { b.reportPlaybackError(err) })
 		}
 	}()
@@ -281,7 +281,7 @@ func (b *browsePage) enqueueTracks(tracks []data.Track) {
 		if b.queue != nil {
 			defer b.queue.endQueueMutation()
 		}
-		if err := b.session.Backend.Enqueue(urls...); err != nil {
+		if err := b.sess().Backend.Enqueue(urls...); err != nil {
 			fyne.Do(func() { b.reportPlaybackError(err) })
 		}
 	}()
@@ -291,7 +291,7 @@ func (b *browsePage) enqueueTracks(tracks []data.Track) {
 // into the playlist at position gap (from a cover dragged onto the playlist pane).
 func (b *browsePage) albumInsertAt(a data.Album, gap int) {
 	go func() {
-		tracks, err := b.session.AlbumTracks(a)
+		tracks, err := b.sess().AlbumTracks(a)
 		fyne.Do(func() {
 			if err != nil {
 				b.reportPlaybackError(err)
@@ -328,7 +328,7 @@ func (b *browsePage) showAlbumMenu(obj fyne.CanvasObject, a data.Album) {
 // enqueues them.
 func (b *browsePage) albumAction(a data.Album, play bool) {
 	go func() {
-		tracks, err := b.session.AlbumTracks(a)
+		tracks, err := b.sess().AlbumTracks(a)
 		fyne.Do(func() {
 			if err != nil {
 				b.reportPlaybackError(err)

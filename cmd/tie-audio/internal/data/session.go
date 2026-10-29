@@ -32,9 +32,11 @@ type Session struct {
 
 	// archives caches resolved audio-archive track lists, keyed by
 	// "archiveHash@hostURL" (see archiveTracks). Guarded by archivesMu:
-	// album loading runs on background goroutines.
+	// album loading runs on background goroutines. archiving coalesces
+	// concurrent resolutions of the same archive (single-flight).
 	archivesMu sync.Mutex
 	archives   map[string][]Track
+	archiving  map[string]*archiveFlight
 
 	// discUp caches disc folder → album lookups (discFolderAlbum).
 	discMu sync.Mutex
@@ -85,21 +87,9 @@ func (s *Session) PingPwplay() error {
 	return err
 }
 
-// SetCollection binds the live tie client to the named collection of its
-// current config. The swap overwrites the struct in place (the tie-view
-// settings pattern: the resolved collection is baked into the client's
-// private fields at construction), so every existing *TieClient holder —
-// browse page, queue page — sees the new collection without re-wiring
-// pointers.
-func (s *Session) SetCollection(name string) {
-	*s.Tie = *tieclient.NewTieClientFor(s.Tie.Config, name)
-	s.Collection = name
-}
-
-// SetTieConfig swaps the live tie client for one built from cfg, bound to
-// cfg's default collection (the collection the connection editor applied).
-// Same in-place overwrite pattern as SetCollection.
-func (s *Session) SetTieConfig(cfg tieclient.Config) {
-	*s.Tie = *tieclient.NewTieClientFor(cfg, cfg.DefaultCollection)
-	s.Collection = cfg.DefaultCollection
-}
+// NOTE: there is deliberately no SetCollection/SetTieConfig here. A live
+// Session is never rebound in place: that struct-overwrite pattern races with
+// every background goroutine reading through the same *TieClient. Connection
+// and collection changes build a NEW Session (config.AppConfig carries the
+// choice) and the UI adopts it (App.applySession/adoptSession); in-flight
+// operations keep using the old session and their pages drop the results.

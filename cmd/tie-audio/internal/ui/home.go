@@ -108,7 +108,7 @@ func (h *homeView) load() {
 	}
 	build := h.buildFn
 	if build == nil {
-		sess := h.page.session
+		sess := h.page.sess()
 		build = func() (data.Home, error) { return sess.Home(time.Now()) }
 	}
 	go func() {
@@ -373,7 +373,7 @@ func (b *browsePage) showAlbumList(_ string, albums []data.Album) {
 // playFromAlbum plays track's album starting at track (a Home track tile).
 func (b *browsePage) playFromAlbum(a data.Album, t data.Track) {
 	go func() {
-		tracks, err := b.session.AlbumTracks(a)
+		tracks, err := b.sess().AlbumTracks(a)
 		fyne.Do(func() {
 			if err != nil || len(tracks) == 0 {
 				b.playTracks([]data.Track{t}, 0)

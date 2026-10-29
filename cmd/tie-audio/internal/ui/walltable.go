@@ -84,7 +84,7 @@ func newWallTable(page *browsePage) *wallTable {
 	if page.compact {
 		wt.cols = resolveAlbumColumns(nil, compactWallColumns, allWallColumns)
 	} else {
-		wt.cols = resolveAlbumColumns(page.session.Cfg.WallColumns, defaultWallColumns, allWallColumns)
+		wt.cols = resolveAlbumColumns(page.sess().Cfg.WallColumns, defaultWallColumns, allWallColumns)
 	}
 
 	wt.table = tablewidget.NewTableWidget("Albums", 1000)
@@ -356,7 +356,7 @@ func (wt *wallTable) setCompact(compact bool) {
 	if compact {
 		wt.cols = resolveAlbumColumns(nil, compactWallColumns, allWallColumns)
 	} else {
-		wt.cols = resolveAlbumColumns(wt.page.session.Cfg.WallColumns, defaultWallColumns, allWallColumns)
+		wt.cols = resolveAlbumColumns(wt.page.sess().Cfg.WallColumns, defaultWallColumns, allWallColumns)
 	}
 	wt.applyColumnConfig()
 	wt.table.Refresh()
@@ -382,7 +382,7 @@ func (wt *wallTable) showColumnsDialog() {
 // tableMode reports whether the browse wall currently renders as a table
 // rather than the cover grid.
 func (b *browsePage) tableMode() bool {
-	return b.session.Cfg.BrowseView == config.BrowseTable
+	return b.sess().Cfg.BrowseView == config.BrowseTable
 }
 
 // setWallAlbums records the wall's current listing and feeds it to the table
@@ -473,8 +473,8 @@ func (b *browsePage) toggleWallView() {
 // saveWallColumns persists the album table's visible-column set/order to the
 // app config so it survives across sessions.
 func (b *browsePage) saveWallColumns(keys []string) {
-	b.session.Cfg.WallColumns = keys
-	if err := config.Save(b.session.Cfg); err != nil {
+	b.sess().Cfg.WallColumns = keys
+	if err := config.Save(b.sess().Cfg); err != nil {
 		dialog.ShowError(err, b.win)
 	}
 }

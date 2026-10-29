@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -38,9 +39,12 @@ const (
 // tree; the settings page). Opening a tile swaps the page to the album's
 // track list (see album.go).
 type browsePage struct {
-	app     fyne.App
-	win     fyne.Window
-	session *data.Session
+	app fyne.App
+	win fyne.Window
+	// session swaps atomically on settings/connection changes (adoptSession):
+	// fetch goroutines load it once up front, and generation guards drop their
+	// superseded results instead of racing the swap.
+	session atomic.Pointer[data.Session]
 
 	// shell is the real window wrapper when win is one (it always is in the
 	// app; tests may use a plain test window). The browse page installs the
@@ -158,7 +162,8 @@ type browsePage struct {
 // window.SetContent and restore the wall with showWall (which renders the
 // cover grid or the album table per the configured BrowseView).
 func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers *coverStore, compact bool) *browsePage {
-	b := &browsePage{app: app, win: win, session: session, covers: covers, compact: compact}
+	b := &browsePage{app: app, win: win, covers: covers, compact: compact}
+	b.session.Store(session)
 	if shell, ok := win.(*shellWindow); ok {
 		b.shell = shell
 	}
@@ -235,6 +240,25 @@ func newBrowsePage(app fyne.App, win fyne.Window, session *data.Session, covers 
 	b.viewer.LoadGallery()
 	b.viewer.CreateView()
 	return b
+}
+
+// sess returns the live session (swapped atomically by adoptSession).
+func (b *browsePage) sess() *data.Session { return b.session.Load() }
+
+// setSession points the browse page at a rebuilt session.
+func (b *browsePage) setSession(s *data.Session) { b.session.Store(s) }
+
+// onSessionSwapped refreshes everything that was cached per connection or
+// collection after adoptSession installs a new session.
+func (b *browsePage) onSessionSwapped() {
+	b.fsTree.reset()
+	b.loadTags()
+	if b.home != nil {
+		b.home.reset()
+	}
+	b.clearAlbums()
+	// A switch lands on the same default view as a launch.
+	b.applyStartupPage()
 }
 
 // Content is the browse page's root object, used as the window's initial
@@ -382,9 +406,9 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 		go func() {
 			var err error
 			if starred {
-				err = b.session.StarTag(tag)
+				err = b.sess().StarTag(tag)
 			} else {
-				err = b.session.UnstarTag(tag)
+				err = b.sess().UnstarTag(tag)
 			}
 			if err != nil {
 				fmt.Printf("sidebar: failed to %s tag %q: %v\n",
@@ -462,7 +486,7 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 	b.fsTree.mu.Unlock()
 	b.feed = feedTags
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		albums, err := b.session.QueryAlbums(include, exclude)
+		albums, err := b.sess().QueryAlbums(include, exclude)
 		if err != nil {
 			fmt.Println("Error querying albums:", err)
 			return nil
@@ -535,7 +559,7 @@ func (b *browsePage) startSearch(query string) {
 	}
 
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		result, err := b.session.Search(query, 0)
+		result, err := b.sess().Search(query, 0)
 		if err != nil {
 			fmt.Println("Error searching albums:", err)
 			fyne.Do(func() {
@@ -621,7 +645,7 @@ func (b *browsePage) refreshLatest() {
 	b.fsTree.mu.Unlock()
 	b.feed = feedLatest
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		albums, err := b.session.LatestAlbumsExcluding(exclude)
+		albums, err := b.sess().LatestAlbumsExcluding(exclude)
 		if err != nil {
 			fmt.Println("Error querying latest albums:", err)
 			return nil
@@ -693,7 +717,7 @@ func (b *browsePage) reloadWall() {
 // selection. Called at launch and after a collection switch.
 func (b *browsePage) applyStartupPage() {
 	tag := ""
-	switch b.session.Cfg.StartupPage {
+	switch b.sess().Cfg.StartupPage {
 	case config.StartupHome:
 		b.showHome()
 		return
@@ -705,7 +729,7 @@ func (b *browsePage) applyStartupPage() {
 	case config.StartupPlaylists:
 		tag = data.PlaylistTag
 	case config.StartupTag:
-		tag = strings.TrimSpace(b.session.Cfg.StartupTag)
+		tag = strings.TrimSpace(b.sess().Cfg.StartupTag)
 	}
 	if tag == "" {
 		return
@@ -754,7 +778,7 @@ func (b *browsePage) loadTags() {
 	b.starred = nil
 	b.ts.SetListLabel("Loading…")
 	b.tagGen++
-	gen, session := b.tagGen, b.session
+	gen, session := b.tagGen, b.sess()
 	go func() {
 		all, favorites, err := session.TagSets()
 		fyne.Do(func() {
@@ -821,7 +845,7 @@ func (b *browsePage) refineTags(include, exclude []string) {
 		})
 		return
 	}
-	coTags, err := b.session.CoTags(include, exclude)
+	coTags, err := b.sess().CoTags(include, exclude)
 	if err != nil {
 		fmt.Println("Error getting co-tags:", err)
 		return

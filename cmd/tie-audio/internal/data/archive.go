@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,22 +40,46 @@ func (s *Session) archiveTracks(a Album) ([]Track, error) {
 	}
 	key := a.UID + "@" + host.URL
 	s.archivesMu.Lock()
-	cached, ok := s.archives[key]
+	if cached, ok := s.archives[key]; ok {
+		s.archivesMu.Unlock()
+		// Hand out a copy: the cached slice is shared, and callers sort or
+		// filter in place would corrupt each other.
+		return slices.Clone(cached), nil
+	}
+	// Single-flight: concurrent opens of the same archive (album view + the
+	// Play-album/drag-to-queue action) must trigger exactly one blob
+	// download, not one per goroutine.
+	if fl, ok := s.archiving[key]; ok {
+		s.archivesMu.Unlock()
+		<-fl.done
+		return slices.Clone(fl.tracks), fl.err
+	}
+	fl := &archiveFlight{done: make(chan struct{})}
+	if s.archiving == nil {
+		s.archiving = map[string]*archiveFlight{}
+	}
+	s.archiving[key] = fl
 	s.archivesMu.Unlock()
-	if ok {
-		return cached, nil
-	}
-	tracks, err := s.resolveArchive(a, host)
-	if err != nil {
-		return nil, err
-	}
+
+	fl.tracks, fl.err = s.resolveArchive(a, host)
 	s.archivesMu.Lock()
-	if s.archives == nil {
-		s.archives = make(map[string][]Track)
+	if fl.err == nil {
+		if s.archives == nil {
+			s.archives = make(map[string][]Track)
+		}
+		s.archives[key] = fl.tracks
 	}
-	s.archives[key] = tracks
+	delete(s.archiving, key)
 	s.archivesMu.Unlock()
-	return tracks, nil
+	close(fl.done)
+	return slices.Clone(fl.tracks), fl.err
+}
+
+// archiveFlight coalesces concurrent resolutions of one archive.
+type archiveFlight struct {
+	done   chan struct{}
+	tracks []Track
+	err    error
 }
 
 // resolveArchive does archiveTracks' work on a cache miss.

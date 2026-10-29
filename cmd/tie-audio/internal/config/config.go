@@ -3,6 +3,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -204,13 +206,40 @@ func Load() (AppConfig, string) {
 		cfg := Default()
 		if err := conf.ReadConfig(path, &cfg); err == nil {
 			return fillDefaults(cfg), path
+		} else if !errors.Is(err, os.ErrNotExist) {
+			// A real file that fails to parse: never let the first Save
+			// silently clobber it — stash the unreadable copy and say so.
+			bak := preserveUnreadable(path)
+			fmt.Fprintf(os.Stderr, "tie-audio: config %s unreadable (%v); kept a copy at %s, starting from defaults\n", path, err, bak)
 		}
 	}
 	cfg := Default()
 	if p, err := conf.LoadFromUserConfigDir(appName, configFile, &cfg); err == nil {
 		return fillDefaults(cfg), p
+	} else if !errors.Is(err, os.ErrNotExist) {
+		bak := preserveUnreadable(p)
+		fmt.Fprintf(os.Stderr, "tie-audio: config %s unreadable (%v); kept a copy at %s, starting from defaults\n", p, err, bak)
+		cfg = Default()
 	}
-	return fillDefaults(Default()), path
+	return fillDefaults(cfg), path
+}
+
+// preserveUnreadable renames an unparseable config file to <path>.bak
+// (replacing any older stash) so defaults can be written to the original
+// path without losing the user's data. Returns the stash path, or "" when
+// the file could not be moved.
+func preserveUnreadable(path string) string {
+	if path == "" {
+		return ""
+	}
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	bak := path + ".bak"
+	if err := os.Rename(path, bak); err != nil {
+		return ""
+	}
+	return bak
 }
 
 // fillDefaults resolves values left empty in the config file.

@@ -20,10 +20,10 @@ func newTestWallTable(t *testing.T) (*wallTable, *browsePage) {
 	covers := newCoverStore(nil)
 	covers.decodeFn = func(string) (image.Image, error) { return nil, data.ErrNoCover }
 	page := &browsePage{
-		win:     test.NewWindow(nil),
-		session: &data.Session{Cfg: config.AppConfig{}},
-		covers:  covers,
+		win:    test.NewWindow(nil),
+		covers: covers,
 	}
+	page.session.Store(&data.Session{Cfg: config.AppConfig{}})
 	return newWallTable(page), page
 }
 
