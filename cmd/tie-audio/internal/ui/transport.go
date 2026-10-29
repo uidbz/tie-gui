@@ -411,8 +411,14 @@ func (p *player) seekBy(sec float64) {
 }
 
 // do runs a backend action off the UI goroutine so the click returns instantly.
+// Concurrency is safe because the session's backend is serialized: concurrent
+// clicks queue up server-side instead of interleaving mutations.
 func (p *player) do(fn func() error) {
-	go func() { _ = fn() }()
+	go func() {
+		if err := fn(); err != nil {
+			fmt.Println("transport:", err)
+		}
+	}()
 }
 
 // Start launches the poll loop. Stop ends it.

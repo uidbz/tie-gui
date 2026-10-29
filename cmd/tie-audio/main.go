@@ -34,7 +34,11 @@ func main() {
 		return
 	}
 
-	forceExitOnSignal(3 * time.Second)
+	// Grace must cover the full window-close cleanup budget (three
+	// closeWithin steps of 2s each in ui.App) with margin: a 3s fuse used
+	// to force-kill the process before the history recorder's final drain
+	// even started.
+	forceExitOnSignal(10 * time.Second)
 
 	cfg, _ := config.Load()
 	session := data.NewSession(cfg)

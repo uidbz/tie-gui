@@ -134,7 +134,7 @@ func TestRecorderKeepsSpoolWhenTieIsDown(t *testing.T) {
 	if _, err := r.Drain(); err == nil {
 		t.Fatal("expected an error from the unreachable triplestore")
 	}
-	events, err := r.readSpool()
+	events, err := r.readSpoolFile(r.spoolPath())
 	if err != nil || len(events) != 1 {
 		t.Fatalf("spool %v %v", events, err)
 	}

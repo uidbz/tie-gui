@@ -1,10 +1,19 @@
 package playback
 
 import (
+	"fmt"
+	"slices"
 	"time"
 
 	pwclient "github.com/uidbz/pwplay/client"
 )
+
+// settleTimeout bounds every wait for pwplay's decoder loop to apply a
+// queued mutation. The pwplay HTTP client has no per-request timeout
+// (upstream), so this is the only wall-clock guard on the settle loops;
+// a single wedged request still blocks (serialized wrapper keeps the rest
+// of the UI waiting on that one operation rather than corrupting it).
+const settleTimeout = 10 * time.Second
 
 // pwplayRemote drives a pwplay-server over HTTP, wrapping pwplay/client. It has
 // no cgo dependency, so it works on Android as well as desktop.
@@ -25,26 +34,16 @@ func (r *pwplayRemote) Enqueue(urls ...string) error {
 	if err != nil {
 		return err
 	}
-	oldCount := s.TotalTracks
+	expected := append(slices.Clone(s.Playlist), urls...)
 	if err := r.c.AddTracks(urls...); err != nil {
 		return err
 	}
 	// AddTracks is applied asynchronously by pwplay's decoder loop (see
 	// PlayAlbum), so a Status issued right after the POST can still show the
-	// pre-add queue. Wait (bounded) until the add has landed, so callers
+	// pre-add queue. Settle on the full CONTENT (not just the count, which
+	// also matches while a different mutation is half-applied), so callers
 	// refreshing the queue view immediately see the new tracks.
-	target := oldCount + len(urls)
-	for i := 0; i < 40; i++ {
-		st, err := r.c.Status()
-		if err != nil {
-			return err
-		}
-		if st.TotalTracks >= target {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return nil
+	return r.waitPlaylist(expected)
 }
 
 // Insert adds urls so the first lands at index `at` in the queue. pwplay has no
@@ -66,25 +65,21 @@ func (r *pwplayRemote) Insert(at int, urls ...string) error {
 	if at > oldCount {
 		at = oldCount
 	}
+	expected := append(slices.Clone(s.Playlist), urls...)
 	if err := r.c.AddTracks(urls...); err != nil {
 		return err
 	}
 	if at == oldCount {
-		return nil // already at the end
+		return r.waitPlaylist(expected) // appended: settle, nothing to move
 	}
-	// AddTracks is applied asynchronously by pwplay's decoder loop, so the moved
-	// block is not addressable until TotalTracks reflects the add. Poll (bounded)
-	// before MoveItems, mirroring PlayAlbum.
-	target := oldCount + len(urls)
-	for i := 0; i < 40; i++ {
-		st, err := r.c.Status()
-		if err != nil {
-			return err
-		}
-		if st.TotalTracks == target {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
+	// AddTracks is applied asynchronously by pwplay's decoder loop, so the
+	// appended block is not addressable until the applied playlist reflects
+	// the add. Settle on CONTENT, not the count: the target count also
+	// matches transiently mid-mutation (old + adds − removes), which would
+	// send MoveItems against the wrong tail. On timeout, fail rather than
+	// move blindly — the poll reconciles the queue view.
+	if err := r.waitPlaylist(expected); err != nil {
+		return fmt.Errorf("insert: %w", err)
 	}
 	// dst is measured against the queue before the block is removed; since the
 	// appended block sits after `at`, dst == at.
@@ -93,14 +88,23 @@ func (r *pwplayRemote) Insert(at int, urls ...string) error {
 
 // Clear empties the queue. Servers with the /clear endpoint drain the whole
 // playlist in one decoder-loop step (instant, and stops playback even when
-// nothing was ever loaded); older servers fall back to removing the front
-// oldCount times, which the decoder loop drains one at a time.
+// nothing was ever loaded); older servers fall back to stopping playback and
+// removing the front oldCount times. Both paths settle on the observably
+// empty queue before returning, so a queue view refreshed right after Clear
+// does not re-show the old queue.
 func (r *pwplayRemote) Clear() error {
 	if err := r.c.ClearTracks(); err == nil {
-		return nil
+		return r.waitPlaylist(nil)
 	}
 	s, err := r.c.Status()
 	if err != nil {
+		return err
+	}
+	// Stop first: removing the *current* track while playing makes the
+	// decoder reload whatever now occupies the current index — a full
+	// download of each old track in turn, the churn PlayAlbum's comment
+	// forbids.
+	if err := r.c.Stop(); err != nil {
 		return err
 	}
 	for i := 0; i < s.TotalTracks; i++ {
@@ -108,7 +112,7 @@ func (r *pwplayRemote) Clear() error {
 			return err
 		}
 	}
-	return nil
+	return r.waitPlaylist(nil)
 }
 
 // Remove drops the queue item at index. pwplay applies the removal in its
@@ -164,6 +168,12 @@ func (r *pwplayRemote) PlayAlbum(urls []string) error {
 			return r.c.Play()
 		}
 	}
+	// Stop first: trimming while playing makes the decoder reload the
+	// current index after every removal (downloading each old track in
+	// turn); the Play below deliberately restarts on the new album.
+	if err := r.c.Stop(); err != nil {
+		return err
+	}
 	if err := r.c.AddTracks(urls...); err != nil {
 		return err
 	}
@@ -176,19 +186,22 @@ func (r *pwplayRemote) PlayAlbum(urls []string) error {
 	// (buffered command channels), so Play() must not fire until the queue has
 	// actually settled to just the new tracks. Poll until the applied playlist
 	// equals urls (content, not just length — see the doc comment), with a
-	// bounded wait so a lost/extra track can't hang us.
+	// bounded wait; if it never settles, report the failure instead of firing
+	// Play into a half-replaced queue.
 	if err := r.waitPlaylist(urls); err != nil {
 		return err
 	}
 	return r.c.Play()
 }
 
-// waitPlaylist polls (bounded) until the applied playlist is exactly want —
-// i.e. every queued mutation has been applied by the decoder loop. Matching
-// the content, not just the length, makes the wait unambiguous mid-mutation.
-// want == nil waits for the empty queue.
+// waitPlaylist polls until the applied playlist is exactly want — i.e. every
+// queued mutation has been applied by the decoder loop — giving up after
+// settleTimeout. Matching the content, not just the length, makes the wait
+// unambiguous mid-mutation. want == nil waits for the empty queue. A timeout
+// is an error: callers must not Play or MoveItems against an unsettled queue.
 func (r *pwplayRemote) waitPlaylist(want []string) error {
-	for i := 0; i < 400; i++ {
+	deadline := time.Now().Add(settleTimeout)
+	for {
 		st, err := r.c.Status()
 		if err != nil {
 			return err
@@ -196,9 +209,12 @@ func (r *pwplayRemote) waitPlaylist(want []string) error {
 		if playlistEquals(st.Playlist, want) {
 			return nil
 		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("pwplay queue did not settle within %v (applied %d tracks, waiting for %d)",
+				settleTimeout, len(st.Playlist), len(want))
+		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	return nil // best effort: the caller's Play is still the right last resort
 }
 
 func playlistEquals(a, b []string) bool {

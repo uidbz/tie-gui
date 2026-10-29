@@ -20,8 +20,9 @@ type Status struct {
 }
 
 // PlaybackBackend controls a queue-based audio player. Implementations are not
-// required to be safe for concurrent use; the UI calls them from background
-// goroutines one action at a time.
+// required to be safe for concurrent use; the session wraps them with
+// Serialized, which enforces "one action at a time" no matter how many
+// goroutines (transport poll, per-click actions, queue commits) call through.
 type PlaybackBackend interface {
 	// Enqueue appends tracks (stream URLs for the remote backend) to the queue.
 	Enqueue(urls ...string) error

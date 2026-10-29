@@ -56,6 +56,11 @@ type Session struct {
 // engine (pwplay player) for BackendLocal. When local construction fails the
 // session falls back to the remote so the app stays usable, and BackendErr
 // records the failure for the UI to surface.
+//
+// Both are wrapped with playback.Serialized: the backend contract is "one
+// action at a time", but the UI fires actions from fresh goroutines per
+// click beside the continuous status poll — serialization keeps PlayAlbum
+// settles, queue moves and polls from interleaving.
 func NewSession(cfg config.AppConfig) *Session {
 	tieCfg := config.LoadTieConfig(cfg.TieConfig)
 	collection := tieconfig.AppCollection(tieCfg, cfg.TieCollection, config.DefaultTieCollection)
@@ -64,7 +69,7 @@ func NewSession(cfg config.AppConfig) *Session {
 		Cfg:        cfg,
 		Tie:        tieclient.NewTieClientFor(tieCfg, collection),
 		Pwplay:     pw,
-		Backend:    playback.NewPwplayRemote(pw),
+		Backend:    playback.Serialized(playback.NewPwplayRemote(pw)),
 		Collection: collection,
 	}
 	backend := cfg.Backend
@@ -73,7 +78,7 @@ func NewSession(cfg config.AppConfig) *Session {
 	}
 	if backend == config.BackendLocal {
 		if lb, err := playback.NewLocal(config.PlayLogPath()); err == nil {
-			s.Backend = lb
+			s.Backend = playback.Serialized(lb)
 		} else {
 			s.BackendErr = err
 		}

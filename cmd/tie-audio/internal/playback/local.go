@@ -50,10 +50,21 @@ func NewLocal(playLogPath string) (PlaybackBackend, error) {
 
 // IsLocal reports whether b is the on-device backend — used to decide
 // whether phone-side integration (media session, audio focus) applies.
+// It asks through localMarker so transparent wrappers (Serialized) keep
+// the answer.
 func IsLocal(b PlaybackBackend) bool {
-	_, ok := b.(*localBackend)
-	return ok
+	m, ok := b.(localMarker)
+	return ok && m.IsLocalBackend()
 }
+
+// localMarker is implemented by the on-device backend and by wrappers that
+// forward the answer.
+type localMarker interface {
+	IsLocalBackend() bool
+}
+
+// IsLocalBackend marks localBackend as the on-device engine.
+func (b *localBackend) IsLocalBackend() bool { return true }
 
 // newLocalWithSink is NewLocal with a sink-factory seam for tests (in-memory
 // play log).

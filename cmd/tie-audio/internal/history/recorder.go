@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path"
@@ -74,6 +75,7 @@ type Recorder struct {
 	stop    chan struct{}
 	done    chan struct{}
 	warned  map[string]bool
+	stopOnce sync.Once
 }
 
 // New builds a recorder; call Start to run it in the background.
@@ -127,14 +129,10 @@ func (r *Recorder) Kick() {
 	}
 }
 
-// Stop ends the loop after one final drain, waiting at most timeout.
+// Stop ends the loop after one final drain, waiting at most timeout. Safe to
+// call more than once (and from several goroutines).
 func (r *Recorder) Stop(timeout time.Duration) {
-	select {
-	case <-r.stop:
-		return
-	default:
-		close(r.stop)
-	}
+	r.stopOnce.Do(func() { close(r.stop) })
 	finished := make(chan struct{})
 	go func() {
 		<-r.done
@@ -277,8 +275,8 @@ func (r *Recorder) appendSpool(events []tieclient.PlayEvent) error {
 	return f.Close()
 }
 
-func (r *Recorder) readSpool() ([]tieclient.PlayEvent, error) {
-	f, err := os.Open(r.spoolPath())
+func (r *Recorder) readSpoolFile(path string) ([]tieclient.PlayEvent, error) {
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -299,26 +297,61 @@ func (r *Recorder) readSpool() ([]tieclient.PlayEvent, error) {
 }
 
 // flush writes the spooled events to tie and empties the spool on success.
+// The spool is shared with any other tie-audio instance draining the same
+// backend (same state dir), so the file is renamed aside before writing:
+// events another instance appends while this one is on the wire land in a
+// fresh spool instead of being deleted with ours. On failure the events are
+// restored ahead of anything appended meanwhile (the restore has a tiny
+// window against a concurrent append — at worst a resend is delayed,
+// never lost, and RecordPlays dedupes by subject).
 func (r *Recorder) flush() (int, error) {
-	events, err := r.readSpool()
-	if err != nil || len(events) == 0 {
+	sp := r.spoolPath()
+	swap := fmt.Sprintf("%s.%d.flush", sp, os.Getpid())
+	if err := os.Rename(sp, swap); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return 0, err
+	}
+	events, err := r.readSpoolFile(swap)
+	if err != nil {
+		r.restoreSpool(swap, sp)
+		return 0, err
+	}
+	if len(events) == 0 {
+		_ = os.Remove(swap)
+		return 0, nil
 	}
 	sess := r.opts.Session()
 	if sess == nil || sess.Tie == nil {
+		r.restoreSpool(swap, sp) // tie not reachable: keep them for the retry
 		return 0, nil
 	}
 	n, err := sess.Tie.RecordPlays(events)
 	if err != nil {
-		return 0, err // keep the spool; retried on the next drain
+		r.restoreSpool(swap, sp) // keep the spool; retried on the next drain
+		return 0, err
 	}
-	if err := os.Remove(r.spoolPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(swap); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return n, err
 	}
 	if n > 0 && r.opts.OnRecorded != nil {
 		r.opts.OnRecorded(n)
 	}
 	return n, nil
+}
+
+// restoreSpool puts the swapped-aside events back ahead of anything another
+// instance appended meanwhile.
+func (r *Recorder) restoreSpool(swap, sp string) {
+	b, err := os.ReadFile(swap)
+	if err != nil {
+		return
+	}
+	cur, _ := os.ReadFile(sp)
+	tmp := fmt.Sprintf("%s.%d.tmp", sp, os.Getpid())
+	if os.WriteFile(tmp, append(b, cur...), 0o644) == nil && os.Rename(tmp, sp) == nil {
+		_ = os.Remove(swap)
+		return
+	}
+	_ = os.Remove(tmp)
 }
 
 func (r *Recorder) loadCursors() {

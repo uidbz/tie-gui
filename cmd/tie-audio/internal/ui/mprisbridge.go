@@ -60,6 +60,10 @@ func (b *mprisBridge) Close() {
 		_ = b.server.Close()
 	}
 	b.mu.Lock()
+	// Invalidate the current cover slot AND drop any encode still running:
+	// without the artGen bump a cover encode finishing after Close would
+	// write a fresh PNG into the runtime dir that nothing ever removes.
+	b.artGen++
 	if b.artPath != "" {
 		_ = os.Remove(b.artPath)
 		b.artPath = ""
