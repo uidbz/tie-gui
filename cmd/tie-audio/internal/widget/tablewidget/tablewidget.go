@@ -77,6 +77,7 @@ func (ctx *TableWidget) prevPage() {
 	}
 	ctx.currentPage.Set(page)
 	ctx.Refresh()
+	ctx.ScrollToTop()
 }
 
 func (ctx *TableWidget) nextPage() {
@@ -91,18 +92,22 @@ func (ctx *TableWidget) nextPage() {
 	}
 	ctx.currentPage.Set(page)
 	ctx.Refresh()
+	ctx.ScrollToTop()
 }
 
 func (ctx *TableWidget) firstPage() {
 	ctx.currentPage.Set(1)
 	ctx.Refresh()
+	ctx.ScrollToTop()
 }
 
 // ResetPage jumps back to page 1. Callers use it when the underlying listing is
 // replaced (e.g. a directory change) so a stale page number does not land past
-// the end of a shorter listing.
+// the end of a shorter listing. The scroll position is reset too: the new
+// listing starts at its first row.
 func (ctx *TableWidget) ResetPage() {
 	ctx.currentPage.Set(1)
+	ctx.ScrollToTop()
 }
 
 func (ctx *TableWidget) lastPage() {
@@ -110,8 +115,19 @@ func (ctx *TableWidget) lastPage() {
 	if err != nil {
 		return
 	}
+	if max < 1 {
+		max = 1
+	}
 	ctx.currentPage.Set(max)
 	ctx.Refresh()
+	ctx.ScrollToTop()
+}
+
+// ScrollToTop scrolls the current page back to its first row, so a stale scroll
+// offset from the previous listing (or the previous page/filter) cannot leave
+// the table showing its tail or a blank region.
+func (ctx *TableWidget) ScrollToTop() {
+	ctx.table.ScrollToTop()
 }
 
 func NewTableWidget(title string, pageSize int) *TableWidget {
@@ -140,8 +156,19 @@ func NewTableWidget(title string, pageSize int) *TableWidget {
 		if err != nil {
 			return
 		}
+		// Clamp to an existing page; the entry accepts any integer, and an
+		// out-of-range jump used to land the table on a blank page.
+		if max, terr := ctx.totalPages.Get(); terr == nil {
+			if i < 1 {
+				i = 1
+			}
+			if i > max {
+				i = max
+			}
+		}
 		ctx.currentPage.Set(i)
 		ctx.Refresh()
+		ctx.ScrollToTop()
 	}
 	totalPages := widget.NewLabelWithData(binding.IntToString(ctx.totalPages))
 	first := theme.NewThemedResource(fyne.NewStaticResource("navigateFirst", navigateFirst))
@@ -170,16 +197,36 @@ func NewTableWidget(title string, pageSize int) *TableWidget {
 }
 
 func (ctx *TableWidget) Refresh() {
+	totalCount := ctx.RowCount()
+	pageSize := ctx.pageSize
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	totalPages := (totalCount + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1 // an empty listing still has one (empty) page
+	}
 	page, err := ctx.currentPage.Get()
 	if err != nil {
 		return
 	}
-	ctx.Offset = (page - 1) * ctx.pageSize
-	data := ctx.Data(ctx.Offset, ctx.pageSize)
-	totalCount := ctx.RowCount()
+	// Clamp to a real page: a page-jump past the end, a shrinking listing or an
+	// empty listing must not push Offset past the data (or negative from page
+	// 0) — previously that produced an empty table with a bogus page number.
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	if cur, _ := ctx.currentPage.Get(); cur != page {
+		ctx.currentPage.Set(page)
+	}
+	ctx.Offset = (page - 1) * pageSize
+	data := ctx.Data(ctx.Offset, pageSize)
 
 	ctx.totalResults.Set(totalCount)
-	ctx.totalPages.Set((totalCount + ctx.pageSize - 1) / ctx.pageSize)
+	ctx.totalPages.Set(totalPages)
 
 	ctx.currentData = data
 	if ctx.currentFilter != "" {
@@ -205,15 +252,26 @@ func (ctx *TableWidget) origRow(displayRow int) int {
 	return displayRow
 }
 
-// SelectedRows returns the selected rows as indices into the page returned by
-// Data (in-page filtering is translated back via origRow).
+// SelectedRows returns the selected rows as absolute indices into the consumer's
+// full row set (page offset applied, in-page filtering translated back via
+// RowIndex).
 func (ctx *TableWidget) SelectedRows() []int {
 	rows := ctx.table.SelectedRows()
 	out := make([]int, len(rows))
 	for i, r := range rows {
-		out[i] = ctx.origRow(r)
+		out[i] = ctx.RowIndex(r)
 	}
 	return out
+}
+
+// RowIndex maps a display row of the current page to the absolute index into
+// the consumer's full row set: the page offset plus the in-page filter
+// translation. Every interaction callback delivers rows already translated
+// through this function; widget-mode consumers MUST render cells through it as
+// well — rendering the raw display row shows one record while tapping another
+// (filter active) or re-showing page 1 (page > 1).
+func (ctx *TableWidget) RowIndex(displayRow int) int {
+	return ctx.Offset + ctx.origRow(displayRow)
 }
 
 // ClearSelection deselects all rows.
@@ -221,31 +279,31 @@ func (ctx *TableWidget) ClearSelection() { ctx.table.ClearSelection() }
 
 func (ctx *TableWidget) cellOnClick(row int) {
 	if ctx.OnRowSelected != nil {
-		ctx.OnRowSelected(ctx.origRow(row))
+		ctx.OnRowSelected(ctx.RowIndex(row))
 	}
 }
 
 func (ctx *TableWidget) cellOnActivate(row int) {
 	if ctx.OnRowActivated != nil {
-		ctx.OnRowActivated(ctx.origRow(row))
+		ctx.OnRowActivated(ctx.RowIndex(row))
 	}
 }
 
 func (ctx *TableWidget) cellOnDoubleTap(row int) {
 	if ctx.OnRowDoubleTapped != nil {
-		ctx.OnRowDoubleTapped(ctx.origRow(row))
+		ctx.OnRowDoubleTapped(ctx.RowIndex(row))
 	}
 }
 
 func (ctx *TableWidget) cellOnSecondaryClick(row int, obj fyne.CanvasObject) {
 	if ctx.OnRowMenu != nil {
-		ctx.OnRowMenu(ctx.origRow(row), obj)
+		ctx.OnRowMenu(ctx.RowIndex(row), obj)
 	}
 }
 
 func (ctx *TableWidget) cellOnDragStart(row int) {
 	if ctx.OnDragStart != nil {
-		ctx.OnDragStart(ctx.origRow(row))
+		ctx.OnDragStart(ctx.RowIndex(row))
 	}
 }
 
@@ -257,36 +315,38 @@ func (ctx *TableWidget) cellOnDragMove(absPos fyne.Position) {
 
 func (ctx *TableWidget) cellOnDrop(row int, absPos fyne.Position) {
 	if ctx.OnDrop != nil {
-		ctx.OnDrop(ctx.origRow(row), absPos)
+		ctx.OnDrop(ctx.RowIndex(row), absPos)
 	}
 }
 
 func (ctx *TableWidget) cellOnReorder(from, to int) {
 	if ctx.OnReorder != nil {
-		ctx.OnReorder(ctx.origRow(from), ctx.origRow(to))
+		ctx.OnReorder(ctx.RowIndex(from), ctx.RowIndex(to))
 	}
 }
 
 func (ctx *TableWidget) filter(text string) {
-	ctx.filteredData = NewTableData("filtered data")
-	ctx.filteredData.Columns = append([]string{}, ctx.currentData.Columns...)
-	ctx.filteredData.RowMapping = []int{}
+	fd := NewTableData("filtered data")
+	fd.Columns = append([]string{}, ctx.currentData.Columns...)
+	fd.RowMapping = []int{}
 
 	for i := 0; i < ctx.currentData.RowCount(); i++ {
-		stringRow := make([]string, ctx.currentData.ColumnCount())
 		found := false
 		for j := 0; j < ctx.currentData.ColumnCount(); j++ {
-			val := ctx.currentData.Get(j, i)
-			if !found && contains(val, text) {
+			if !found && contains(ctx.currentData.Get(j, i), text) {
 				found = true
 			}
-			stringRow[j] = val
 		}
 		if found {
-			ctx.filteredData.AddStringRow(ctx.currentData.Columns, stringRow)
-			ctx.filteredData.RowMapping = append(ctx.filteredData.RowMapping, i)
+			// Copy cells verbatim (typed, with numeric sort keys) rather than
+			// re-adding display strings: sorting a filtered table by duration
+			// or track number must still compare numbers, not lexicographic
+			// text.
+			ctx.currentData.CopyRowInto(fd, i)
+			fd.RowMapping = append(fd.RowMapping, i)
 		}
 	}
+	ctx.filteredData = fd
 }
 
 func contains(haystack, needle string) bool {

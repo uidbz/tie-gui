@@ -252,11 +252,16 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 			at.updateGroupedCell(col, row, obj)
 			return
 		}
-		if row < 0 || row >= len(at.tracks) {
+		// Interaction callbacks deliver absolute rows (see TableWidget.RowIndex);
+		// rendering must translate the display row the same way, or a filtered
+		// page shows one track while tapping another, and page 2 of a >1000-row
+		// listing re-renders page 1.
+		idx := at.table.RowIndex(row)
+		if idx < 0 || idx >= len(at.tracks) {
 			return
 		}
 		if cell, ok := obj.(*coverCell); ok {
-			cell.show(at.tracks[row].AlbumUID)
+			cell.show(at.tracks[idx].AlbumUID)
 			return
 		}
 		lbl, ok := obj.(*widget.Label)
@@ -264,19 +269,22 @@ func newTrackTable(win fyne.Window, tracks []data.Track, colKeys []string, onPla
 			return
 		}
 		if at.opts.indicator != nil && col == 0 {
-			lbl.SetText(at.opts.indicator(row))
+			lbl.SetText(at.opts.indicator(idx))
 			return
 		}
 		ci := col - at.colOffset()
 		if ci < 0 || ci >= len(at.cols) {
 			return
 		}
-		lbl.SetText(at.cellValue(at.cols[ci].key, at.tracks[row]))
+		lbl.SetText(at.cellValue(at.cols[ci].key, at.tracks[idx]))
 	})
 	if at.opts.grouped {
 		// Album header rows are inert: no selection, no drag, no double-tap.
+		// RowSelectable receives the display row, so translate through the
+		// filter before consulting at.rows.
 		ft.RowSelectable = func(row int) bool {
-			return row >= 0 && row < len(at.rows) && at.rows[row].kind == queueRowTrack
+			idx := at.table.RowIndex(row)
+			return idx >= 0 && idx < len(at.rows) && at.rows[idx].kind == queueRowTrack
 		}
 	}
 	if at.opts.sortable {
@@ -443,10 +451,11 @@ func (at *trackTable) headerCellValue(key string, r queueRow) string {
 // column's queueTitleCell shows either an album header (cover, name, artist
 // line) or the track title; the other columns stay labels.
 func (at *trackTable) updateGroupedCell(col, row int, obj fyne.CanvasObject) {
-	if row < 0 || row >= len(at.rows) {
+	idx := at.table.RowIndex(row) // display row → absolute row (see RowIndex)
+	if idx < 0 || idx >= len(at.rows) {
 		return
 	}
-	r := at.rows[row]
+	r := at.rows[idx]
 	if cell, ok := obj.(*queueTitleCell); ok {
 		cell.set(r)
 		return
@@ -456,7 +465,7 @@ func (at *trackTable) updateGroupedCell(col, row int, obj fyne.CanvasObject) {
 		return
 	}
 	if at.opts.indicator != nil && col == 0 {
-		lbl.SetText(at.opts.indicator(row))
+		lbl.SetText(at.opts.indicator(idx))
 		return
 	}
 	ci := col - at.colOffset()
