@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
@@ -13,13 +15,15 @@ import (
 // makeSettingsTab holds three sub-tabs: the shared tie-config editor
 // ("Connection"), the quick tag bar editor ("Quick tags") and the startup
 // page chooser ("Startup"). Picking a collection in the editor's dropdown or
-// applying the form runs onSwitchCollection, which rebinds the live client to
-// that collection and remembers it as this app's own profile (only Apply
-// writes the tie file); onApply then runs (e.g. to reload the tag list).
-func makeSettingsTab(tc *client.TieClient, activeCollection func() string, onSwitchCollection func(client.Config, string), onApply func(), quickEditor fyne.CanvasObject) *container.TabItem {
-	editor := tieconfig.Editor(tc.Config, tieConfigPath, activeCollection(),
+// applying the form runs onSwitchCollection, which installs a new live
+// client for that collection and remembers it as this app's own profile
+// (only Apply writes the tie file); onApply then runs (e.g. to reload the
+// tag list). The client arrives through tieRef so the editor always reads
+// the CURRENT live config, not one captured at sidebar build time.
+func makeSettingsTab(ref *tieRef, activeCollection func() string, onSwitchCollection func(client.Config, string), onApply func(), quickEditor fyne.CanvasObject) *container.TabItem {
+	editor := tieconfig.Editor(ref.get().Config, tieConfigPath, activeCollection(),
 		func(name string) {
-			onSwitchCollection(tc.Config, name)
+			onSwitchCollection(ref.get().Config, name)
 			if onApply != nil {
 				onApply()
 			}
@@ -91,8 +95,18 @@ func makeStartupTab(app fyne.App) *container.TabItem {
 	tagEntry := widget.NewEntry()
 	tagEntry.SetText(app.Preferences().String(prefStartupTag))
 	tagEntry.SetPlaceHolder(`(tag shown when the page is "A tag…")`)
+	// Debounce persistence: Fyne's Preferences writes the JSON file
+	// synchronously on every SetString, so writing per keystroke would hit
+	// the disk once per character.
+	var saveTimer *time.Timer
 	tagEntry.OnChanged = func(s string) {
-		app.Preferences().SetString(prefStartupTag, s)
+		if saveTimer != nil {
+			saveTimer.Stop()
+		}
+		tag := s
+		saveTimer = time.AfterFunc(500*time.Millisecond, func() {
+			fyne.Do(func() { app.Preferences().SetString(prefStartupTag, tag) })
+		})
 	}
 
 	note := widget.NewLabel("Applies at the next launch. A tie: URL argument and " +

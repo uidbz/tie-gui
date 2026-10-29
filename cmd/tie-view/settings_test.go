@@ -25,7 +25,7 @@ func TestSettingsTabWrapsTabsInBorder(t *testing.T) {
 	tc := client.NewTieClientFor(tietest.Config(), "testing")
 	tieConfigPath = t.TempDir() + "/config.toml"
 
-	tab := makeSettingsTab(tc, func() string { return "testing" },
+	tab := makeSettingsTab(newTieRef(tc), func() string { return "testing" },
 		func(client.Config, string) {}, func() {}, widget.NewLabel("quick"))
 
 	inner, ok := tab.Content.(*fyne.Container)

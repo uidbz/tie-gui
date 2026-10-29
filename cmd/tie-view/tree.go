@@ -35,7 +35,7 @@ type tieFSNode struct {
 // "/music/album"); a file leaf's ID is its directory's path joined with its
 // content hash, which keeps IDs unique even when filenames collide.
 type tieFSTree struct {
-	tie    *client.TieClient
+	ref    *tieRef
 	viewer *gallery.Gallery
 	tree   *widget.Tree
 
@@ -44,6 +44,20 @@ type tieFSTree struct {
 	branches map[string]bool              // node ID -> is a directory
 	files    map[string]tieFSNode         // leaf node ID -> file entry
 	readers  map[string]*tieReader        // content hash -> reader (keeps thumbHash warm)
+	// loading marks paths whose listing fetch is in flight: a Fyne tree
+	// re-asks childUIDs on every layout pass, so without this an uncached
+	// directory would kick a new network fetch (and spam a possibly dead
+	// server) per pass.
+	loading map[string]bool
+	// ready is set once the constructor has finished wiring the tree;
+	// childUIDs kicks no fetch before that (see the constructor).
+	ready bool
+	// fetchWG counts in-flight kickFetch workers. Production never needs it;
+	// headless tests call fetchWG.Wait() to let fetches (and their
+	// fyne.Do tree refreshes — the test driver runs those INLINE on the
+	// fetch goroutine) finish before the test ends, instead of bleeding
+	// into the next test's widget work.
+	fetchWG sync.WaitGroup
 
 	// showHidden controls whether hidden directories (names with a leading
 	// ".") appear in the tree. Defaults to false; toggled via the gallery
@@ -54,9 +68,9 @@ type tieFSTree struct {
 // newTieFSTree returns a tree for navigating the tie virtual filesystem.
 // Selecting a directory replaces the gallery with the directory's images;
 // selecting a file also opens that image. The tree widget is t.tree.
-func newTieFSTree(viewer *gallery.Gallery, tc *client.TieClient) *tieFSTree {
+func newTieFSTree(viewer *gallery.Gallery, ref *tieRef) *tieFSTree {
 	t := &tieFSTree{
-		tie:    tc,
+		ref:    ref,
 		viewer: viewer,
 		dirs:   make(map[string]*client.Directory),
 		// "" must be a branch: the tree walk starts at the root node ""
@@ -65,6 +79,7 @@ func newTieFSTree(viewer *gallery.Gallery, tc *client.TieClient) *tieFSTree {
 		branches: map[string]bool{"": true, "/": true},
 		files:    make(map[string]tieFSNode),
 		readers:  make(map[string]*tieReader),
+		loading:  make(map[string]bool),
 	}
 	tree := widget.NewTree(
 		t.childUIDs,
@@ -77,10 +92,20 @@ func newTieFSTree(viewer *gallery.Gallery, tc *client.TieClient) *tieFSTree {
 		},
 	)
 	tree.OnSelected = t.selected
-	// Start with the root expanded: with every branch closed the tab would
-	// show only the bare "/" node and look empty.
-	tree.OpenBranch("/")
 	t.tree = tree
+	// Start with the root expanded: with every branch closed the tab would
+	// show only the bare "/" node and look empty. That walk runs before
+	// ready is set, so it kicks no fetch; the root listing is then primed
+	// explicitly. Kicking during the walk instead would let the fetch's
+	// apply race the constructor's own writes to the tree widget (the fyne
+	// test driver runs fyne.Do INLINE on the fetch goroutine, which makes
+	// the race show up under -race; in production the single UI goroutine
+	// hides it but leaves the apply ordering indeterminate).
+	tree.OpenBranch("/")
+	t.mu.Lock()
+	t.ready = true
+	t.mu.Unlock()
+	t.kickFetch("/")
 	return t
 }
 
@@ -88,11 +113,30 @@ func (t *tieFSTree) childUIDs(uid widget.TreeNodeID) []widget.TreeNodeID {
 	if uid == "" {
 		return []widget.TreeNodeID{"/"}
 	}
-	dir, err := t.readDir(uid)
-	if err != nil {
-		fmt.Println("Error reading tie dir", uid, ":", err)
-		return nil
+	// The tree calls this during layout, so it must never block: an uncached
+	// directory kicks a background fetch and renders empty until the fetch
+	// lands and refreshes the tree.
+	t.mu.Lock()
+	if !t.ready {
+		t.mu.Unlock()
+		return nil // still under construction; the constructor primes the root
 	}
+	d, ok := t.dirs[uid]
+	inflight := t.loading[uid]
+	if !ok && !inflight {
+		t.loading[uid] = true
+	}
+	t.mu.Unlock()
+	if !ok {
+		if !inflight {
+			t.kickFetch(uid)
+		}
+		return nil // renders once the fetch lands and refreshes the tree
+	}
+	if d == nil {
+		return nil // cached failure (already logged when it happened)
+	}
+	dir := *d
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -187,40 +231,62 @@ func (t *tieFSTree) SetShowHidden(show bool) {
 
 // showDir replaces the gallery with the image files of the directory at
 // dirPath, and opens the one with selectHash when given.
+// showDir replaces the gallery with the image files of the directory at
+// dirPath, and opens the one with selectHash when given. The listing read
+// and reader construction run on a fetch goroutine; the gallery swap and
+// selection happen in one fyne.Do pass, dropped if superseded meanwhile
+// (newer query, another directory tap, or a collection switch).
 func (t *tieFSTree) showDir(dirPath, selectHash string) {
-	dir, err := t.readDir(dirPath)
-	if err != nil {
-		fmt.Println("Error reading tie dir", dirPath, ":", err)
-		return
-	}
-	t.showListing(dir, selectHash)
+	var selIdx int
+	fetchGalleryPost(t.viewer, func() []gallery.CustomReader {
+		tc := t.ref.get()
+		dir, err := t.readDirFor(tc, dirPath)
+		if err != nil {
+			fmt.Println("Error reading tie dir", dirPath, ":", err)
+			return nil
+		}
+		readers, idx := t.readersFor(tc, dir, selectHash)
+		selIdx = idx
+		return readers
+	}, func(readers []gallery.CustomReader) {
+		t.selectFromListing(readers, selIdx)
+	})
 }
 
 // showDirUID is showDir by directory UID instead of path. It is used when
 // browsing a tagged directory from tag-query results, where the entry's key
 // is the DirUID.
 func (t *tieFSTree) showDirUID(uid client.DirUID, selectHash string) {
-	dir, err := client.ReadTieDir(t.tie, uid)
-	if err != nil {
-		fmt.Println("Error reading tie dir", uid, ":", err)
-		return
-	}
-	t.showListing(dir, selectHash)
+	var selIdx int
+	fetchGalleryPost(t.viewer, func() []gallery.CustomReader {
+		tc := t.ref.get()
+		dir, err := client.ReadTieDir(tc, uid)
+		if err != nil {
+			fmt.Println("Error reading tie dir", uid, ":", err)
+			return nil
+		}
+		readers, idx := t.readersFor(tc, dir, selectHash)
+		selIdx = idx
+		return readers
+	}, func(readers []gallery.CustomReader) {
+		t.selectFromListing(readers, selIdx)
+	})
 }
 
-// showListing replaces the gallery with the image files of a directory
-// listing, and opens the one with selectHash when given.
-func (t *tieFSTree) showListing(dir client.Directory, selectHash string) {
-	readers := make([]gallery.CustomReader, 0, len(dir.Files)+len(dir.Archives))
-	selIdx := -1
-	host := tieFileHost(t.tie)
+// readersFor turns a directory listing into gallery readers (on the fetch
+// goroutine): archives first (browsable blobs), then the image files through
+// the shared per-hash reader cache. selIdx is the position of selectHash.
+func (t *tieFSTree) readersFor(tc *client.TieClient, dir client.Directory, selectHash string) (readers []gallery.CustomReader, selIdx int) {
+	readers = make([]gallery.CustomReader, 0, len(dir.Files)+len(dir.Archives))
+	selIdx = -1
+	host := tieFileHost(tc)
 	for _, a := range dir.Archives {
 		hash := a.Hash
 		readers = append(readers, &tieArchiveReader{
 			hash:     hash,
 			filename: a.Filename,
 			host:     host,
-			tc:       t.tie,
+			tc:       tc,
 			open:     func() { browseTieArchive(t.viewer, host, hash) },
 		})
 	}
@@ -228,27 +294,69 @@ func (t *tieFSTree) showListing(dir client.Directory, selectHash string) {
 		if !isImageFile(f) {
 			continue
 		}
-		readers = append(readers, t.reader(f.Uid))
+		readers = append(readers, t.readerFor(tc, f.Uid))
 		if f.Uid == selectHash {
 			selIdx = len(readers) - 1
 		}
 	}
-	t.viewer.ReadCustomAsync(func() []gallery.CustomReader { return readers })
-	t.viewer.ChangeGallery()
-	if selIdx >= 0 {
-		info := gallery.NewImageInfoCustomReader(selIdx, readers[selIdx])
-		info.Path = readers[selIdx].Path()
-		t.viewer.ChangeImage(info)
-	}
+	return readers, selIdx
 }
 
-// readDir returns the (cached) listing of the directory at dirPath. A path
-// not tied to any DirUID yields an empty listing. Failures are cached too:
-// otherwise a dead server makes the tree widget re-query in a tight loop on
-// every refresh (the tree re-asks childUIDs per layout pass), spamming the
-// dead server and starving the UI. The cache is per-session, so a profile
-// switch (or a restart) retries against the new server automatically.
-func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
+// selectFromListing opens the selected image of a freshly applied listing
+// (UI goroutine, right after ChangeGallery).
+func (t *tieFSTree) selectFromListing(readers []gallery.CustomReader, selIdx int) {
+	if selIdx < 0 || selIdx >= len(readers) {
+		return
+	}
+	info := gallery.NewImageInfoCustomReader(selIdx, readers[selIdx])
+	info.Path = readers[selIdx].Path()
+	t.viewer.ChangeImage(info)
+}
+
+// kickFetch fetches one directory listing off the UI goroutine (for a
+// childUIDs cache miss) and refreshes the tree when it lands.
+func (t *tieFSTree) kickFetch(dirPath string) {
+	tc := t.ref.get()
+	t.fetchWG.Add(1)
+	go func() {
+		defer t.fetchWG.Done()
+		_, err := t.readDirFor(tc, dirPath)
+		if err != nil {
+			fmt.Println("Error reading tie dir", dirPath, ":", err)
+		}
+		fyne.Do(func() {
+			t.mu.Lock()
+			delete(t.loading, dirPath)
+			t.mu.Unlock()
+			t.tree.Refresh()
+		})
+	}()
+}
+
+// reset drops everything cached about the current connection/collection
+// (called on a collection or connection switch) and refreshes the tree:
+// listings, child derivations, file leaves and the shared per-hash readers
+// — their thumbHash/dimensions mappings belong to the old collection.
+func (t *tieFSTree) reset() {
+	t.mu.Lock()
+	t.dirs = make(map[string]*client.Directory)
+	t.branches = map[string]bool{"": true, "/": true}
+	t.files = make(map[string]tieFSNode)
+	t.readers = make(map[string]*tieReader)
+	t.loading = make(map[string]bool)
+	t.mu.Unlock()
+	t.tree.Refresh()
+}
+
+// readDirFor returns the (cached) listing of the directory at dirPath
+// through tc. A path not tied to any DirUID yields an empty listing.
+// Failures are cached too: otherwise a dead server makes the tree widget
+// re-query in a tight loop on every refresh (the tree re-asks childUIDs per
+// layout pass), spamming the dead server and starving the UI. The cache is
+// per-client: a listing read through a client that a collection switch has
+// since replaced is not stored into the new collection's cache (reset()
+// clears it eagerly; this guards fetches that raced the switch).
+func (t *tieFSTree) readDirFor(tc *client.TieClient, dirPath string) (client.Directory, error) {
 	t.mu.Lock()
 	d, ok := t.dirs[dirPath]
 	t.mu.Unlock()
@@ -259,38 +367,44 @@ func (t *tieFSTree) readDir(dirPath string) (client.Directory, error) {
 		return *d, nil
 	}
 
-	uid, err := t.tie.DirUIDFromPath(dirPath)
+	uid, err := tc.DirUIDFromPath(dirPath)
 	if err != nil {
-		t.mu.Lock()
-		t.dirs[dirPath] = nil
-		t.mu.Unlock()
+		t.cacheDir(dirPath, nil, tc)
 		return client.Directory{}, err
 	}
 	var dir client.Directory
 	if uid != "" {
-		dir, err = client.ReadTieDir(t.tie, uid)
+		dir, err = client.ReadTieDir(tc, uid)
 		if err != nil {
-			t.mu.Lock()
-			t.dirs[dirPath] = nil
-			t.mu.Unlock()
+			t.cacheDir(dirPath, nil, tc)
 			return client.Directory{}, err
 		}
 	}
-	t.mu.Lock()
-	t.dirs[dirPath] = &dir
-	t.mu.Unlock()
+	t.cacheDir(dirPath, &dir, tc)
 	return dir, nil
 }
 
-// reader returns the tieReader for a content hash, creating it on first use
-// so the filehost thumbnail mapping (thumbHash) survives re-selections.
-func (t *tieFSTree) reader(hash string) *tieReader {
+// cacheDir stores a listing (nil = failure) unless the client it was read
+// through is no longer live.
+func (t *tieFSTree) cacheDir(dirPath string, d *client.Directory, tc *client.TieClient) {
+	if t.ref.get() != tc {
+		return
+	}
+	t.mu.Lock()
+	t.dirs[dirPath] = d
+	t.mu.Unlock()
+}
+
+// readerFor returns the tieReader for a content hash, creating it on first
+// use so the filehost thumbnail mapping (thumbHash) survives re-selections.
+// Safe from fetch goroutines; the client snapshot decides the filehost.
+func (t *tieFSTree) readerFor(tc *client.TieClient, hash string) *tieReader {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if r, ok := t.readers[hash]; ok {
 		return r
 	}
-	r := &tieReader{host: tieFileHost(t.tie), hash: hash}
+	r := &tieReader{host: tieFileHost(tc), hash: hash}
 	t.readers[hash] = r
 	return r
 }

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -85,11 +86,21 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 			preview.Resource = resolveQuickTagIcon(baseDir, name)
 			preview.Refresh()
 		}
+		// Debounce the preview: resolveQuickTagIcon reads the icon file from
+		// disk (and logs misses) — per keystroke that is a read per
+		// character, slow on Android content dirs.
+		var previewTimer *time.Timer
 		entry.OnChanged = func(s string) {
 			set(s)
-			refreshPreview(s)
+			if previewTimer != nil {
+				previewTimer.Stop()
+			}
+			name := s
+			previewTimer = time.AfterFunc(400*time.Millisecond, func() {
+				fyne.Do(func() { refreshPreview(name) })
+			})
 		}
-		entry.SetText(value) // fires OnChanged → preview
+		entry.SetText(value) // fires OnChanged → preview (debounced)
 		browse := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
 			fd := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
 				if err != nil {
@@ -99,13 +110,20 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 				if rc == nil {
 					return
 				}
-				defer rc.Close()
-				rel, err := importQuickTagIcon(baseDir, rc)
-				if err != nil {
-					status.SetText("Import failed: " + err.Error())
-					return
-				}
-				entry.SetText(rel)
+				// The import slurps the picked file and dedupes it against
+				// everything in icons/ — keep that off the UI goroutine
+				// (the reader is closed by the worker once consumed).
+				go func() {
+					defer rc.Close()
+					rel, err := importQuickTagIcon(baseDir, rc)
+					fyne.Do(func() {
+						if err != nil {
+							status.SetText("Import failed: " + err.Error())
+							return
+						}
+						entry.SetText(rel)
+					})
+				}()
 			}, window)
 			fd.SetFilter(storage.NewExtensionFileFilter([]string{".png", ".PNG"}))
 			fd.Show()
@@ -313,12 +331,18 @@ func makeQuickTagEditor(window fyne.Window, path string, cfg quickTagConfig, col
 	})
 
 	reload := widget.NewButton("Reload file", func() {
-		cfg = loadQuickTagConfig(path)
-		refreshScope(editing)
-		if onApply != nil {
-			onApply(cfg)
-		}
-		status.SetText("Reloaded " + path)
+		// Confirm first: reload silently drops unsaved in-session edits.
+		dialog.ShowConfirm("Reload", "Reload "+path+"? Unsaved changes in this editor will be lost.", func(ok bool) {
+			if !ok {
+				return
+			}
+			cfg = loadQuickTagConfig(path)
+			refreshScope(editing)
+			if onApply != nil {
+				onApply(cfg)
+			}
+			status.SetText("Reloaded " + path)
+		}, window)
 	})
 
 	help := widget.NewLabel("Two bars overlay the image: the tags bar (buttons left to right) and the rating bar (stars plus the buttons marked \"In rating bar\", e.g. the favorite heart), normally on opposite edges. Icons are square PNGs; leave Off empty for a grayscale copy of the On icon, or both empty for a text button. Built-in: heart.png, heart-grey.png, star-filled.png, star-empty.png. Keys default to 1-9; rating keys are comma-separated, one per star (the current rating's key clears it). Toggle the bars with T or the ☰ menu.\n\nFile: " + path)

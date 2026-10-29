@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/uidbz/tie/client"
@@ -11,6 +12,9 @@ import (
 // item are also removed from the global "tags" registry and favourites list.
 func deimportFile(tc *client.TieClient, hash string) error {
 	row, err := tc.Get(hash)
+	if errors.Is(err, client.ErrNotFound) {
+		return nil // nothing stored (anymore): nothing to remove
+	}
 	if err != nil {
 		return fmt.Errorf("get %s: %w", hash, err)
 	}
@@ -45,6 +49,14 @@ func deimportDir(tc *client.TieClient, uid client.DirUID) error {
 			fmt.Printf("de-import file %q: %v\n", f.Filename, e)
 		}
 	}
+	// Archive members: their metadata hangs off the blob hash and keeps
+	// parent edges into this directory, so skipping them leaves the archives
+	// visible to tag queries after the directory is gone.
+	for _, a := range dir.Archives {
+		if e := deimportFile(tc, a.Hash); e != nil {
+			fmt.Printf("de-import archive %q: %v\n", a.Filename, e)
+		}
+	}
 	for _, sub := range dir.SubDirs {
 		if e := deimportDir(tc, sub.Uid); e != nil {
 			fmt.Printf("de-import subdir %s: %v\n", sub.Uid, e)
@@ -53,6 +65,9 @@ func deimportDir(tc *client.TieClient, uid client.DirUID) error {
 
 	// Delete the directory node's own triples.
 	dirRow, err := tc.Get(string(uid))
+	if errors.Is(err, client.ErrNotFound) {
+		return nil // node already gone; children were cleaned up above
+	}
 	if err != nil {
 		return fmt.Errorf("get dir row %s: %w", uid, err)
 	}
@@ -72,6 +87,9 @@ func deimportDir(tc *client.TieClient, uid client.DirUID) error {
 
 // orphanedTags returns the subset of tags that are referenced by at most one
 // item in the store — i.e. they will become unused once that item is removed.
+// A failed orphan check keeps the tag registered: an extra registry entry is
+// harmless, deleting a tag another item still uses is not — and the failure
+// is logged rather than swallowed.
 func orphanedTags(tc *client.TieClient, tags []string) []string {
 	var result []string
 	for _, tag := range tags {
@@ -81,7 +99,11 @@ func orphanedTags(tc *client.TieClient, tags []string) []string {
 			Filter:  "tag",
 			Limit:   2,
 		})
-		if err == nil && len(rows) <= 1 {
+		if err != nil {
+			fmt.Printf("de-import: orphan check for %q failed: %v\n", tag, err)
+			continue
+		}
+		if len(rows) <= 1 {
 			result = append(result, tag)
 		}
 	}

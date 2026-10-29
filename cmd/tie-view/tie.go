@@ -11,6 +11,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+
+	"fyne.io/fyne/v2"
 
 	"github.com/uidbz/tie/client"
 	"github.com/uidbz/tie/io/archivelib"
@@ -23,6 +27,49 @@ import (
 // tieHostName names the filehost to fetch content from, set by the -host
 // flag. Empty means the default resolution in tiethumb.FileHost.
 var tieHostName string
+
+// galleryGen numbers gallery content replacements: tag/rating queries, tree
+// and directory browsing, archive browsing, tie: URLs and startup loads all
+// go through fetchGallery. A fetch whose generation is no longer current —
+// the user picked another tag, opened another directory or switched
+// collections while it was in flight — is dropped whole, so the last
+// *completion* can no longer overwrite the last *request*.
+var galleryGen atomic.Uint64
+
+// fetchGallery runs fetch (store queries, archive downloads) on a background
+// goroutine and installs its result as the gallery contents in one UI pass.
+// It replaces the old `ReadCustomAsync(fetch); viewer.ChangeGallery()` shape:
+// ChangeGallery waits for pending fetches, so calling it on the UI goroutine
+// froze the window for the whole query (or archive blob download). Here the
+// fetch is done before ChangeGallery runs, and superseded fetches never
+// reach the gallery at all.
+func fetchGallery(viewer *gallery.Gallery, fetch func() []gallery.CustomReader) {
+	fetchGalleryPost(viewer, fetch, nil)
+}
+
+// fetchGalleryPost is fetchGallery with a post hook: post runs on the UI
+// goroutine in the same pass that installs the readers (after
+// ChangeGallery), e.g. to select and open one entry of a listing.
+func fetchGalleryPost(viewer *gallery.Gallery, fetch func() []gallery.CustomReader, post func(readers []gallery.CustomReader)) {
+	gen := galleryGen.Add(1)
+	go func() {
+		readers := fetch()
+		if readers == nil {
+			return // fetch failed and logged; keep the current gallery
+		}
+		fyne.Do(func() {
+			if gen != galleryGen.Load() {
+				return // superseded by a newer gallery change
+			}
+			viewer.CustomReaders = readers
+			viewer.ReadCustom(readers)
+			viewer.ChangeGallery()
+			if post != nil {
+				post(readers)
+			}
+		})
+	}()
+}
 
 // tieFileHost resolves the filehost used to fetch tie content: the host
 // named by -host when given, otherwise the default resolution (the "fast"
@@ -41,6 +88,10 @@ type tieReader struct {
 	host   client.FileHost
 	client *http.Client
 	hash   string
+	// thumbMu guards thumbHash and dimensions: tile loader workers write
+	// them via SetThumbCache while a new gallery's fetch (and the tree's
+	// shared reader cache) can read them concurrently.
+	thumbMu sync.Mutex
 	// thumbHash is the content hash of the filehost-cached thumbnail, learned
 	// from the query's expanded attributes or after uploadTieThumbnail.
 	thumbHash string
@@ -78,6 +129,8 @@ func (t *tieReader) setRating(rating int) {
 // stored in tie metadata and returns the original image pixel dimensions.
 // Returns (0, 0) when no dimensions have been stored yet.
 func (t *tieReader) Dimensions() (int, int) {
+	t.thumbMu.Lock()
+	defer t.thumbMu.Unlock()
 	w, h, ok := tiethumb.ParseDimensions(t.dimensions)
 	if !ok {
 		return 0, 0
@@ -88,12 +141,18 @@ func (t *tieReader) Dimensions() (int, int) {
 // ThumbHash implements tiethumb.ThumbReader: the content hash of the
 // filehost-cached thumbnail, pre-populated from the query's expanded
 // attributes or after the thumbnailer generated one.
-func (t *tieReader) ThumbHash() string { return t.thumbHash }
+func (t *tieReader) ThumbHash() string {
+	t.thumbMu.Lock()
+	defer t.thumbMu.Unlock()
+	return t.thumbHash
+}
 
 // SetThumbCache implements tiethumb.ThumbReader: records the thumbnail hash
 // (and, when non-empty, the "WxH" dimensions) the thumbnailer just resolved
 // or generated, so later lookups skip the Get round-trip.
 func (t *tieReader) SetThumbCache(thumbHash, dimensions string) {
+	t.thumbMu.Lock()
+	defer t.thumbMu.Unlock()
 	t.thumbHash = thumbHash
 	if dimensions != "" {
 		t.dimensions = dimensions
@@ -334,7 +393,7 @@ func (a *archiveMemberReader) GetReader() (io.ReadSeeker, error) {
 // image members, mirroring how a directory listing is shown. The blob is read
 // once and shared across the member readers.
 func browseTieArchive(viewer *gallery.Gallery, host client.FileHost, hash string) {
-	viewer.ReadCustomAsync(func() []gallery.CustomReader {
+	fetchGallery(viewer, func() []gallery.CustomReader {
 		r, err := getlib.ReadFile(client.HTTPClientFor(host), host.URL, hash)
 		if err != nil {
 			fmt.Println("Error fetching archive", hash, ":", err)
@@ -359,7 +418,6 @@ func browseTieArchive(viewer *gallery.Gallery, host client.FileHost, hash string
 		}
 		return readers
 	})
-	viewer.ChangeGallery()
 }
 
 // tieRowKind is how a tag-query row appears in the gallery.
@@ -417,7 +475,7 @@ func latestFromTie(viewer *gallery.Gallery, tc *client.TieClient, browseDir func
 		Expand:  true,
 		Limit:   -1,
 	}
-	viewer.ReadCustomAsync(func() []gallery.CustomReader {
+	fetchGallery(viewer, func() []gallery.CustomReader {
 		rows, _, err := tc.Query(spec)
 		if err != nil {
 			fmt.Println("Error happened querying tie:", err)
@@ -450,7 +508,7 @@ func readFromTie(viewer *gallery.Gallery, tc *client.TieClient, include, exclude
 		Limit:   -1,
 	}
 
-	viewer.ReadCustomAsync(func() []gallery.CustomReader {
+	fetchGallery(viewer, func() []gallery.CustomReader {
 		rows, _, err := tc.Query(spec)
 		if err != nil {
 			fmt.Println("Error happened querying tie:", err)
@@ -611,8 +669,12 @@ func queryGallery(viewer *gallery.Gallery, tc *client.TieClient, gf galleryFilte
 		spec.Filter = tieType
 		spec.MissingRelation = "rating"
 	case gf.rating.mode == ratingExact:
-		spec.Terms = []string{strconv.Itoa(gf.rating.n)}
-		spec.Filter = "rating"
+		// Scope to image files (like the unrated/min modes): rating triples
+		// also hang off tagged directories and archives, and querying the
+		// bare value admitted those into the images gallery. The exact count
+		// is then applied client-side by rf.matches.
+		spec.Terms = []string{imageScope}
+		spec.Filter = tieType
 	case gf.rating.mode == ratingMin:
 		spec.Terms = []string{imageScope}
 		spec.Filter = tieType
@@ -624,7 +686,7 @@ func queryGallery(viewer *gallery.Gallery, tc *client.TieClient, gf galleryFilte
 
 	rf := gf.rating
 	sm := gf.sort
-	viewer.ReadCustomAsync(func() []gallery.CustomReader {
+	fetchGallery(viewer, func() []gallery.CustomReader {
 		rows, _, err := tc.Query(spec)
 		if err != nil {
 			fmt.Println("Error happened querying tie:", err)

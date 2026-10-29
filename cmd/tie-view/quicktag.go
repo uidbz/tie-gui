@@ -9,7 +9,6 @@ import (
 	"image/png"
 	"slices"
 	"sort"
-	"strconv"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -52,8 +51,8 @@ func quickTagIconSize(mobile bool) float32 {
 // come back through fyne.Do.
 type quickTagBar struct {
 	widget.BaseWidget
-	tc      *client.TieClient
-	baseDir string // icon paths resolve against this
+	ref     *tieRef // live client, snapshotted per operation (never held across calls)
+	baseDir string  // icon paths resolve against this
 	mobile  bool
 
 	cfg      QuickTagSet // normalized; the active collection's set
@@ -90,9 +89,9 @@ type quickTagBar struct {
 }
 
 // newQuickTagBar builds the bar for cfg. baseDir resolves relative icon paths.
-func newQuickTagBar(tc *client.TieClient, cfg QuickTagSet, baseDir string, mobile bool) *quickTagBar {
+func newQuickTagBar(ref *tieRef, cfg QuickTagSet, baseDir string, mobile bool) *quickTagBar {
 	b := &quickTagBar{
-		tc:      tc,
+		ref:     ref,
 		baseDir: baseDir,
 		mobile:  mobile,
 		applied: map[string]bool{},
@@ -297,7 +296,7 @@ func (b *quickTagBar) SetImage(r *tieReader) {
 
 	gen, hash := b.gen, r.hash
 	go func() {
-		row, err := b.tc.Get(hash)
+		row, err := b.ref.get().Get(hash)
 		if err != nil {
 			fmt.Println("quicktag: error fetching tags:", err)
 			return
@@ -398,8 +397,11 @@ func (b *quickTagBar) paint() {
 }
 
 // toggle flips tag on the displayed image: optimistic UI update, then the
-// tie write in a goroutine, reverting on failure. Adds also register the tag
-// in the ("tags","all") index (once per session) so it reaches the sidebar.
+// tie write on the serialized store-write queue (so fast taps cannot reorder
+// Add vs Delete on the server, and the image tagger's writes to the same
+// image interleave in UI order), reverting on failure. Adds also register
+// the tag in the ("tags","all") index (once per session) so it reaches the
+// sidebar.
 func (b *quickTagBar) toggle(tag string) {
 	if b.hash == "" || tag == "" {
 		return
@@ -419,21 +421,31 @@ func (b *quickTagBar) toggle(tag string) {
 		b.OnTagsChanged(hash, b.appliedList())
 	}
 	register := on && !b.known[tag]
-	b.known[tag] = true
+	if register {
+		// Marked up front so a second add while this one is queued does not
+		// enqueue a second registration; un-marked below if anything failed.
+		b.known[tag] = true
+	}
 
-	go func() {
+	storeWrites.run(func() {
+		tc := b.ref.get()
+		var regErr error
 		var err error
 		if on {
-			_, err = b.tc.Add(hash, "tag", tag)
+			_, err = tc.Add(hash, "tag", tag)
 			if err == nil && register {
-				if _, rerr := b.tc.Add(string(client.RelTags), string(client.RelAll), tag); rerr != nil {
-					fmt.Printf("quicktag: error registering tag %q: %v\n", tag, rerr)
+				if _, regErr = tc.Add(string(client.RelTags), string(client.RelAll), tag); regErr != nil {
+					fmt.Printf("quicktag: error registering tag %q: %v\n", tag, regErr)
 				}
 			}
 		} else {
-			_, err = b.tc.Delete(hash, "tag", tag)
+			_, err = tc.Delete(hash, "tag", tag)
 		}
 		if err == nil {
+			if regErr != nil {
+				// Tag applied but never indexed: let a later add retry.
+				fyne.Do(func() { b.known[tag] = false })
+			}
 			return
 		}
 		fmt.Printf("quicktag: error writing tag %q: %v\n", tag, err)
@@ -444,8 +456,15 @@ func (b *quickTagBar) toggle(tag string) {
 			if b.hash != hash {
 				return // user moved on; the reconcile fetch will show the truth
 			}
+			if b.applied[tag] != on {
+				// A newer toggle owns this tag's state: reverting now would
+				// undo an operation that succeeded.
+				return
+			}
 			b.setTag(tag, !on)
-			delete(b.pending, tag)
+			if b.pending[tag] == on {
+				delete(b.pending, tag)
+			}
 			b.paint()
 			b.syncReader()
 			b.flash("failed: " + tag)
@@ -453,12 +472,14 @@ func (b *quickTagBar) toggle(tag string) {
 				b.OnTagsChanged(hash, b.appliedList())
 			}
 		})
-	}()
+	})
 }
 
 // rate sets the displayed image's rating (0 clears): optimistic UI update,
-// then the tie write (delete old, add new) in a goroutine, reverting on
-// failure. Called by the star widget on taps and by the RatingKeys bindings.
+// then ONE Set replacement on the serialized store-write queue (the old
+// delete-then-add pair could land out of order between rapid taps), reverting
+// on failure. Called by the star widget on taps and by the RatingKeys
+// bindings.
 func (b *quickTagBar) rate(rating int) {
 	if b.hash == "" {
 		b.paint() // undo the tapped widget's own paint
@@ -483,24 +504,23 @@ func (b *quickTagBar) rate(rating int) {
 		b.OnRatingChanged(hash, rating)
 	}
 
-	go func() {
-		var err error
-		if old != 0 {
-			_, err = b.tc.Delete(hash, "rating", strconv.Itoa(old))
-		}
-		if err == nil && rating != 0 {
-			_, err = b.tc.Add(hash, "rating", strconv.Itoa(rating))
-		}
-		if err == nil {
+	storeWrites.run(func() {
+		if err := writeRating(b.ref.get(), hash, r); err == nil {
 			return
+		} else {
+			fmt.Printf("quicktag: error writing rating %d: %v\n", r, err)
 		}
-		fmt.Printf("quicktag: error writing rating %d: %v\n", rating, err)
 		fyne.Do(func() {
 			if b.hash != hash {
 				return
 			}
+			if b.rating != r {
+				return // a newer rating owns the state now
+			}
 			b.rating = old
-			b.ratingPending = nil
+			if b.ratingPending != nil && *b.ratingPending == r {
+				b.ratingPending = nil
+			}
 			b.paint()
 			b.syncReader()
 			b.flash("failed: rating")
@@ -508,7 +528,7 @@ func (b *quickTagBar) rate(rating int) {
 				b.OnRatingChanged(hash, old)
 			}
 		})
-	}()
+	})
 }
 
 // setStatus shows text in the status line (empty hides its backdrop).

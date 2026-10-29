@@ -29,9 +29,11 @@ import (
 //   - Typing a new tag name and pressing Enter creates the tag even if it
 //     does not yet exist in tie.
 //
-// Tag writes are persisted immediately via tc.Add / tc.Delete in a goroutine.
+// Tag writes are persisted immediately on the serialized store-write queue
+// (see storeWrites), so rapid edits — here or from the quick tag bar on the
+// same image — reach tie in UI order.
 type imageTagger struct {
-	tc *client.TieClient
+	ref *tieRef // live client, snapshotted per operation (never held across calls)
 	// hash is the content hash of the currently VIEWED image ("" = none),
 	// tracked via SetCurrentHash whether the panel is open or not.
 	hash string
@@ -76,9 +78,9 @@ type imageTagger struct {
 
 // newImageTagger creates an imageTagger. Call SetAllTags and SetFavoriteTags
 // after the tag list has been fetched from tie to populate the panel.
-func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
+func newImageTagger(window fyne.Window, ref *tieRef) *imageTagger {
 	it := &imageTagger{
-		tc: tc,
+		ref: ref,
 	}
 	it.ts = tagselection.NewTagSelection(window)
 	it.ts.ShowStars = true // must be set before the widget is first rendered
@@ -131,16 +133,20 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 			it.OnStarChanged(tag, isStarred)
 		}
 
-		go func() {
+		storeWrites.run(func() {
+			tc := it.ref.get()
 			var err error
 			if isStarred {
-				err = it.tc.RegisterFavorite(tag)
+				err = tc.RegisterFavorite(tag)
 			} else {
-				err = it.tc.UnregisterFavorite(tag)
+				err = tc.UnregisterFavorite(tag)
 			}
 			if err != nil {
 				// Roll back the optimistic update on the UI goroutine
 				fyne.Do(func() {
+					if slices.Contains(it.ts.StarredTags(), tag) != isStarred {
+						return // a newer star attempt owns the state now
+					}
 					it.ts.ToggleStar(tag, !isStarred) // reverse the toggle
 					it.ts.SetFavoritesWithStars(it.ts.StarredTags())
 					if it.OnStarChanged != nil {
@@ -151,7 +157,7 @@ func newImageTagger(window fyne.Window, tc *client.TieClient) *imageTagger {
 						map[bool]string{true: "star", false: "unstar"}[isStarred], tag, err)
 				})
 			}
-		}()
+		})
 	}
 
 	// The star rating widget writes the (hash,"rating","<1-5>") triple for the
@@ -194,18 +200,24 @@ func (it *imageTagger) syncRating(rating int) {
 	if it.OnRatingChanged != nil {
 		it.OnRatingChanged(hash, rating)
 	}
-	go func() {
-		if old != 0 {
-			if _, err := it.tc.Delete(hash, "rating", strconv.Itoa(old)); err != nil {
-				fmt.Printf("imageTagger: error clearing rating: %v\n", err)
-			}
+	storeWrites.run(func() {
+		if err := writeRating(it.ref.get(), hash, rating); err != nil {
+			fmt.Printf("imageTagger: error writing rating %d: %v\n", rating, err)
+			// Roll the diff snapshot (and widget) back — but only while this
+			// attempt is still the current state for this image, so a newer
+			// rating is never undone by an older failure.
+			fyne.Do(func() {
+				if it.panelHash != hash || it.appliedRating != rating {
+					return
+				}
+				it.appliedRating = old
+				it.rating.SetRating(old)
+				if it.OnRatingChanged != nil {
+					it.OnRatingChanged(hash, old)
+				}
+			})
 		}
-		if rating != 0 {
-			if _, err := it.tc.Add(hash, "rating", strconv.Itoa(rating)); err != nil {
-				fmt.Printf("imageTagger: error setting rating %d: %v\n", rating, err)
-			}
-		}
-	}()
+	})
 }
 
 // SetAllTags replaces the search trie with the full tag list and refreshes
@@ -295,7 +307,7 @@ func (it *imageTagger) loadCurrentTags() {
 		return
 	}
 	go func() {
-		row, err := it.tc.Get(hash)
+		row, err := it.ref.get().Get(hash)
 		if err != nil {
 			fmt.Println("imageTagger: error fetching tags:", err)
 			return
@@ -369,10 +381,11 @@ func (it *imageTagger) syncTags(newTags []string) {
 		it.OnTagsChanged(hash, it.appliedTags)
 	}
 
-	go func() {
+	storeWrites.run(func() {
+		tc := it.ref.get()
 		var failed, addedOK []string
 		for _, tag := range added {
-			if _, err := it.tc.Add(hash, "tag", tag); err != nil {
+			if _, err := tc.Add(hash, "tag", tag); err != nil {
 				fmt.Printf("imageTagger: error adding tag %q: %v\n", tag, err)
 				failed = append(failed, tag)
 				continue
@@ -380,12 +393,12 @@ func (it *imageTagger) syncTags(newTags []string) {
 			addedOK = append(addedOK, tag)
 			// Register in the global "tags"/"all" index so the tag shows up
 			// in the sidebar and future image-tagger sessions.
-			if _, err := it.tc.Add("tags", "all", tag); err != nil {
+			if _, err := tc.Add("tags", "all", tag); err != nil {
 				fmt.Printf("imageTagger: error registering tag %q: %v\n", tag, err)
 			}
 		}
 		for _, tag := range removed {
-			if _, err := it.tc.Delete(hash, "tag", tag); err != nil {
+			if _, err := tc.Delete(hash, "tag", tag); err != nil {
 				fmt.Printf("imageTagger: error removing tag %q: %v\n", tag, err)
 				failed = append(failed, tag)
 			}
@@ -398,9 +411,11 @@ func (it *imageTagger) syncTags(newTags []string) {
 			fyne.Do(func() { cb(addedOK) })
 		}
 
-		// If any operations failed, re-fetch tags from tie to reconcile the UI.
+		// If any operations failed, re-fetch tags from tie to reconcile the
+		// UI — still inside the queue, so the read sees every write this
+		// app has issued ahead of it.
 		if len(failed) > 0 {
-			row, err := it.tc.Get(hash)
+			row, err := tc.Get(hash)
 			if err != nil {
 				fmt.Printf("imageTagger: failed to reconcile after errors: %v\n", err)
 				return
@@ -420,5 +435,5 @@ func (it *imageTagger) syncTags(newTags []string) {
 				fmt.Printf("imageTagger: reconciled after %d failed tag operations\n", len(failed))
 			})
 		}
-	}()
+	})
 }

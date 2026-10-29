@@ -33,7 +33,9 @@ import (
 
 // loadTieURL loads the subject of a tie: URL into the viewer, replacing the
 // default startup view. Call it on its own goroutine: tie client calls run
-// synchronously here, and all viewer mutations go through fyne.Do.
+// synchronously here (against the tc snapshot taken at dispatch), and all
+// viewer mutations go through fyne.Do or the generation-guarded gallery
+// fetch paths.
 func loadTieURL(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), rawURL string) {
 	rest := strings.TrimPrefix(rawURL, "tie://")
 	rest = strings.TrimPrefix(rest, "tie:")
@@ -71,25 +73,24 @@ func loadTieHash(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClie
 	case tieRowFile, tieRowVideo:
 		showTieSubject(viewer, buildReaders(viewer, tc, []client.Row{row}, browseDir))
 	case tieRowArchive:
-		// browseTieArchive fetches the blob inside ReadCustomAsync and
-		// blocks in ChangeGallery until it lands — the same path archive
-		// tiles take when tapped.
-		fyne.Do(func() { browseTieArchive(viewer, tieFileHost(tc), hash) })
+		// browseTieArchive downloads + lists the blob on its own goroutine
+		// and applies the members via the generation-guarded gallery swap.
+		browseTieArchive(viewer, tieFileHost(tc), hash)
 	default:
 		tieURLError(window, rawURL, fmt.Errorf("not an image, video, directory or archive (media type %q)",
 			client.RowFirst(row, client.RelMediaType)))
 	}
 }
 
-// loadTieDirUID browses a tie directory: the listing is fetched here (on the
-// caller's goroutine) and swapped into the gallery on the UI goroutine.
+// loadTieDirUID browses a tie directory: the listing is fetched here once
+// (on the caller's goroutine) so a failure can be reported for this URL;
+// the browse itself goes through the async generation-guarded tree path.
 func loadTieDirUID(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, rawURL string, uid client.DirUID) {
-	dir, err := client.ReadTieDir(tc, uid)
-	if err != nil {
+	if _, err := client.ReadTieDir(tc, uid); err != nil {
 		tieURLError(window, rawURL, err)
 		return
 	}
-	fyne.Do(func() { fsTree.showListing(dir, "") })
+	fsTree.showDirUID(uid, "")
 }
 
 // loadTiePath resolves a virtual-filesystem path and loads it: a directory
@@ -126,21 +127,28 @@ func openFileInDir(viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFST
 	if err != nil {
 		return false
 	}
-	fyne.Do(func() { fsTree.showListing(dir, st.Key) })
+	_ = dir // validated: the browse itself runs through the async tree path
+	fsTree.showDirUID(client.DirUID(st.ParentUIDs[0]), st.Key)
 	return true
 }
 
 // showTieSubject replaces the gallery with a single subject and opens it: an
 // image is displayed full-size, a video starts playing. The one-item gallery
-// stays behind so Q/Escape/Back has a grid to return to.
+// stays behind so Q/Escape/Back has a grid to return to. The readers are
+// already resolved; the swap runs in one generation-guarded fyne.Do so a
+// superseded load (the user browsed elsewhere meanwhile) cannot yank the
+// gallery away, and no ChangeGallery on the UI thread ever waits on a fetch.
 func showTieSubject(viewer *gallery.Gallery, readers []gallery.CustomReader) {
 	if len(readers) == 0 {
 		return
 	}
-	viewer.ReadCustomAsync(func() []gallery.CustomReader { return readers })
+	gen := galleryGen.Add(1)
 	fyne.Do(func() {
-		// ChangeGallery blocks on the (trivial) fetch above; it does no UI
-		// work, so waiting on the UI goroutine is safe.
+		if gen != galleryGen.Load() {
+			return
+		}
+		viewer.CustomReaders = readers
+		viewer.ReadCustom(readers)
 		viewer.ChangeGallery()
 		info := gallery.NewImageInfoCustomReader(0, readers[0])
 		info.Path = readers[0].Path()

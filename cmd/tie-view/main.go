@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -71,7 +72,7 @@ func main() {
 	// sound can live in different profiles without the apps fighting over the
 	// shared default.
 	activeName := tieconfig.AppCollection(tieConfig, myApp.Preferences().String(prefTieCollection), "images")
-	tieClient := client.NewTieClientFor(tieConfig, activeName)
+	tieClient := newTieRef(client.NewTieClientFor(tieConfig, activeName))
 
 	tagger := newImageTagger(myWindow, tieClient)
 	// taggerOverlay is a persistent border container that anchors the tag
@@ -120,8 +121,8 @@ func main() {
 		}
 	})
 	viewer.Thumbnailer = tiethumb.New(
-		func() *client.TieClient { return tieClient },
-		func() client.FileHost { return tieFileHost(tieClient) },
+		func() *client.TieClient { return tieClient.get() },
+		func() client.FileHost { return tieFileHost(tieClient.get()) },
 		int(config.General.TileWidth),
 		func(info *gallery.ImageInfo) (io.ReadSeeker, error) {
 			// Fallback for collections without usable previews (empty
@@ -236,7 +237,7 @@ func main() {
 	}
 	browseDir := func(uid client.DirUID) { fsTree.showDirUID(uid, "") }
 	quickEditor, refreshQuickEditor := makeQuickTagEditor(myWindow, quickCfgPath, quickCfg,
-		func() ([]string, string) { return collectionNames(tieClient.Config), activeCollection() },
+		func() ([]string, string) { return collectionNames(tieClient.get().Config), activeCollection() },
 		applyQuickTagConfig)
 	// After a connection change the bar switches to the new collection's set
 	// and the editor follows.
@@ -247,10 +248,15 @@ func main() {
 	// onSwitchCollection rebinds the live client to the named collection of
 	// cfg (picked in or applied from the settings editor) and remembers the
 	// choice in Preferences so the app keeps its own profile across restarts.
+	// The swap installs a NEW client pointer (tieRef): in-flight fetches keep
+	// their (still valid) old client and their replies are dropped by the
+	// generation bump below — the old in-place struct overwrite raced them.
 	onSwitchCollection := func(cfg client.Config, name string) {
-		*tieClient = *client.NewTieClientFor(cfg, name)
+		tieClient.swap(client.NewTieClientFor(cfg, name))
 		activeName = name
 		myApp.Preferences().SetString(prefTieCollection, name)
+		galleryGen.Add(1) // supersede every in-flight gallery fetch
+		fsTree.reset()    // drop cached listings/readers of the old collection
 	}
 	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger, quickEditor, activeCollection, onSwitchCollection, onCollectionChanged)
 	// On a phone-width window the sidebar is a slide-over drawer rather than a
@@ -296,11 +302,12 @@ func main() {
 			}
 			go func() {
 				var err error
+				tc := tieClient.get()
 				switch r := t.Info.CustomReader.(type) {
 				case *tieReader:
-					err = deimportFile(tieClient, r.hash)
+					err = deimportFile(tc, r.hash)
 				case *tieDirReader:
-					err = deimportDir(tieClient, r.uid)
+					err = deimportDir(tc, r.uid)
 				}
 				fyne.Do(func() {
 					if err != nil {
@@ -336,7 +343,7 @@ func main() {
 		dialog.ShowError(fmt.Errorf("unsupported file type: %s", abs), myWindow)
 	case localNone:
 		if arg != "" {
-			go loadTieURL(myWindow, viewer, tieClient, fsTree, browseDir, arg)
+			go loadTieURL(myWindow, viewer, tieClient.get(), fsTree, browseDir, arg)
 		} else if viewer.Platform().IsMobile() {
 			// Try /DCIM/Camera first (typical Android camera directory), then /DCIM,
 			// then fall back to root if neither exists. DirUIDFromPath and showDir
@@ -345,15 +352,18 @@ func main() {
 			// (ANR) for minutes. ChangeGallery below runs via fyne.Do once the
 			// listing is in.
 			go func() {
+				tc := tieClient.get()
 				dir := "/DCIM/Camera"
-				if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
+				if uid, err := tc.DirUIDFromPath(dir); err != nil || uid == "" {
 					dir = "/DCIM"
-					if uid, err := tieClient.DirUIDFromPath(dir); err != nil || uid == "" {
+					if uid, err := tc.DirUIDFromPath(dir); err != nil || uid == "" {
 						dir = "/"
 					}
 				}
+				// showDir is fully asynchronous: it fetches the listing off
+				// the UI goroutine and applies gallery + selection in one
+				// fyne.Do pass, so no ChangeGallery here.
 				fsTree.showDir(dir, "")
-				fyne.Do(viewer.ChangeGallery)
 			}()
 		} else {
 			// Desktop startup page (Settings → Startup): favorites (the default,
@@ -372,15 +382,15 @@ func main() {
 			case startupNone:
 				// Leave the gallery empty until a tag is picked.
 			case startupLatest:
-				latestFromTie(viewer, tieClient, browseDir)
+				latestFromTie(viewer, tieClient.get(), browseDir)
 			case startupTag:
 				if tagName != "" {
-					readFromTie(viewer, tieClient, []string{tagName}, nil, "tag", browseDir)
+					readFromTie(viewer, tieClient.get(), []string{tagName}, nil, "tag", browseDir)
 				}
 			default: // startupFavorites
-				readFromTie(viewer, tieClient, []string{"favorite"}, nil, "tag", browseDir)
+				readFromTie(viewer, tieClient.get(), []string{"favorite"}, nil, "tag", browseDir)
 			}
-			// readFromTie(viewer, tieClient, []string{"4"}, nil, "rating", browseDir)
+			// readFromTie(viewer, tieClient.get(), []string{"4"}, nil, "rating", browseDir)
 		}
 	}
 
@@ -444,8 +454,8 @@ func fileHostNames(c client.Config) []string {
 // client to a collection (and remembers it) when the user picks or applies
 // one in the settings editor; onCollectionChanged runs after either, once
 // the tag list reload has been kicked off.
-func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger, quickEditor fyne.CanvasObject, activeCollection func() string, onSwitchCollection func(client.Config, string), onCollectionChanged func()) *container.AppTabs {
-	tagWidget, reloadTags := makeTagSidebar(window, viewer, tc, browseDir, tagger)
+func makeSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger, quickEditor fyne.CanvasObject, activeCollection func() string, onSwitchCollection func(client.Config, string), onCollectionChanged func()) *container.AppTabs {
+	tagWidget, reloadTags := makeTagSidebar(window, viewer, ref, browseDir, tagger)
 	onApply := func() {
 		reloadTags()
 		if onCollectionChanged != nil {
@@ -455,7 +465,7 @@ func makeSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClie
 	return container.NewAppTabs(
 		container.NewTabItem("Tags", tagWidget),
 		container.NewTabItem("Files", fsTree.tree),
-		makeSettingsTab(tc, activeCollection, onSwitchCollection, onApply, quickEditor),
+		makeSettingsTab(ref, activeCollection, onSwitchCollection, onApply, quickEditor),
 	)
 }
 
@@ -516,7 +526,7 @@ var sortModeOptions = []struct {
 // tagger, when non-nil, receives the full tag list via SetAllTags whenever
 // the tag list is (re-)loaded. This keeps the image-tagger search trie in
 // sync with the sidebar's tag list without a separate network request.
-func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID), tagger *imageTagger) (fyne.CanvasObject, func()) {
+func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, browseDir func(client.DirUID), tagger *imageTagger) (fyne.CanvasObject, func()) {
 	ts := tagselection.NewTagSelection(window)
 	// Sidebar uses include/exclude filtering, so show the checkbox.
 	ts.ShowIncludeExclude = true
@@ -530,18 +540,26 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 	curSort := sortDefault
 	untaggedOnly := false
 
+	// tagsGen numbers reloadTags fetches and coTagsGen numbers co-tag
+	// refreshes: a reply from a superseded fetch — a collection switch or a
+	// newer selection landed while it was in flight — is dropped instead of
+	// refilling the sidebar with the previous collection's tags.
+	var tagsGen, coTagsGen atomic.Uint64
+
 	// refreshGallery re-queries the gallery from the live tag selection plus the
 	// rating/sort/untagged controls. Used by every control's change handler.
+	// queryGallery now applies asynchronously (fetch off the UI goroutine,
+	// one fyne.Do to install), so no ChangeGallery here: on the UI goroutine
+	// it used to wait out the whole query.
 	refreshGallery := func() {
 		in, ex := ts.SelectedTags()
-		queryGallery(viewer, tc, galleryFilter{
+		queryGallery(viewer, ref.get(), galleryFilter{
 			include:      in,
 			exclude:      ex,
 			rating:       curRating,
 			untaggedOnly: untaggedOnly,
 			sort:         curSort,
 		}, browseDir)
-		viewer.ChangeGallery()
 	}
 
 	ratingSelect := widget.NewSelect(nil, func(label string) {
@@ -650,6 +668,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 		window.Canvas().Unfocus() // the star button took keyboard focus
 		setStarred(tag, isStarred)
 		go func() {
+			tc := ref.get()
 			var err error
 			if isStarred {
 				err = tc.RegisterFavorite(tag)
@@ -659,7 +678,14 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			if err != nil {
 				fmt.Printf("sidebar: failed to %s tag %q: %v\n",
 					map[bool]string{true: "star", false: "unstar"}[isStarred], tag, err)
-				fyne.Do(func() { setStarred(tag, !isStarred) })
+				fyne.Do(func() {
+					// Roll back only if this attempt is still the current
+					// state: a later successful toggle must not be undone
+					// by an older attempt's failure landing late.
+					if slices.Contains(starred, tag) == isStarred {
+						setStarred(tag, !isStarred)
+					}
+				})
 			}
 		}()
 	}
@@ -693,6 +719,8 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 	// reloadTags clears the widget state and re-fetches tags from tc.
 	// Safe to call at any time; the network fetch runs in a goroutine.
 	reloadTags := func() {
+		gen := tagsGen.Add(1)
+		coTagsGen.Add(1) // also drop any in-flight co-tag reply
 		fyne.Do(func() {
 			ts.ClearSelected()
 			ts.ClearAllTags()
@@ -700,18 +728,25 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 			ts.SetStarred(nil)
 			allTags = nil
 			starred = nil
-			allFavorites = nil
 			allFavoritesLabel = ""
 			ts.SetListLabel("Loading…")
 		})
 		go func() {
+			tc := ref.get()
 			row, err := tc.Get(string(client.RelTags))
 			if err != nil {
 				fmt.Println("Error getting tags:", err)
-				fyne.Do(func() { ts.SetListLabel("Error loading tags") })
+				fyne.Do(func() {
+					if gen == tagsGen.Load() {
+						ts.SetListLabel("Error loading tags")
+					}
+				})
 				return
 			}
 			fyne.Do(func() {
+				if gen != tagsGen.Load() {
+					return // superseded by a newer reload (collection switch)
+				}
 				allTags = client.RowValues(row, client.RelAll)
 				for _, tag := range allTags {
 					ts.AddTag(tag)
@@ -762,10 +797,14 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 		// passed so the goroutine is safe from later UI changes.
 		inSnap := append([]string(nil), in...)
 		exSnap := append([]string(nil), ex...)
+		cgen := coTagsGen.Add(1)
 		go func() {
 			if len(inSnap) == 0 && len(exSnap) == 0 {
 				// Nothing selected: restore the original full list.
 				fyne.Do(func() {
+					if cgen != coTagsGen.Load() {
+						return
+					}
 					ts.ClearAllTags()
 					for _, tag := range allTags {
 						ts.AddTag(tag)
@@ -775,12 +814,15 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, tc *client.TieC
 				})
 				return
 			}
-			coTags, err := tc.CoTagsForQueryExcludingInput(inSnap, exSnap, "")
+			coTags, err := ref.get().CoTagsForQueryExcludingInput(inSnap, exSnap, "")
 			if err != nil {
 				fmt.Println("Error getting co-tags:", err)
 				return
 			}
 			fyne.Do(func() {
+				if cgen != coTagsGen.Load() {
+					return // a newer selection's co-tags already landed
+				}
 				ts.ClearAllTags()
 				for _, tag := range coTags {
 					ts.AddTag(tag)
@@ -821,7 +863,14 @@ func openTieVideo(viewer *gallery.Gallery, info *gallery.ImageInfo) {
 			return
 		}
 		if _, err2 := r.Seek(0, io.SeekStart); err2 == nil {
-			_, _ = io.Copy(tmp, r)
+			if _, cerr := io.Copy(tmp, r); cerr != nil {
+				// A truncated blob must not play: abort and clean up
+				// instead of opening a partial temp file.
+				fmt.Println("Error downloading video:", cerr)
+				tmp.Close()
+				os.Remove(tmp.Name())
+				return
+			}
 		}
 		tmp.Close()
 		src = tmp.Name()

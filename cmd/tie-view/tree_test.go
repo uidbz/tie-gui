@@ -85,6 +85,7 @@ func TestChildUIDs(t *testing.T) {
 		},
 		branches: make(map[string]bool),
 		files:    make(map[string]tieFSNode),
+		ready:    true, // constructor normally primes this; feed the cache directly
 	}
 	want := []string{"/music", "/videos", "/deadbeef", "/baddc0de"}
 	got := fs.childUIDs("/")
@@ -119,7 +120,9 @@ func TestNewTieFSTree(t *testing.T) {
 	config.Collections = nil
 	config.DefaultCollection = ""
 	tc := client.NewTieClient(config)
-	tree := newTieFSTree(nil, tc).tree
+	fs := newTieFSTree(nil, newTieRef(tc))
+	fs.fetchWG.Wait() // settle the constructor's root-branch fetch first
+	tree := fs.tree
 	if got := tree.ChildUIDs(""); len(got) != 1 || got[0] != "/" {
 		t.Fatalf("ChildUIDs(\"\") = %v, want [\"/\"]", got)
 	}
@@ -129,6 +132,9 @@ func TestNewTieFSTree(t *testing.T) {
 	if got := tree.ChildUIDs("/"); len(got) != 0 {
 		t.Errorf("ChildUIDs(\"/\") with unreachable triplestore = %v, want empty", got)
 	}
+	// Any fetch kicked by the calls above must finish (and run its inline
+	// tree refresh) before the next test touches widgets.
+	fs.fetchWG.Wait()
 }
 
 // collectLabels gathers the text of every label in an object's renderer
@@ -158,16 +164,23 @@ func TestTreeRenders(t *testing.T) {
 	config := client.DefaultConfig()
 	config.TripleStoreURL = "http://127.0.0.1:1"
 	tc := client.NewTieClient(config)
-	tree := newTieFSTree(nil, tc).tree
+	fs := newTieFSTree(nil, newTieRef(tc))
+	fs.fetchWG.Wait() // settle the constructor's root-branch fetch first
+	tree := fs.tree
 	w := test.NewWindow(tree)
 	w.Resize(fyne.NewSize(300, 400))
 	tree.Refresh()
+	// Settle in-flight listing fetches before touching widgets from this
+	// goroutine: under the test driver a fetch's fyne.Do refresh runs INLINE
+	// on the fetch goroutine and would race the label walk below.
+	fs.fetchWG.Wait()
 
 	labels := []string{}
 	collectLabels(tree, &labels)
 	if !slices.Contains(labels, "/") {
 		t.Errorf("rendered tree labels = %v, want the \"/\" node", labels)
 	}
+	fs.fetchWG.Wait() // settle in-flight fetches before the next test
 }
 
 // TestIsImageFileRaw checks that camera raw files are excluded from the
@@ -209,6 +222,7 @@ func TestChildUIDsHiddenDirs(t *testing.T) {
 		},
 		branches: make(map[string]bool),
 		files:    make(map[string]tieFSNode),
+		ready:    true, // the constructor primes the tree; this test feeds the cache directly
 	}
 
 	if got := fs.childUIDs("/"); !slices.Equal(got, []string{"/music", "/videos"}) {
