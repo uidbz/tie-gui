@@ -1,17 +1,21 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/tagselection"
@@ -86,6 +90,19 @@ type browsePage struct {
 	searchBox      *fyne.Container
 	searchQuery    string
 	searchPrevFeed wallFeed
+	// Extended search controls (all UI goroutine): mode/scope/fields tune the
+	// free-text search (see data.SearchOptions); searchKindSel applies the
+	// subject scope in the desktop row; searchCtx cancels a superseded fetch;
+	// searchTimer debounces search-as-you-type.
+	searchMode      client.SearchMode // "" = profile default (ranked words)
+	searchKind      data.SearchScope
+	searchFields    []client.Relation // nil = full audio vocabulary
+	searchKindSel   *widget.Select
+	searchModeSel   *widget.Select
+	searchFieldsBtn *widget.Button
+	searchCtx       context.CancelFunc
+	searchTimer     *time.Timer
+	searchEcho      bool // set around programmatic SetText to skip the OnChanged echo
 
 	// onFeedChanged, when set, is called after the wall switched feeds (the
 	// App re-highlights its nav bar: Home vs Albums).
@@ -546,31 +563,198 @@ func (b *browsePage) ensureSearchBar() fyne.CanvasObject {
 	}
 	b.searchEntry = widget.NewEntry()
 	b.searchEntry.SetPlaceHolder("Search albums, artists, tracks…")
-	b.searchEntry.OnSubmitted = func(s string) { b.startSearch(s) }
+	b.searchEntry.OnSubmitted = func(s string) {
+		if b.searchTimer != nil {
+			b.searchTimer.Stop()
+		}
+		b.startSearch(s)
+	}
+	// Search-as-you-type, debounced: a burst of keystroke costs at most one
+	// query, and the generation guard (plus context cancel in startSearch)
+	// drops superseded results.
+	b.searchEntry.OnChanged = func(s string) {
+		if b.searchEcho {
+			b.searchEcho = false // programmatic SetText from startSearch: no echo query
+			return
+		}
+		if b.searchTimer != nil {
+			b.searchTimer.Stop()
+		}
+		b.searchTimer = time.AfterFunc(400*time.Millisecond, func() {
+			fyne.Do(func() {
+				if b.searchEntry != nil && b.searchEntry.Text == s {
+					b.startSearch(s)
+				}
+			})
+		})
+	}
 	b.searchScope = widget.NewCheck("Current selection", nil)
 	b.searchStatus = widget.NewLabel("")
 	b.searchStatus.Hide()
-	row := container.NewBorder(nil, nil, b.searchScope, nil, b.searchEntry)
+
+	// Scope + mode selects tune every subsequent search (and re-run the
+	// current one), and "Fields…" restricts the vocabulary (title, album,
+	// artist, genre, tags, filename).
+	b.searchKindSel = widget.NewSelect(searchKindLabels, func(label string) {
+		b.searchKind = searchKindByLabel(label)
+		b.rerunSearch()
+	})
+	b.searchKindSel.SetSelected(searchKindLabel(b.searchKind))
+	b.searchModeSel = widget.NewSelect(searchModeLabels, func(label string) {
+		b.searchMode = searchModeByLabel(label)
+		b.rerunSearch()
+	})
+	b.searchModeSel.SetSelected(searchModeLabel(b.searchMode))
+	b.searchFieldsBtn = widget.NewButton("Fields", b.searchFieldsDialog)
+
+	controls := container.NewHBox(b.searchKindSel, b.searchModeSel, b.searchFieldsBtn)
+	row := container.NewBorder(nil, nil, b.searchScope, controls, b.searchEntry)
 	b.searchBox = container.NewVBox(row, b.searchStatus)
 	return b.searchBox
 }
 
-// promptSearch is the compact/layout-independent entry point: a one-field
-// dialog that feeds startSearch.
+// promptSearch is the compact/layout-independent entry point: a dialog with
+// the query plus the same scope/mode controls that feed startSearch.
 func (b *browsePage) promptSearch() {
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("Artist, album or track")
 	entry.SetText(b.searchQuery)
-	dialog.ShowCustomConfirm("Search", "Search", "Cancel", entry, func(ok bool) {
-		if ok {
-			b.startSearch(entry.Text)
+	kindSel := widget.NewSelect(searchKindLabels, nil)
+	kindSel.SetSelected(searchKindLabel(b.searchKind))
+	modeSel := widget.NewSelect(searchModeLabels, nil)
+	modeSel.SetSelected(searchModeLabel(b.searchMode))
+	content := container.NewVBox(entry, container.NewGridWithColumns(2, kindSel, modeSel))
+	d := dialog.NewCustomConfirm("Search", "Search", "Cancel", content, func(ok bool) {
+		if !ok {
+			return
 		}
+		b.searchKind = searchKindByLabel(kindSel.Selected)
+		b.searchMode = searchModeByLabel(modeSel.Selected)
+		b.startSearch(entry.Text)
 	}, b.win)
+	d.Show()
 }
 
-// startSearch runs a free-text search and shows the result as an album wall.
-// It is also the feed handler for reloadWall. "Current selection" restricts
-// the results to the albums already on a tag wall.
+// searchKind / searchMode label round-trips for the selects.
+var (
+	searchKindLabels = []string{"Everything", "Albums", "Tracks"}
+	searchModeLabels = []string{"Words", "Substring", "Prefix", "Fuzzy"}
+)
+
+func searchKindLabel(k data.SearchScope) string {
+	switch k {
+	case data.SearchAlbumsOnly:
+		return "Albums"
+	case data.SearchTracksOnly:
+		return "Tracks"
+	}
+	return "Everything"
+}
+
+func searchKindByLabel(label string) data.SearchScope {
+	switch label {
+	case "Albums":
+		return data.SearchAlbumsOnly
+	case "Tracks":
+		return data.SearchTracksOnly
+	}
+	return data.SearchAll
+}
+
+func searchModeLabel(m client.SearchMode) string {
+	switch m {
+	case client.SearchSubstring:
+		return "Substring"
+	case client.SearchPrefix:
+		return "Prefix"
+	case client.SearchFuzzy:
+		return "Fuzzy"
+	}
+	return "Words"
+}
+
+func searchModeByLabel(label string) client.SearchMode {
+	switch label {
+	case "Substring":
+		return client.SearchSubstring
+	case "Prefix":
+		return client.SearchPrefix
+	case "Fuzzy":
+		return client.SearchFuzzy
+	}
+	return client.SearchWords
+}
+
+// rerunSearch re-issues the active query after a control change.
+func (b *browsePage) rerunSearch() {
+	if b.feed == feedSearch && b.searchQuery != "" {
+		b.startSearch(b.searchQuery)
+	}
+}
+
+// searchOptions snapshots the current extended-search controls.
+func (b *browsePage) searchOptions() data.SearchOptions {
+	return data.SearchOptions{Mode: b.searchMode, Fields: b.searchFields, Scope: b.searchKind}
+}
+
+// searchFieldsDialog lets the user restrict which fields free-text search
+// matches (title, album, album-artist, artist, genre, tags, filename).
+// Leaving all seven ticked restores the profile's weighted default.
+func (b *browsePage) searchFieldsDialog() {
+	fields := []struct {
+		label string
+		rel   client.Relation
+	}{
+		{"Track title", client.RelTitle},
+		{"Album title", client.RelAlbum},
+		{"Album artist", client.RelAlbumArtist},
+		{"Artist", client.RelArtist},
+		{"Genre", client.RelGenre},
+		{"Tags", client.RelTag},
+		{"Filename", client.RelFilename},
+	}
+	on := map[client.Relation]bool{}
+	if len(b.searchFields) == 0 {
+		for _, f := range fields {
+			on[f.rel] = true
+		}
+	} else {
+		for _, rel := range b.searchFields {
+			on[rel] = true
+		}
+	}
+	checks := make([]fyne.CanvasObject, 0, len(fields))
+	for _, f := range fields {
+		c := widget.NewCheck(f.label, nil)
+		c.SetChecked(on[f.rel])
+		checks = append(checks, c)
+	}
+	d := dialog.NewCustomConfirm("Search fields", "Apply", "Cancel",
+		container.NewVBox(checks...), func(ok bool) {
+			if !ok {
+				return
+			}
+			var rels []client.Relation
+			for i, f := range fields {
+				if checks[i].(*widget.Check).Checked {
+					rels = append(rels, f.rel)
+				}
+			}
+			if len(rels) == 0 || len(rels) == len(fields) {
+				// Nothing ticked = search everything; everything ticked =
+				// the profile's weighted default.
+				rels = nil
+			}
+			b.searchFields = rels
+			b.rerunSearch()
+		}, b.win)
+	d.Show()
+}
+
+// startSearch runs a free-text search and shows the result as an album wall
+// (or, in Tracks scope, a track list). It is also the feed handler for
+// reloadWall. "Current selection" restricts the results to the albums already
+// on a tag wall.
 func (b *browsePage) startSearch(query string) {
 	query = strings.TrimSpace(query)
 	if len([]rune(query)) < 2 {
@@ -587,7 +771,16 @@ func (b *browsePage) startSearch(query string) {
 	b.feed = feedSearch
 	b.searchQuery = query
 	gen := b.nextWallGen()
+	// Cancel the previous search's in-flight requests: the generation guard
+	// already drops the reply, but this stops the server work too.
+	if b.searchCtx != nil {
+		b.searchCtx()
+	}
+	ctx, cancelSearch := context.WithCancel(context.Background())
+	b.searchCtx = cancelSearch
+	opts := b.searchOptions()
 	if b.searchEntry != nil && b.searchEntry.Text != query {
+		b.searchEcho = true
 		b.searchEntry.SetText(query)
 	}
 
@@ -600,7 +793,7 @@ func (b *browsePage) startSearch(query string) {
 	}
 
 	b.viewer.ReadCustomAsync(func() []gallery.CustomReader {
-		result, err := b.sess().Search(query, 0)
+		result, err := b.sess().SearchEx(ctx, query, opts, 0)
 		if err != nil {
 			fmt.Println("Error searching albums:", err)
 			fyne.Do(func() {
@@ -622,7 +815,7 @@ func (b *browsePage) startSearch(query string) {
 			}
 			stale = false
 			b.setWallAlbums(albums)
-			if b.searchStatus != nil {
+			if b.searchStatus != nil && b.searchKind != data.SearchTracksOnly {
 				text := fmt.Sprintf("%d albums", len(albums))
 				if result.Total > len(albums) {
 					text += fmt.Sprintf(" · %d matches", result.Total)
@@ -637,6 +830,43 @@ func (b *browsePage) startSearch(query string) {
 		return b.readers(albums)
 	})
 	b.showWall()
+	// Tracks scope: over the (still filled) album wall, open a track list of
+	// the matches — playable rows plus "Play all"/"Add to playlist" for the
+	// whole hit set. Going "Albums" back lands on the wall of containing
+	// albums fetched above.
+	if b.searchKind == data.SearchTracksOnly {
+		b.showSearchTracks(ctx, query, gen)
+	}
+}
+
+// showSearchTracks fetches the track-level hits (relevance order) and shows
+// them like an album's track list: per-row play, plus play/enqueue-all in the
+// header. The synthetic album's UID never resolves to artwork, but each
+// track's own AlbumUID keeps queue grouping and covers correct.
+func (b *browsePage) showSearchTracks(ctx context.Context, query string, gen int) {
+	opts := b.searchOptions() // UI goroutine: snapshot before the fetch
+	go func() {
+		tracks, total, err := b.sess().SearchTracks(ctx, query, opts)
+		fyne.Do(func() {
+			if gen != b.wallGen || b.feed != feedSearch || b.searchQuery != query {
+				return // superseded
+			}
+			a := data.Album{
+				UID:   "search:" + query,
+				Kind:  data.AlbumDir,
+				Title: "Matching tracks",
+			}
+			b.showAlbumView(a, tracks, err)
+			if b.searchStatus != nil {
+				text := fmt.Sprintf("%d tracks", len(tracks))
+				if total > len(tracks) {
+					text += fmt.Sprintf(" · %d matches", total)
+				}
+				b.searchStatus.SetText(text + " for “" + query + "”")
+				b.searchStatus.Show()
+			}
+		})
+	}()
 }
 
 // resetSearchUI clears the search row and status when the wall leaves the
@@ -660,6 +890,10 @@ func (b *browsePage) clearSearch() {
 	if b.feed != feedSearch {
 		return
 	}
+	if b.searchCtx != nil {
+		b.searchCtx() // stop any in-flight search request
+		b.searchCtx = nil
+	}
 	if b.searchEntry != nil {
 		b.searchEntry.SetText("")
 	}
@@ -670,6 +904,9 @@ func (b *browsePage) clearSearch() {
 	b.searchQuery = ""
 	prev := b.searchPrevFeed
 	b.searchPrevFeed = feedNone
+	if b.albumOpen {
+		b.showBrowse() // leave the "Matching tracks" list back on the wall
+	}
 	if prev == feedTags {
 		if include, exclude := b.ts.SelectedTags(); len(include) > 0 || len(exclude) > 0 {
 			b.refreshAlbums(include, exclude)
