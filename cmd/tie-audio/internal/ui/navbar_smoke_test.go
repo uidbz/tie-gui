@@ -53,6 +53,13 @@ func TestCompactNavLiveIntegration(t *testing.T) {
 	waitForCond(t, "smoketest albums on the wall", func() bool {
 		return len(a.browse.albums) >= 2
 	})
+	// The album list alone is not enough: the cover grid is fed by the gallery
+	// readers the wall fetch returns. A regression here left the Covers page
+	// blank (and search results blank on mobile) while the Table view, which
+	// only reads b.albums, kept working.
+	waitForCond(t, "cover wall readers", func() bool {
+		return a.browse.viewer.ImageCount() >= 2
+	})
 
 	if !a.compact {
 		t.Fatal("layout preference compact did not select the compact layout")
@@ -101,6 +108,9 @@ func TestCompactNavLiveIntegration(t *testing.T) {
 	}
 	if a.browse.tabs.SelectedIndex() != 0 {
 		t.Errorf("drawer opened on tab %d, want Tags (0)", a.browse.tabs.SelectedIndex())
+	}
+	if a.browse.sidebarSearch == nil || !a.browse.sidebarSearchBox.Visible() {
+		t.Error("Tags drawer has no library search entry")
 	}
 	expect("drawer", viewBrowse, tabTags, true)
 	a.navTags()

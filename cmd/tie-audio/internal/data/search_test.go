@@ -70,6 +70,79 @@ func TestSearchWithinFiltersToSelection(t *testing.T) {
 	if empty := SearchWithin(result, nil); len(empty.Albums) != 0 || empty.Total != 0 {
 		t.Errorf("empty selection = %+v", empty)
 	}
+
+	// A track hit from a selected album survives the restriction.
+	withTrack := SearchResult{Albums: []Album{
+		{UID: "album-1", Kind: AlbumDir},
+		{UID: "track-1", Kind: AlbumTrack, OwnerUID: "album-1"},
+		{UID: "track-2", Kind: AlbumTrack, OwnerUID: "elsewhere"},
+	}}
+	got = SearchWithin(withTrack, map[string]bool{"album-1": true})
+	if len(got.Albums) != 2 || got.Albums[1].UID != "track-1" {
+		t.Errorf("selection kept %+v, want the album and its track hit", got.Albums)
+	}
+}
+
+func TestSearchAlbumsFromHitsShowsMatchedTracks(t *testing.T) {
+	matches := []client.SearchMatch{
+		{Key: "album-1", Relation: client.RelAlbum, Value: "Abbey Road", Attributes: map[string][]string{
+			"tie-type": {"audio-dir"},
+			"album":    {"Abbey Road"},
+		}},
+		// Folds into album-1: the album itself matched too.
+		{Key: "track-1", Relation: client.RelTitle, Value: "Come Together", Attributes: map[string][]string{
+			"tie-type":  {"audio-file"},
+			"title":     {"Come Together"},
+			"album":     {"Abbey Road"},
+			"artist":    {"The Beatles"},
+			"member-of": {"album-1"},
+			"parent":    {"album-1"},
+		}},
+		// Its album did not match: the hit stays a track tile.
+		{Key: "track-2", Relation: client.RelTitle, Value: "Love", Attributes: map[string][]string{
+			"tie-type":  {"audio-file"},
+			"title":     {"Love"},
+			"album":     {"Manga Techno"},
+			"artist":    {"Dr.Tikov"},
+			"member-of": {"album-2"},
+			"parent":    {"album-2"},
+		}},
+		// Standalone track: no owner.
+		{Key: "loose", Relation: client.RelTitle, Value: "Loose", Attributes: map[string][]string{
+			"tie-type": {"audio-file"},
+			"title":    {"Loose"},
+			"artist":   {"Nobody"},
+		}},
+	}
+	owners := []client.Row{row("album-2", map[string][]string{
+		"tie-type":  {"audio-dir"},
+		"album":     {"Manga Techno"},
+		"thumbnail": {"thumb-2"},
+	})}
+
+	albums := searchAlbumsFromHits(matches, owners)
+	if len(albums) != 3 {
+		t.Fatalf("albums = %+v, want album, track hit and standalone in rank order", albums)
+	}
+	if albums[0].UID != "album-1" || albums[0].Kind != AlbumDir {
+		t.Errorf("first entry = %+v, want the matched album", albums[0])
+	}
+	tr := albums[1]
+	if tr.UID != "track-2" || tr.Kind != AlbumTrack || tr.Title != "Love" {
+		t.Errorf("track tile = %+v, want the matched song title", tr)
+	}
+	if tr.AlbumTitle != "Manga Techno" || tr.OwnerUID != "album-2" || tr.CoverUID != "album-2" {
+		t.Errorf("track tile owner = %+v, want album-2 for art/open", tr)
+	}
+	if tr.OwnerKind != AlbumDir || tr.ThumbHash != "thumb-2" {
+		t.Errorf("track tile owner kind/thumb = %v/%q, want dir/thumb-2", tr.OwnerKind, tr.ThumbHash)
+	}
+	if tr.Artist != "Dr.Tikov" {
+		t.Errorf("track tile artist = %q, want the hit's artist", tr.Artist)
+	}
+	if loose := albums[2]; loose.UID != "loose" || loose.OwnerUID != "" || loose.CoverUID != "" {
+		t.Errorf("standalone tile = %+v, want no owner", loose)
+	}
 }
 
 func TestSearchSpecAppliesOptions(t *testing.T) {

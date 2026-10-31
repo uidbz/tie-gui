@@ -1762,6 +1762,14 @@ Config file locations: `~/.config/imgview/config.toml` (Linux),
   rewrite it there. tie-audio's `loadTags` drops a fetch superseded by a
   later call (`tagGen`), so a collection switch mid-fetch can't land the
   previous collection's tags.
+- Wall feeds (`refreshAlbums`, `refreshLatest`, `startSearch`) must not gate
+  the gallery readers they return on a flag set inside `fyne.Do`: `fyne.Do`
+  is **asynchronous** (only `DoAndWait` waits), so the fetch would always see
+  the flag unset and return no readers — the Covers page went blank while the
+  Table view (which reads `b.albums`) kept working, and mobile search results
+  were blank too. Staleness is decided by the atomic `feedGen`
+  (`feedSuperseded`) before returning readers; `fyne.Do` only applies the
+  album list/status to the widgets.
 
 ---
 
@@ -1971,17 +1979,23 @@ normal empty result. The server caches a corpus per collection and invalidates
 it on writes; the apps do not manage that.
 
 **tie-audio (`internal/data/search.go`, `internal/ui/browse.go`).**
-`Session.Search` expands the audio hits, fetches the album rows named by each
-track hit's `member-of`/`parent` in one `Expand`, then reuses
-`albumsFromRows` (extracted from `QueryAlbums`) so an album is one tile and a
-standalone track is a track tile. Results are re-ordered by the first hit that
-named each album. `data.SearchWithin` filters a result to the current wall's
-UID set for the "Current selection" checkbox. The UI is a new `feedSearch`
-wall feed:
+`Session.Search` expands the audio hits, fetches the owning collection rows
+named by each track hit's `member-of`/`parent` in one `Expand`, and builds the
+wall with `searchAlbumsFromHits`: an album/playlist/archive hit is an album
+tile; a track hit is its own **track tile** (matched song title, "Artist ·
+Album" subtitle, the owning album's cover, opening the album) unless that album
+also matched in its own right — then the album tile represents it and the track
+does not repeat. Results keep the server's rank. `data.SearchWithin` filters a
+result to the current wall's UID set for the "Current selection" checkbox (a
+track tile survives when its owner album is in the set). The UI is a new
+`feedSearch` wall feed:
 
 - desktop: a search row under the Covers/Table tabs (entry + "Current
   selection" check + result status), installed by `decorateContent`;
-- compact: ☰ → "Search…" opens the same flow through a one-field dialog;
+- compact: ☰ → "Search…" opens the same flow through a one-field dialog, and
+  the **Tags drawer** (the nav bar's magnifier) carries a "Search library"
+  entry above the tag filter — submitting it closes the drawer and runs the
+  query, so free-text search is one tap from the nav bar;
 - `startSearch` runs `ReadCustomAsync`, guards against a superseded query with
   `feed != feedSearch || searchQuery != query`, and re-runs through
   `reloadWall`; `clearSearch` restores the tag wall (when the selection still

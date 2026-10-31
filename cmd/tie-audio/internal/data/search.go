@@ -3,7 +3,6 @@ package data
 import (
 	"context"
 	"errors"
-	"sort"
 	"strconv"
 
 	"github.com/uidbz/tie/client"
@@ -78,10 +77,10 @@ func searchSpec(query string, limit int, opts SearchOptions) client.SearchSpec {
 }
 
 // Search runs the audio profile's free-text search and classifies the matching
-// rows into wall albums. Album rows are fetched for track hits so an album that
-// matched only through its tracks still renders with its own metadata; the
-// result keeps the server's rank, with the first matching row of an album
-// deciding its position.
+// rows into wall entries. Album rows become album tiles; track hits become
+// track tiles (showing the matched song), unless their album also matched in
+// its own right — then the track folds into that one album tile, so a query on
+// an artist or album does not repeat every track of it.
 func (s *Session) Search(query string, limit int) (SearchResult, error) {
 	return s.SearchEx(context.Background(), query, SearchOptions{}, limit)
 }
@@ -94,63 +93,119 @@ func (s *Session) SearchEx(ctx context.Context, query string, opts SearchOptions
 	if err != nil {
 		return SearchResult{}, err
 	}
-	matches, total := res.Matches, res.Total
+	matches := res.Matches
 	if len(matches) == 0 {
-		return SearchResult{Total: total, Revision: res.Revision}, nil
+		return SearchResult{Total: res.Total, Revision: res.Revision}, nil
 	}
 
-	rows := make([]client.Row, 0, len(matches)+16)
-	seen := make(map[string]bool, len(matches)+16)
-	rank := make(map[string]int, len(matches)+16)
-	rankOf := func(key string, i int) {
-		if _, ok := rank[key]; !ok {
-			rank[key] = i
+	// Track hits need the owning collection's row to know what opening the
+	// tile should show (album, playlist, archive) and to borrow its cover.
+	// Fetch them in one Expand; matches already carry their own attributes.
+	shown := map[string]bool{}
+	var ownerKeys []string
+	ownerSeen := make(map[string]bool)
+	for _, m := range matches {
+		row := client.Row{Key: m.Key, Attributes: m.Attributes}
+		a, ok := classifyAlbum(row)
+		if !ok {
+			continue
 		}
-	}
-	var extra []string
-	extraSeen := make(map[string]bool)
-
-	for i, m := range matches {
-		rows = append(rows, client.Row{Key: m.Key, Attributes: m.Attributes})
-		seen[m.Key] = true
-		rankOf(m.Key, i)
-		for _, relation := range []client.Relation{client.RelMemberOf, client.RelParent} {
-			for _, parent := range m.Attributes[string(relation)] {
-				rankOf(parent, i)
-				if parent == "" || seen[parent] || extraSeen[parent] {
-					continue
-				}
-				extraSeen[parent] = true
-				extra = append(extra, parent)
-			}
+		if a.Kind != AlbumTrack {
+			shown[a.UID] = true
+			continue
 		}
+		owner := firstAttr(row, client.RelMemberOf)
+		if owner == "" {
+			owner = firstAttr(row, client.RelParent)
+		}
+		if owner == "" || owner == m.Key || shown[owner] || ownerSeen[owner] {
+			continue
+		}
+		ownerSeen[owner] = true
+		ownerKeys = append(ownerKeys, owner)
 	}
-
-	if len(extra) > 0 {
-		albumRows, err := s.Tie.ExpandContext(ctx, extra)
+	var ownerRows []client.Row
+	if len(ownerKeys) > 0 {
+		ownerRows, err = s.Tie.ExpandContext(ctx, ownerKeys)
 		if err != nil && !errors.Is(err, client.ErrNotFound) {
 			return SearchResult{}, err
 		}
-		for _, row := range albumRows {
-			if seen[row.Key] {
-				continue
-			}
-			seen[row.Key] = true
-			rows = append(rows, row)
+	}
+
+	albums := searchAlbumsFromHits(matches, ownerRows)
+	s.rememberThumbs(albums)
+	return SearchResult{Albums: albums, Total: res.Total, Revision: res.Revision}, nil
+}
+
+// searchAlbumsFromHits turns ranked search matches into wall entries (pure, so
+// the classification is unit-testable without a triplestore). It keeps the
+// server's rank order. An album/playlist/archive hit is an album tile; a track
+// hit is a track tile unless its owner is also a hit, in which case the album
+// tile already represents it. ownerRows are the expanded rows for track owners
+// (member-of/parent), used for the tile's display album, kind and cover.
+func searchAlbumsFromHits(matches []client.SearchMatch, ownerRows []client.Row) []Album {
+	owners := make(map[string]Album, len(ownerRows))
+	for _, row := range ownerRows {
+		if a, ok := classifyAlbum(row); ok {
+			owners[row.Key] = a
+		}
+	}
+	// Collections that matched in their own right: their track hits fold into
+	// the album tile (perhaps at a different rank) instead of repeating it.
+	matchedAlbum := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		row := client.Row{Key: m.Key, Attributes: m.Attributes}
+		if a, ok := classifyAlbum(row); ok && a.Kind != AlbumTrack {
+			matchedAlbum[a.UID] = true
 		}
 	}
 
-	albums := s.albumsFromRows(rows)
-	position := func(uid string) int {
-		if i, ok := rank[uid]; ok {
-			return i
+	albums := make([]Album, 0, len(matches))
+	for _, m := range matches {
+		row := client.Row{Key: m.Key, Attributes: m.Attributes}
+		a, ok := classifyAlbum(row)
+		if !ok {
+			continue
 		}
-		return len(matches) + 1
+		if a.Kind != AlbumTrack {
+			albums = append(albums, a)
+			continue
+		}
+
+		// A track tile is the matched song, not its album: classifyAlbum
+		// prefers the album name for Title, which is wrong at track level.
+		a.Title = firstNonEmpty(
+			client.RowFirst(row, client.RelTitle),
+			client.RowFirst(row, client.RelFilename),
+			a.Title,
+		)
+		a.AlbumTitle = client.RowFirst(row, client.RelAlbum)
+		a.OwnerUID = firstAttr(row, client.RelMemberOf)
+		if a.OwnerUID == "" {
+			a.OwnerUID = firstAttr(row, client.RelParent)
+		}
+		if a.OwnerUID == m.Key {
+			a.OwnerUID = "" // standalone track: it is its own subject
+		}
+		if a.OwnerUID != "" && matchedAlbum[a.OwnerUID] {
+			continue // the album tile stands for this hit too
+		}
+		if owner, ok := owners[a.OwnerUID]; ok {
+			a.OwnerKind = owner.Kind
+			if a.AlbumTitle == "" {
+				a.AlbumTitle = owner.Title
+			}
+			if a.Artist == "" {
+				a.Artist = owner.Artist
+			}
+			a.ThumbHash = owner.ThumbHash
+		}
+		if a.OwnerUID != "" {
+			a.CoverUID = a.OwnerUID
+		}
+		albums = append(albums, a)
 	}
-	sort.SliceStable(albums, func(i, j int) bool {
-		return position(albums[i].UID) < position(albums[j].UID)
-	})
-	return SearchResult{Albums: albums, Total: total, Revision: res.Revision}, nil
+	return albums
 }
 
 // SearchTracks runs a track-scoped free-text search and returns the matching
@@ -249,14 +304,16 @@ func firstAttr(row client.Row, rel client.Relation) string {
 
 // SearchWithin filters a search result to albums whose UID is in allowed. It is
 // the "search in current selection" path: the wall already holds the tag or
-// directory selection, so no second server query is needed.
+// directory selection, so no second server query is needed. A track tile
+// survives when its owning album is in the selection, so the restriction keeps
+// the song hits of the selected albums too.
 func SearchWithin(result SearchResult, allowed map[string]bool) SearchResult {
 	if len(allowed) == 0 {
 		return SearchResult{Total: 0}
 	}
 	albums := make([]Album, 0, len(result.Albums))
 	for _, a := range result.Albums {
-		if allowed[a.UID] {
+		if allowed[a.UID] || (a.Kind == AlbumTrack && a.OwnerUID != "" && allowed[a.OwnerUID]) {
 			albums = append(albums, a)
 		}
 	}

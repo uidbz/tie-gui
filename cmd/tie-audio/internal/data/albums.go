@@ -43,6 +43,20 @@ type Album struct {
 	Year      string
 	ThumbHash string // content hash of the cached cover thumbnail, "" if none
 
+	// CoverUID names the subject whose artwork represents this entry when it
+	// differs from UID: a search-hit track tile shows its owning album's
+	// cover. Empty means UID.
+	CoverUID string
+	// AlbumTitle is the owning album's display name for a track tile (a
+	// free-text search hit), so the tile can show "Artist · Album" without
+	// pretending to be an album itself.
+	AlbumTitle string
+	// OwnerUID/OwnerKind identify the collection a track tile came from, so
+	// opening the tile shows the whole album rather than the one track.
+	// Empty for album tiles and standalone tracks.
+	OwnerUID  string
+	OwnerKind AlbumKind
+
 	// Fields of tie's collection contract (client/media.go), filled from
 	// query-expanded rows at no extra round trip; zero when unknown.
 	Genres     []string
@@ -247,9 +261,14 @@ func (s *Session) CoverBytesForUID(uid string) ([]byte, error) {
 // blob directly instead of re-reading each album's row first.
 func (s *Session) rememberThumbs(albums []Album) {
 	for _, a := range albums {
-		if a.ThumbHash != "" {
-			s.thumbHints.Store(a.UID, a.ThumbHash)
+		if a.ThumbHash == "" {
+			continue
 		}
+		uid := a.UID
+		if a.CoverUID != "" {
+			uid = a.CoverUID // a track tile is drawn with its album's artwork
+		}
+		s.thumbHints.Store(uid, a.ThumbHash)
 	}
 }
 

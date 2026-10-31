@@ -82,14 +82,16 @@ type browsePage struct {
 
 	// Free-text search state. searchEntry/searchStatus live in the desktop
 	// decorator; the compact layout reaches the same flow through the ☰ menu's
-	// "Search…" item. searchPrevFeed is the feed to restore when the query is
-	// cleared.
-	searchEntry    *widget.Entry
-	searchScope    *widget.Check
-	searchStatus   *widget.Label
-	searchBox      *fyne.Container
-	searchQuery    string
-	searchPrevFeed wallFeed
+	// "Search…" item and through sidebarSearch at the top of the tag drawer.
+	// searchPrevFeed is the feed to restore when the query is cleared.
+	searchEntry      *widget.Entry
+	sidebarSearch    *widget.Entry // library search in the tag drawer (compact)
+	sidebarSearchBox fyne.CanvasObject
+	searchScope      *widget.Check
+	searchStatus     *widget.Label
+	searchBox        *fyne.Container
+	searchQuery      string
+	searchPrevFeed   wallFeed
 	// Extended search controls (all UI goroutine): mode/scope/fields tune the
 	// free-text search (see data.SearchOptions); searchKindSel applies the
 	// subject scope in the desktop row; searchCtx cancels a superseded fetch;
@@ -165,7 +167,13 @@ type browsePage struct {
 	// a newer search or switched collections while it was in flight — is
 	// dropped (rendered nothing AND no gallery readers), so the last
 	// completion cannot win over the last request.
-	wallGen  int
+	wallGen int
+	// feedGen mirrors wallGen for the background feed fetch goroutines. They
+	// cannot read wallGen (UI-thread state) and fyne.Do is asynchronous, so a
+	// "stale" flag set inside fyne.Do was never seen before the readers were
+	// returned — the cover wall got none. The atomic lets the fetch decide for
+	// itself whether a newer feed has taken over.
+	feedGen  atomic.Int64
 	albumGen int
 	// coTagGen numbers refineTags; refineTags runs on its own goroutine, so
 	// the counter is atomic.
@@ -283,7 +291,7 @@ func (b *browsePage) setSession(s *data.Session) { b.session.Store(s) }
 func (b *browsePage) onSessionSwapped() {
 	// Invalidate every in-flight reply from the old session: wall feeds and
 	// search readers, album opens and co-tag refreshes.
-	b.wallGen++
+	b.nextWallGen()
 	b.albumGen++
 	b.coTagGen.Add(1)
 	b.fsTree.reset()
@@ -321,6 +329,13 @@ func (b *browsePage) setCompact(compact bool) {
 	}
 	b.compact = compact
 	b.setGalleryChrome(compact)
+	if b.sidebarSearchBox != nil {
+		if compact {
+			b.sidebarSearchBox.Show()
+		} else {
+			b.sidebarSearchBox.Hide()
+		}
+	}
 	b.syncSettingsTab()
 	b.viewer.CreateView()
 	if compact {
@@ -455,9 +470,36 @@ func (b *browsePage) buildSidebar() fyne.CanvasObject {
 
 	b.loadTags()
 
+	// Library search at the top of the Tags page: the compact nav bar's
+	// magnifier opens this drawer, and a free-text query should be reachable
+	// from there — not only from ☰ → Search… or the desktop header. Hidden in
+	// the regular layout, where the wall header already carries the search row.
+	b.sidebarSearch = widget.NewEntry()
+	b.sidebarSearch.SetPlaceHolder("Search albums, artists, tracks…")
+	submitSidebarSearch := func() {
+		q := strings.TrimSpace(b.sidebarSearch.Text)
+		if q == "" {
+			return
+		}
+		b.closeSidebar()
+		b.win.Canvas().Unfocus()
+		b.startSearch(q)
+	}
+	b.sidebarSearch.OnSubmitted = func(string) { submitSidebarSearch() }
+	searchBtn := widget.NewButtonWithIcon("", theme.SearchIcon(), submitSidebarSearch)
+	searchBtn.Importance = widget.HighImportance
+	b.sidebarSearchBox = container.NewVBox(
+		widget.NewLabelWithStyle("Search library", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewBorder(nil, nil, nil, searchBtn, b.sidebarSearch),
+	)
+	if !b.compact {
+		b.sidebarSearchBox.Hide()
+	}
+
 	// The tag list grows with the store; wrap it in a scroll so a large tag
 	// count doesn't inflate the window's minimum size.
-	tagTab := container.NewTabItemWithIcon("Tags", theme.ListIcon(), container.NewVScroll(ts))
+	tagTab := container.NewTabItemWithIcon("Tags", theme.ListIcon(),
+		container.NewBorder(b.sidebarSearchBox, nil, nil, nil, container.NewVScroll(ts)))
 	filesTab := container.NewTabItemWithIcon("Files", theme.FolderIcon(), b.fsTree.tree)
 	b.tabs = container.NewAppTabs(tagTab, filesTab)
 	b.tabs.SetTabLocation(container.TabLocationBottom)
@@ -527,31 +569,39 @@ func (b *browsePage) refreshAlbums(include, exclude []string) {
 			fmt.Println("Error querying albums:", err)
 			return nil
 		}
-		stale := true
+		// Superseded fetches must not hand the gallery readers either: the
+		// readers ReadCustomAsync returns get applied regardless of any UI
+		// bookkeeping. Check the atomic feed generation, not a flag set in
+		// the asynchronous fyne.Do below.
+		if b.feedSuperseded(gen) {
+			return nil
+		}
 		fyne.Do(func() {
 			if gen == b.wallGen {
-				stale = false
 				b.setWallAlbums(albums)
 			}
 		})
-		// Superseded fetches must not hand the gallery readers either: the
-		// readers ReadCustomAsync returns get applied regardless of any UI
-		// bookkeeping.
-		if stale {
-			return nil
-		}
 		return b.readers(albums)
 	})
 	b.showWall()
 }
 
-// nextWallGen stamps the start of a wall feed fetch (UI goroutine only).
-// The fetch closure then re-checks gen == b.wallGen inside fyne.Do (fyne.Do
-// blocks until the UI goroutine has run it, so the decision is safely
-// published): a newer feed, search or session swap has taken over the wall.
+// nextWallGen stamps the start of a wall feed fetch (UI goroutine only) and
+// publishes it to the fetch goroutines through feedGen. A fetch checks
+// feedSuperseded before handing the gallery its readers: a newer feed, search
+// or session swap has taken over the wall. (The check cannot live in a
+// fyne.Do callback — that is asynchronous, so the fetch would always look
+// stale and the covers would never load.)
 func (b *browsePage) nextWallGen() int {
 	b.wallGen++
+	b.feedGen.Store(int64(b.wallGen))
 	return b.wallGen
+}
+
+// feedSuperseded reports whether a feed other than gen has taken over. It is
+// safe to call from a fetch goroutine (unlike wallGen itself).
+func (b *browsePage) feedSuperseded(gen int) bool {
+	return b.feedGen.Load() != int64(gen)
 }
 
 // ensureSearchBar builds the desktop search row once. The compact layout has
@@ -783,6 +833,9 @@ func (b *browsePage) startSearch(query string) {
 		b.searchEcho = true
 		b.searchEntry.SetText(query)
 	}
+	if b.sidebarSearch != nil && b.sidebarSearch.Text != query {
+		b.sidebarSearch.SetText(query)
+	}
 
 	var allowed map[string]bool
 	if b.searchScope != nil && b.searchScope.Checked && b.searchPrevFeed == feedTags {
@@ -808,15 +861,19 @@ func (b *browsePage) startSearch(query string) {
 			result = data.SearchWithin(result, allowed)
 		}
 		albums := result.Albums
-		stale := true
+		// See refreshAlbums: the readers must not depend on the asynchronous
+		// fyne.Do having run; the atomic feed generation decides staleness
+		// (every startSearch and every other feed bumps it).
+		if b.feedSuperseded(gen) {
+			return nil // the readers would replace a newer wall
+		}
 		fyne.Do(func() {
 			if gen != b.wallGen || b.feed != feedSearch || b.searchQuery != query {
 				return // superseded by a newer query or feed
 			}
-			stale = false
 			b.setWallAlbums(albums)
 			if b.searchStatus != nil && b.searchKind != data.SearchTracksOnly {
-				text := fmt.Sprintf("%d albums", len(albums))
+				text := fmt.Sprintf("%d results", len(albums))
 				if result.Total > len(albums) {
 					text += fmt.Sprintf(" · %d matches", result.Total)
 				}
@@ -824,9 +881,6 @@ func (b *browsePage) startSearch(query string) {
 				b.searchStatus.Show()
 			}
 		})
-		if stale {
-			return nil // the readers would replace a newer wall
-		}
 		return b.readers(albums)
 	})
 	b.showWall()
@@ -878,6 +932,9 @@ func (b *browsePage) resetSearchUI() {
 	if b.searchEntry != nil {
 		b.searchEntry.SetText("")
 	}
+	if b.sidebarSearch != nil {
+		b.sidebarSearch.SetText("")
+	}
 	if b.searchStatus != nil {
 		b.searchStatus.SetText("")
 		b.searchStatus.Hide()
@@ -896,6 +953,9 @@ func (b *browsePage) clearSearch() {
 	}
 	if b.searchEntry != nil {
 		b.searchEntry.SetText("")
+	}
+	if b.sidebarSearch != nil {
+		b.sidebarSearch.SetText("")
 	}
 	if b.searchStatus != nil {
 		b.searchStatus.SetText("")
@@ -933,16 +993,16 @@ func (b *browsePage) refreshLatest() {
 			fmt.Println("Error querying latest albums:", err)
 			return nil
 		}
-		stale := true
+		// See refreshAlbums: staleness is decided by the atomic feed
+		// generation, not by the asynchronous fyne.Do.
+		if b.feedSuperseded(gen) {
+			return nil
+		}
 		fyne.Do(func() {
 			if gen == b.wallGen {
-				stale = false
 				b.setWallAlbums(albums)
 			}
 		})
-		if stale {
-			return nil
-		}
 		return b.readers(albums)
 	})
 	b.showWall()

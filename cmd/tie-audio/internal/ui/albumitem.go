@@ -37,7 +37,18 @@ func (a *AudioAlbumItem) DisplayName() string { return a.album.Display() }
 
 // Subtitle implements gallery.Subtitler: the artist shown on a second line
 // below the title. Empty when unknown, which collapses the tile to one line.
-func (a *AudioAlbumItem) Subtitle() string { return a.album.Artist }
+// A search-result track tile names its album instead (or alongside the
+// artist), so the tile explains the hit even when the matched field was the
+// album or artist rather than the title.
+func (a *AudioAlbumItem) Subtitle() string {
+	if a.album.Kind == data.AlbumTrack && a.album.AlbumTitle != "" {
+		if a.album.Artist != "" {
+			return a.album.Artist + " · " + a.album.AlbumTitle
+		}
+		return a.album.AlbumTitle
+	}
+	return a.album.Artist
+}
 
 // Dimensions implements gallery.DimensionProvider: square tiles for covers.
 func (a *AudioAlbumItem) Dimensions() (int, int) { return 1000, 1000 }
@@ -63,7 +74,11 @@ func (t *coverThumbnailer) GetThumbnail(info *gallery.ImageInfo) (io.ReadSeeker,
 	// This runs on a gallery loader goroutine, so the blocking store lookup is
 	// fine here; going through the store means the queue's cover column and the
 	// transport reuse this fetch instead of repeating it.
-	decoded := t.page.covers.Get(item.album.UID)
+	uid := item.album.UID
+	if item.album.CoverUID != "" {
+		uid = item.album.CoverUID // a search track tile borrows its album's art
+	}
+	decoded := t.page.covers.Get(uid)
 	if decoded == nil {
 		return placeholderCover(t.tileWidth * 2), nil
 	}

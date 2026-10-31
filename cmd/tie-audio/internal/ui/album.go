@@ -15,20 +15,36 @@ import (
 )
 
 // openAlbum loads an album's tracks off the UI goroutine, then shows the track
-// list. Playback actions arrive in Phase 2.
+// list. A search-result track tile opens its owning album (so the hit is
+// playable in context); standalone tracks keep their one-track listing.
+// Playback actions arrive in Phase 2.
 func (b *browsePage) openAlbum(a data.Album) {
 	// Archive albums resolve via a blob download + member hashing that can
 	// take tens of seconds: only the newest open may swap the view, or a
 	// slow archive yanks the page back over whatever the user opened next.
 	b.albumGen++
 	gen := b.albumGen
+	target := a
+	if a.Kind == data.AlbumTrack && a.OwnerUID != "" && a.OwnerUID != a.UID {
+		kind := a.OwnerKind
+		if kind == data.AlbumTrack {
+			kind = data.AlbumDir // an owner we could not classify is a directory
+		}
+		target = data.Album{UID: a.OwnerUID, Kind: kind, Title: a.AlbumTitle, Artist: a.Artist}
+	}
 	go func() {
-		tracks, err := b.sess().AlbumTracks(a)
+		tracks, err := b.sess().AlbumTracks(target)
+		if err != nil && target.UID != a.UID {
+			// The owner row was missing or of an unexpected kind: fall back to
+			// the hit itself rather than failing the open.
+			target = a
+			tracks, err = b.sess().AlbumTracks(a)
+		}
 		fyne.Do(func() {
 			if gen != b.albumGen {
 				return
 			}
-			b.showAlbumView(a, tracks, err)
+			b.showAlbumView(target, tracks, err)
 		})
 	}()
 }
