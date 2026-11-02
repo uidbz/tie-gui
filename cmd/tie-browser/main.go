@@ -243,7 +243,8 @@ func (e *tieEditor) Open(p *browser.Page, br *browser.Browser) fyne.CanvasObject
 		Version:   p.Version,
 		Window:    br.Window().FyneWindow,
 		Navigator: tieNav{e.app}, Opener: tieOpener{e.app},
-		Status: br.SetStatus,
+		Status:    br.SetStatus,
+		AssetPick: e.app.pickAsset,
 		OnClose: func(reload bool) {
 			e.app.editor = nil
 			br.CloseEditor(reload)

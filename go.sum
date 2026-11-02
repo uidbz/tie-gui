@@ -190,8 +190,8 @@ github.com/tiendc/go-deepcopy v1.7.2 h1:Ut2yYR7W9tWjTQitganoIue4UGxZwCcJy3orjrrI
 github.com/tiendc/go-deepcopy v1.7.2/go.mod h1:4bKjNC2r7boYOkD2IOuZpYjmlDdzjbpTRyCx+goBCJQ=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6 h1:GTI/4+CFJJDcBplnIYw5i+2Zy8VO8DBgJGgPkDzW34U=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6/go.mod h1:XIwt3LLWCVqucBqkfBSAvr6Qs52z8VS+NXGRcdr6FQ8=
-github.com/uidbz/fynerisor v0.11.1 h1:SxO25udN7KCG4xfZMrckuz+/pQNr8XGB92i47Bhr3o0=
-github.com/uidbz/fynerisor v0.11.1/go.mod h1:cH311GVQ7t068Dd6T+eqAHlh9zpJqEeEAGy4ojdIzO8=
+github.com/uidbz/fynerisor v0.12.0 h1:l87kclBumgqy0pWtZpjWQfQPvYoCKI+fubowAtWGpeg=
+github.com/uidbz/fynerisor v0.12.0/go.mod h1:cH311GVQ7t068Dd6T+eqAHlh9zpJqEeEAGy4ojdIzO8=
 github.com/uidbz/pwplay v0.3.1 h1:WlewxF57j3aasKf0EkCsBKlSyqYU11p2uc0lgOgXYHY=
 github.com/uidbz/pwplay v0.3.1/go.mod h1:xf0+TnsU08sOIEK/ezCUtjYYdp73S6uNJuuhmupAvic=
 github.com/uidbz/tie v0.7.5-0.20261028181745-502ad56c5a2f h1:GAt+ozCddLWkXbxkZtPO4YNWdD/6RwVx8xFN7vfxvrw=
