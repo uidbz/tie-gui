@@ -16,6 +16,7 @@ These clients are how you browse, view, play, and organize that data.
 | **tie-view** | Network image viewer for tie collections. Tag filtering with include/exclude semantics, co-tag refinement, in-app image tagging, virtual filesystem navigation, server-cached thumbnails. |
 | **tie-fm** | Twin-panel file manager. Local files and `tie:` locations side by side; copy/move/delete locally, tag files *and directories* in tie, browse USB drives and MTP phones. |
 | **tie-audio** | Tag-driven audio player for tie collections. |
+| **tie-browser** | Point-and-click scene browser: declarative pages, tie media components, and an in-place visual designer (F4). |
 
 All four are built on the [Fyne](https://fyne.io) toolkit and run on Linux,
 Windows, macOS, and Android.
@@ -65,6 +66,7 @@ cd tie-gui
 # …or, after a plain clone:
 git submodule update --init
 
+go build ./cmd/tie-browser         # scene browser + designer
 go build ./cmd/imgview            # local image viewer
 go build ./cmd/tie-view           # tie network viewer
 go build ./cmd/tie-fm             # file manager
@@ -138,6 +140,20 @@ listing spans more than one page (2000 entries each). Delete works on both
 local and `tie:` rows; for tie it removes the tree references and leaves the
 content blob to the filehost's retention policy (see
 [docs/TIE-FM-DELETE.md](docs/TIE-FM-DELETE.md)).
+
+### tie-browser — scenes and point-and-click pages
+
+```sh
+tie-browser                       # home scene (tie:/scenes/home)
+tie-browser -home tie:/scenes/house/living-room
+```
+
+Declarative scene pages stored in a tie collection: x/y hotspots, layout
+containers, `tie.*` media components, optional sidecar Risor scripts, and an
+in-place designer (**F4** or the pencil). Saving versions `scene.json`, indexes
+the scene's media (`member-of`) and links (`links-to`), and refreshes its
+thumbnail. Scenes live in directories such as `tie:/scenes/house/living-room/`
+with `scene.json`, optional `page.risor`, and `thumbnail.png`.
 
 ### tie-audio — music in tie
 

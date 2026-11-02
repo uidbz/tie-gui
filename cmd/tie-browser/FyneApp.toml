@@ -1,0 +1,9 @@
+[Details]
+  Icon = "Icon.png"
+  Name = "tie-browser"
+  ID = "com.uidbz.tiebrowser"
+  Version = "0.1.0"
+  Build = 1
+
+[Migrations]
+  fyneDo = true
