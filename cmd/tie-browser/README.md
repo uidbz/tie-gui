@@ -30,8 +30,10 @@ go run ./cmd/tie-browser -config work -collection main
 go run ./cmd/tie-browser -home tie:/scenes/house/living-room
 ```
 
-The first run creates `tie:/scenes/home` with a starter page. Opening tie media
-uses the system handler; playback can later route through pwplay/mpv.
+The first run creates `tie:/scenes/home` with a starter page. `tie.audio`
+`play` actions stream the blob to a pwplay-server (`-pwplay`, default
+`http://localhost:8080`); images/documents and the `tie.video` card use the
+system handler.
 
 ## Components
 
@@ -43,6 +45,8 @@ automatically; `tie.gallery` runs a live tag query through the collection.
 ## Status
 
 Implemented: scene pages over tie, home scene, F4 designer with tie components
-and assets, save with conflict handling, member/link indexing, thumbnails.
-Roadmap: native pwplay/mpv playback, tag picker/thumbnail asset picker,
-Android touch-first layout, multi-scene story map over the store.
+and assets, save with conflict handling, member/link indexing, thumbnails,
+media/scene asset pickers, pwplay audio playback, and a touch-first designer
+layout. The story map loads linked scenes.
+
+Roadmap: native mpv video surfaces and richer tag/chip pickers.

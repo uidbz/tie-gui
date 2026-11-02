@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/driver/software"
 
+	pwclient "github.com/uidbz/pwplay/client"
 	"github.com/uidbz/tie-gui/tieconfig"
 	"github.com/uidbz/tie/client"
 
@@ -42,6 +43,7 @@ func main() {
 	configName := flag.String("config", "", "tie config name or path")
 	collection := flag.String("collection", "", "tie collection (default: config default)")
 	home := flag.String("home", "", "home scene URL (default tie:/scenes/home)")
+	pwplay := flag.String("pwplay", "http://localhost:8080", "pwplay-server for tie.audio playback")
 	flag.Parse()
 
 	cfg := tieconfig.Load(*configName)
@@ -65,6 +67,9 @@ func main() {
 	}
 
 	tb := newTieBrowser(a, win, tc, store)
+	if *pwplay != "" {
+		tb.pw = pwclient.New(*pwplay)
+	}
 	tb.setHome(homeURL)
 	tb.browser.ShowAndRun()
 }
@@ -81,6 +86,7 @@ type TieBrowser struct {
 	source  string
 	editor  *designer.Editor
 	home    string
+	pw      *pwclient.Client
 }
 
 func newTieBrowser(a fyne.App, win fyne.Window, tc *client.TieClient, store *tiestore.Store) *TieBrowser {
@@ -304,8 +310,28 @@ func (o tieOpener) Open(ref string) {
 	}
 }
 
-func (o tieOpener) Play(ref string) { o.Open(ref) }
-func (o tieOpener) Pause()          {}
+func (o tieOpener) Play(ref string) {
+	hash := strings.TrimPrefix(ref, "tie:")
+	if o.app.pw != nil && len(hash) == 64 {
+		host, err := o.app.tc.ResolveHost("")
+		if err == nil {
+			stream := strings.TrimRight(host.URL, "/") + "/" + hash
+			if err := o.app.pw.AddTracks(stream); err == nil {
+				if err := o.app.pw.Play(); err == nil {
+					o.app.browser.SetStatus("Playing " + hash[:8])
+					return
+				}
+			}
+		}
+	}
+	o.Open(ref)
+}
+
+func (o tieOpener) Pause() {
+	if o.app.pw != nil {
+		_ = o.app.pw.Pause()
+	}
+}
 
 type tieMenu struct{ app *TieBrowser }
 
