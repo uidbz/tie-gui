@@ -133,6 +133,13 @@ func (t *TieBrowser) pickMedia(current string, done func(string, bool)) {
 						items = append(items, f)
 					}
 				}
+				if len(items) > 0 {
+					refs := make([]string, len(items))
+					for i, f := range items {
+						refs[i] = "tie:" + f.Hash
+					}
+					t.assets.Prefetch(context.Background(), refs)
+				}
 				gw.Refresh()
 				gw.ScrollToTop()
 			})

@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/software"
 	"fyne.io/fyne/v2/widget"
 
@@ -57,6 +58,9 @@ func main() {
 	}
 	tc := client.NewTieClientFor(cfg, name)
 	store := tiestore.New(tc)
+	store.OnIndexError = func(err error) {
+		log.Printf("tie-browser: scene index: %v", err)
+	}
 
 	a := app.NewWithID(appID)
 	win := a.NewWindow("tie-browser")
@@ -458,12 +462,77 @@ func (o tieOpener) Pause() {
 	}
 }
 
+// editScript opens the scene's sidecar script in a plain editor. The script
+// runs after the data-only page is on screen, so a broken edit never blanks
+// the page; saving reloads the scene.
+func (t *TieBrowser) editScript() {
+	if t.browser.IsEditing() {
+		t.browser.SetStatus("Finish editing the page before changing its script")
+		return
+	}
+	p := t.browser.CurrentPage()
+	if p == nil || p.Kind != browser.KindScene || !p.Writable {
+		t.browser.SetStatus("This page has no editable script")
+		return
+	}
+	doc, err := scene.Decode(p.Body)
+	if err != nil {
+		t.browser.SetStatus("Cannot edit script: " + err.Error())
+		return
+	}
+	name := doc.Script
+	if name == "" {
+		name = tiestore.DefaultScriptName
+	}
+	entry := widget.NewMultiLineEntry()
+	entry.SetText(string(p.Script))
+	entry.SetPlaceHolder("// page.risor — runs after the data-only page is on screen.\n// page.Node(\"title\").SetText(\"Hello\")")
+	entry.SetMinRowsVisible(18)
+	version := p.Version
+	d := dialog.NewCustomConfirm("Edit page script", "Save", "Cancel", entry, func(save bool) {
+		if !save {
+			return
+		}
+		src := entry.Text
+		go t.saveScript(p.URL, doc, name, src, version)
+	}, t.window.FyneWindow)
+	d.Resize(fyne.NewSize(820, 620))
+	d.Show()
+}
+
+func (t *TieBrowser) saveScript(ref string, doc *scene.Document, name, src, version string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Write the script first; then point the scene at it when it had none.
+	if err := t.store.SaveScript(ctx, ref, path.Base(name), []byte(src)); err != nil {
+		guithread.Do(func() { t.browser.SetStatus("Script save failed: " + err.Error()) })
+		return
+	}
+	if doc.Script == "" {
+		doc.Script = name
+		data, err := scene.Encode(doc)
+		if err != nil {
+			guithread.Do(func() { t.browser.SetStatus("Scene save failed: " + err.Error()) })
+			return
+		}
+		if _, err := t.store.Save(ctx, ref, data, version); err != nil {
+			guithread.Do(func() { t.browser.SetStatus("Scene save failed: " + err.Error()) })
+			return
+		}
+	}
+	guithread.Do(func() {
+		t.browser.SetStatus("Script saved")
+		t.browser.Reload()
+	})
+}
+
 type tieMenu struct{ app *TieBrowser }
 
 func (m tieMenu) GetMenuItems() []browser.MenuItem {
 	return []browser.MenuItem{
 		{Label: "Home", Action: func() { m.app.browser.Navigate(wrapHome(m.app.home)) }},
 		{Label: "Edit Page (Ctrl+E)", Action: func() { m.app.browser.ToggleEdit() }},
+		{Label: "Edit Page Script…", Action: m.app.editScript},
 		{Label: "View Source", Action: func() { m.app.browser.ToggleSourceView() }},
 		{Label: "Quit", Action: func() { m.app.fyneApp.Quit() }},
 	}

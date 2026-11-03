@@ -17,6 +17,9 @@ tie:/scenes/home/
 - **Ctrl+E** (or the pencil) opens the in-place designer; **Done** validates,
   saves, indexes and reloads. **Ctrl+S** saves without leaving, including while
   an inspector field has focus. The page script is stopped while editing.
+- **Menu → Edit Page Script…** edits the sidecar in place. Saving writes
+  `page.risor` (and adds `"script": "page.risor"` to the scene when it had
+  none), then reloads. The page stays usable if the script has errors.
 - A scene renders data-only first. A sidecar script adds behaviour afterwards,
   so a broken script never leaves a blank page (the error is shown in the
   status bar).
@@ -59,8 +62,7 @@ automatically; `tie.gallery` runs a live tag query through the collection.
 Implemented: scene pages over tie, home scene, Ctrl+E/F4 designer with tie
 components and assets, save with conflict handling and a persistent save
 indicator, queued/coalesced saves, member/link indexing, thumbnails,
-media/scene asset pickers, pwplay audio playback, and a touch-first designer
-layout. The story map loads linked scenes.
+media/scene asset pickers, pwplay audio playback, in-place sidecar editing,
+and a touch-first designer layout. The story map loads linked scenes.
 
-Roadmap: native mpv video surfaces, richer tag/chip pickers, and editing the
-sidecar script in place.
+Roadmap: native mpv video surfaces and richer tag/chip pickers.

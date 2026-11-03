@@ -2040,6 +2040,11 @@ navigation.
   persistent `● Unsaved / Saving… / Saved / Save failed` indicator lives in the
   browser status bar (`designer.Options.OnSaveState`). Saves are queued and
   checkpointed, so edits made during a save stay dirty.
+- **Sidecar**: Menu → "Edit Page Script…" edits `page.risor` in a multi-line
+  dialog (refused while the designer is open). Saving writes the script
+  pointer and, when the scene had no `script`, adds `"script": "page.risor"`
+  and saves the document; the page then reloads. Script errors never blank the
+  page (data-only render first).
 - **Thumbnails**: `saveThumbnail` renders a clone of the saved document
   offscreen off the UI thread (bounded wait for async assets, `recover` around
   the software painter) and serializes thumbnail writes in the tie store.
