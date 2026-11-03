@@ -57,6 +57,11 @@ func (t *TieBrowser) pickMedia(current string, done func(string, bool)) {
 		items []client.TaggedFile
 		dlg   *dialog.CustomDialog
 	)
+	// loaded maps a cell's image to the hash it currently shows. GridWrap
+	// recycles cells, and a resource's Name() is the filehost hash with a
+	// ".bin" suffix, so comparing names never matched and every update
+	// reloaded (and briefly blanked) the thumbnail.
+	loaded := make(map[*canvas.Image]string)
 	gw := widget.NewGridWrap(
 		func() int { return len(items) },
 		func() fyne.CanvasObject {
@@ -77,16 +82,20 @@ func (t *TieBrowser) pickMedia(current string, done func(string, bool)) {
 				return
 			}
 			hash := items[id].Hash
-			if img.Resource != nil && img.Resource.Name() == hash {
+			if loaded[img] == hash {
 				return
 			}
+			loaded[img] = hash
+			img.Resource = nil
+			img.Refresh()
 			go func() {
 				res, err := t.assets.Open(context.Background(), "tie:"+hash)
 				guithread.Do(func() {
-					if err == nil {
-						img.Resource = res
-						img.Refresh()
+					if err != nil || loaded[img] != hash {
+						return // recycled while loading: do not show the wrong item
 					}
+					img.Resource = res
+					img.Refresh()
 				})
 			}()
 		},
@@ -102,8 +111,13 @@ func (t *TieBrowser) pickMedia(current string, done func(string, bool)) {
 		done(ref, true)
 	}
 	query := widget.NewEntry()
-	query.SetPlaceHolder("tag query, e.g. family 2014 -private")
-	query.SetText(strings.TrimPrefix(current, "tie:"))
+	placeholder := "tag query, e.g. family 2014 -private"
+	if cur := strings.TrimPrefix(current, "tie:"); cur != "" {
+		// The current value is a content hash, not a tag query: pre-filling it
+		// searched for a tag that never exists.
+		placeholder = "tag query (current: " + cur[:min(8, len(cur))] + "…)"
+	}
+	query.SetPlaceHolder(placeholder)
 	search := widget.NewButton("Search", func() {
 		include, exclude := splitQuery(query.Text)
 		go func() {

@@ -13,6 +13,7 @@ Fyne fork — hence the monorepo.
 | `cmd/tie-fm/` | Twin-panel file manager (local files ↔ tie), folded in from the standalone tie-fm repo; imports the shared `tagselection` widget (its old vendored copy was deleted). Dot-files (leading `.`) are hidden by default; the checkable Menu item "Show hidden files" toggles `Config.ShowHidden` and reloads both panes (`visibleEntries`, applies to every provider); the table's filter/page footer is hidden unless the listing spans more than one 2000-entry page, and `Ctrl+I` (`Cmd+I` on macOS) reveals it and focuses the in-page filter; Delete is offered for local and `tie:` rows, covers the whole multi-selection (the clicked row must be part of it), and tie unlinks triples recursively while leaving blobs to the filehost's retention, see `docs/TIE-FM-DELETE.md`; archives get a context-menu "Extract archive to here" (see "tie-fm archive extraction"); copy/move destination conflicts prompt with a Dolphin-style dialog (see "tie-fm copy/move conflicts"); the context menu also offers "New file…" (backends implementing `fs.FileMaker`, local) and "Open in terminal" (local entries; terminal from `Config.Terminal`, `$TERMINAL`, or the first known emulator in PATH, set in Menu → "Terminal…") |
 | `cmd/tie-fm/internal/` | tie-fm internals: `config`, `fs` (local/tie/mtp providers), `ui` (incl. `preview.go`: per-pane thumbnail grid embedding `gallery`), `widget/tablewidget` |
 | `cmd/tie-audio/` | Tag-driven audio player entry point (`internal/` has its own config/data/history/playback/ui; Home page + play history, see the sections at the end) |
+| `cmd/tie-browser/` | Point-and-click browser/designer for fynerisor scenes stored in tie (see "tie-browser" at the end) |
 | `gallery/` | Shared library: layout engine, tile widget, image view, config |
 | `gallery/gallery.go` | Gallery controller (renamed from imageviewer.go in Phase 1) |
 | `gallery/imageview.go` | Single-image display widget |
@@ -2013,3 +2014,39 @@ rank with directories first; activating a row opens a file or enters a
 directory through the existing `activate` path. Search is offered only when
 the current provider implements `fs.Searcher` (tie); local/MTP panes explain
 that it is unavailable.
+
+---
+
+## tie-browser (`cmd/tie-browser/`)
+
+A browser and in-place designer for [fynerisor](https://github.com/uidbz/fynerisor)
+scenes stored as tie directories: `tie:/scenes/home/` holds `scene.json`
+(versioned in `_prev`), an optional `page.risor` sidecar and a generated
+`thumbnail.png`. The directory DirUID is the scene identity; `(D, scene-doc, H)`
+is the version pointer, `member-of`/`links-to` index presented media and scene
+navigation.
+
+- **Load path**: `loadPage` resolves the tie path, loads the document and (when
+  `script` is set) its sidecar in the navigation goroutine. The starter page is
+  created only when the scene directory does not exist at all; a directory
+  without a document is an error, never overwritten. The window appears before
+  any network work, and failures render an in-page error panel with Retry.
+- **Render path**: `renderScene` puts the data-only view on screen first and
+  runs the sidecar afterwards, so a broken script never blanks the page
+  (validation errors render with a banner). `browser.Page.Dispose` destroys the
+  view when the page is replaced or the editor opens.
+- **Editing**: Ctrl+E or the pencil opens fynerisor's designer (F4 also works
+  while the editor has focus). Done/Ctrl+E go through Save/Discard/Cancel; a
+  persistent `● Unsaved / Saving… / Saved / Save failed` indicator lives in the
+  browser status bar (`designer.Options.OnSaveState`). Saves are queued and
+  checkpointed, so edits made during a save stay dirty.
+- **Thumbnails**: `saveThumbnail` renders a clone of the saved document
+  offscreen off the UI thread (bounded wait for async assets, `recover` around
+  the software painter) and serializes thumbnail writes in the tie store.
+- **Playback**: `tie.audio` taps call the opener; `pwplay.go` replaces the
+  pwplay queue and settles it by content before Play (pwplay applies queue
+  mutations asynchronously and keeps its queue across restarts). Downloads and
+  pwplay calls run off the UI thread.
+- **tie store**: `scene/store/tie` only treats `client.ErrNotFound` as "no
+  document" (a transport error used to look like a conflict or a missing page);
+  `LoadScript`/`SaveScript` keep sidecars inside the scene directory.

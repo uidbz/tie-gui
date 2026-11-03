@@ -14,13 +14,16 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/software"
+	"fyne.io/fyne/v2/widget"
 
 	pwclient "github.com/uidbz/pwplay/client"
 	"github.com/uidbz/tie-gui/tieconfig"
@@ -29,6 +32,7 @@ import (
 	"github.com/uidbz/fynerisor/browser"
 	"github.com/uidbz/fynerisor/designer"
 	"github.com/uidbz/fynerisor/gui"
+	"github.com/uidbz/fynerisor/gui/guithread"
 	guiscene "github.com/uidbz/fynerisor/gui/scene"
 	"github.com/uidbz/fynerisor/scene"
 	"github.com/uidbz/fynerisor/scene/render"
@@ -62,9 +66,6 @@ func main() {
 	if homeURL == "" {
 		homeURL = "tie:/scenes/home"
 	}
-	if err := ensureHomeScene(context.Background(), store, homeURL); err != nil {
-		log.Println("tie-browser: home scene:", err)
-	}
 
 	tb := newTieBrowser(a, win, tc, store)
 	if *pwplay != "" {
@@ -92,6 +93,9 @@ type TieBrowser struct {
 func newTieBrowser(a fyne.App, win fyne.Window, tc *client.TieClient, store *tiestore.Store) *TieBrowser {
 	reg := renderbuiltin.NewRegistry()
 	tieassets.Register(reg, tc)
+	// The indexer only records asset-kind props as scene members; without the
+	// schema it also swept in collection/directory UIDs.
+	store.Schema = reg.Registry
 	t := &TieBrowser{
 		fyneApp: a,
 		tc:      tc,
@@ -125,11 +129,17 @@ func (t *TieBrowser) setHome(home string) {
 	t.browser.SetHomeURL(wrapHome(home))
 }
 
+// wrapHome turns a scene path into a tie: URL. "tie:scenes/home" (no slash) is
+// opaque to net/url and rejected by the store, so always keep the slash form.
 func wrapHome(home string) string {
+	home = strings.TrimSpace(home)
 	if strings.HasPrefix(home, "tie:") || strings.HasPrefix(home, "http") || strings.HasPrefix(home, "file:") {
 		return home
 	}
-	return "tie:" + home
+	if strings.HasPrefix(home, "/") {
+		return "tie:" + home
+	}
+	return "tie:/" + home
 }
 
 // GetCurrentSource implements browser.SourceViewProvider.
@@ -141,20 +151,42 @@ func (t *TieBrowser) loadPage(ctx context.Context, rawURL, _, _ string) (*browse
 		return nil, fmt.Errorf("tie-browser can only load tie: pages, got %q", rawURL)
 	}
 	snap, err := t.store.Load(ctx, ref)
+	if errors.Is(err, scene.ErrNotFound) && ref == wrapHome(t.home) {
+		// Create the starter page only when the scene directory does not exist
+		// at all. A directory that exists but has no pointer is an error (the
+		// document was lost), not an invitation to overwrite it.
+		if uid, uidErr := t.tc.DirUIDFromPath(ref); uidErr == nil && uid == "" {
+			if createErr := ensureHomeScene(ctx, t.store, ref); createErr != nil {
+				return nil, createErr
+			}
+			snap, err = t.store.Load(ctx, ref)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	t.source = string(snap.Data)
-	return &browser.Page{URL: ref, Kind: browser.KindScene, Body: snap.Data, Version: snap.Version, Writable: true}, nil
+	doc, decErr := scene.Decode(snap.Data)
+	if decErr != nil {
+		return nil, decErr
+	}
+	var script []byte
+	var scriptErr error
+	if doc.Script != "" {
+		// Sidecars live inside the scene directory. Load them here, on the
+		// navigation goroutine, never on the UI thread.
+		script, _, scriptErr = t.store.LoadScript(ctx, ref, path.Base(doc.Script))
+	}
+	return &browser.Page{
+		URL: ref, Kind: browser.KindScene, Body: snap.Data, Version: snap.Version,
+		Writable: true, Script: script, ScriptErr: scriptErr,
+	}, nil
 }
 
 func (t *TieBrowser) renderScene(br *browser.Browser, p *browser.Page) error {
+	t.source = string(p.Body)
 	doc, issues, err := scene.DecodeValidated(p.Body, t.reg.Registry)
 	if err != nil {
 		return err
-	}
-	if scene.Errors(issues) > 0 {
-		return fmt.Errorf("scene validation: %s", firstIssue(issues))
 	}
 	cfg := guiscene.Config{
 		Registry: t.reg, Assets: t.assets,
@@ -167,17 +199,27 @@ func (t *TieBrowser) renderScene(br *browser.Browser, p *browser.Page) error {
 	if err != nil {
 		return err
 	}
+	p.Dispose = page.View().Destroy
+
+	// Put the data-only page on screen before running the script: a script
+	// error must not leave a blank page, and scenes work without scripts.
+	view := page.CanvasObject()
+	if scene.Errors(issues) > 0 {
+		banner := widget.NewLabel("Scene has validation problems: " + firstIssue(issues))
+		banner.Wrapping = fyne.TextWrapWord
+		view = container.NewBorder(banner, nil, nil, nil, view)
+	}
+	content := t.window.GetContentContainer()
+	content.Objects = []fyne.CanvasObject{view}
+	content.Refresh()
+
+	if p.ScriptErr != nil {
+		log.Printf("tie-browser: sidecar script %s: %v", p.URL, p.ScriptErr)
+		br.SetStatus("Scene script unavailable: " + p.ScriptErr.Error())
+	}
 	script := "window.SetContent(page)\n"
-	if doc.Script != "" {
-		ref, err := scene.ResolveRef(p.URL, doc.Script)
-		if err != nil {
-			return err
-		}
-		snap, err := t.store.Load(context.Background(), ref)
-		if err != nil {
-			return fmt.Errorf("sidecar %s: %w", ref, err)
-		}
-		script = string(snap.Data) + "\nwindow.SetContent(page)\n"
+	if len(p.Script) > 0 {
+		script = string(p.Script) + "\n" + script
 	}
 	br.Window().LoadScript(script)
 	br.Window().ExecuteWith(map[string]any{
@@ -188,32 +230,62 @@ func (t *TieBrowser) renderScene(br *browser.Browser, p *browser.Page) error {
 }
 
 // saveThumbnail renders the saved scene offscreen and stores a preview blob.
-// Rendering happens on the UI thread; the upload runs in the background.
+// It runs off the UI thread: a save must never block on rendering, and a
+// software-painter panic must not take the app down right after a save.
 func (t *TieBrowser) saveThumbnail(ref string, doc *scene.Document) {
-	view := render.NewView(doc, render.Options{Registry: t.reg, Assets: t.assets, Mode: render.ModePlay, Base: ref})
-	canvas := software.NewCanvas()
-	canvas.SetContent(view)
-	size := fyne.NewSize(320, 200)
-	canvas.Resize(size)
-	view.Resize(size)
-	capture, ok := canvas.(interface{ Capture() image.Image })
-	if !ok {
-		return
-	}
-	img := capture.Capture()
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return
-	}
-	data := buf.Bytes()
+	clone := doc.Clone()
 	go func() {
+		var (
+			view *render.View
+			c    fyne.Canvas
+		)
+		guithread.DoAndWait(func() {
+			view = render.NewView(clone, render.Options{
+				Registry: t.reg, Assets: t.assets, Mode: render.ModePlay, Base: ref,
+			})
+			sw := software.NewCanvas()
+			sw.SetContent(view)
+			size := fyne.NewSize(640, 400)
+			sw.Resize(size)
+			view.Resize(size)
+			c = sw
+		})
+		// Give asynchronous asset loads a bounded moment to land. The preview
+		// is best-effort; the page itself is unaffected.
+		time.Sleep(300 * time.Millisecond)
+		var (
+			data []byte
+			err  error
+		)
+		guithread.DoAndWait(func() {
+			defer func() {
+				if p := recover(); p != nil {
+					err = fmt.Errorf("thumbnail: %v", p)
+				}
+			}()
+			capture, ok := c.(interface{ Capture() image.Image })
+			if !ok {
+				err = errors.New("thumbnail: canvas cannot capture")
+				return
+			}
+			var buf bytes.Buffer
+			if encErr := png.Encode(&buf, capture.Capture()); encErr != nil {
+				err = encErr
+				return
+			}
+			data = buf.Bytes()
+		})
+		guithread.Do(func() { view.Destroy() })
+		if err != nil {
+			log.Printf("tie-browser: thumbnail: %v", err)
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := t.store.SaveThumbnail(ctx, ref, data); err != nil {
 			log.Printf("tie-browser: thumbnail: %v", err)
 		}
 	}()
-	view.Destroy()
 }
 
 func firstIssue(issues []scene.Issue) string {
@@ -226,6 +298,27 @@ func firstIssue(issues []scene.Issue) string {
 		return issues[0].String()
 	}
 	return "unknown"
+}
+
+// setSaveState maps the designer's save lifecycle onto the browser's
+// persistent indicator.
+func (t *TieBrowser) setSaveState(s designer.SaveState, err error) {
+	switch s {
+	case designer.SaveDirty:
+		t.browser.SetSaveState("● Unsaved")
+	case designer.SaveSaving:
+		t.browser.SetSaveState("Saving…")
+	case designer.SaveSaved:
+		t.browser.SetSaveState("Saved")
+	case designer.SaveFailed:
+		if err != nil {
+			t.browser.SetSaveState("Save failed")
+		} else {
+			t.browser.SetSaveState("Save failed")
+		}
+	default:
+		t.browser.SetSaveState("")
+	}
 }
 
 // tieEditor implements browser.EditorProvider.
@@ -244,13 +337,20 @@ func (e *tieEditor) Open(p *browser.Page, br *browser.Browser) fyne.CanvasObject
 	ed := designer.New(doc, designer.Options{
 		Registry:  e.app.reg,
 		Assets:    e.app.assets,
+		Embed:     &render.StoreResolver{Store: e.app.store},
 		Store:     e.app.store,
 		Ref:       p.URL,
 		Version:   p.Version,
 		Window:    br.Window().FyneWindow,
 		Navigator: tieNav{e.app}, Opener: tieOpener{e.app},
-		Status:    br.SetStatus,
-		AssetPick: e.app.pickAsset,
+		Status: br.SetStatus,
+		OnDirty: func(dirty bool) {
+			if dirty {
+				br.SetSaveState("● Unsaved")
+			}
+		},
+		OnSaveState: e.app.setSaveState,
+		AssetPick:   e.app.pickAsset,
 		OnClose: func(reload bool) {
 			e.app.editor = nil
 			br.CloseEditor(reload)
@@ -268,6 +368,14 @@ func (e *tieEditor) BeforeLeave(done func(ok bool)) {
 		return
 	}
 	e.app.editor.BeforeLeave(done)
+}
+
+// RequestClose is called when the user toggles edit mode (pencil / Ctrl+E /
+// F4). Route it through the designer's save prompt instead of discarding.
+func (e *tieEditor) RequestClose() {
+	if e.app.editor != nil && !e.app.editor.Closed() {
+		e.app.editor.RequestClose()
+	}
 }
 
 func (e *tieEditor) EditorClosed() {
@@ -289,20 +397,30 @@ type tieOpener struct{ app *TieBrowser }
 func (o tieOpener) Open(ref string) {
 	if strings.HasPrefix(ref, "tie:") {
 		hash := strings.TrimPrefix(ref, "tie:")
-		dir, err := os.UserCacheDir()
-		if err != nil {
-			dir = os.TempDir()
+		if len(hash) != 64 {
+			o.app.browser.SetStatus("Cannot open " + ref)
+			return
 		}
-		dir = filepath.Join(dir, "tie-browser")
-		_ = os.MkdirAll(dir, 0o755)
-		dest := filepath.Join(dir, hash)
-		if _, err := os.Stat(dest); err != nil {
-			if err := o.app.tc.Download("", hash, dest); err != nil {
-				o.app.browser.SetStatus("Open failed: " + err.Error())
-				return
+		// Download off the UI thread: a video or camera original is large, and
+		// the system handler must not freeze the window.
+		go func() {
+			dir, err := os.UserCacheDir()
+			if err != nil {
+				dir = os.TempDir()
 			}
-		}
-		_ = fyne.CurrentApp().OpenURL(&url.URL{Scheme: "file", Path: filepath.ToSlash(dest)})
+			dir = filepath.Join(dir, "tie-browser")
+			_ = os.MkdirAll(dir, 0o755)
+			dest := filepath.Join(dir, hash)
+			if _, statErr := os.Stat(dest); statErr != nil {
+				if dlErr := o.app.tc.Download("", hash, dest); dlErr != nil {
+					guithread.Do(func() { o.app.browser.SetStatus("Open failed: " + dlErr.Error()) })
+					return
+				}
+			}
+			guithread.Do(func() {
+				_ = fyne.CurrentApp().OpenURL(&url.URL{Scheme: "file", Path: filepath.ToSlash(dest)})
+			})
+		}()
 		return
 	}
 	if u, err := url.Parse(ref); err == nil {
@@ -312,24 +430,31 @@ func (o tieOpener) Open(ref string) {
 
 func (o tieOpener) Play(ref string) {
 	hash := strings.TrimPrefix(ref, "tie:")
-	if o.app.pw != nil && len(hash) == 64 {
-		host, err := o.app.tc.ResolveHost("")
-		if err == nil {
-			stream := strings.TrimRight(host.URL, "/") + "/" + hash
-			if err := o.app.pw.AddTracks(stream); err == nil {
-				if err := o.app.pw.Play(); err == nil {
-					o.app.browser.SetStatus("Playing " + hash[:8])
-					return
-				}
-			}
-		}
+	if o.app.pw == nil || len(hash) != 64 {
+		o.Open(ref)
+		return
 	}
-	o.Open(ref)
+	go func() {
+		host, err := o.app.tc.ResolveHost("")
+		if err != nil {
+			guithread.Do(func() { o.app.browser.SetStatus("Play failed: " + err.Error()) })
+			return
+		}
+		stream := strings.TrimRight(host.URL, "/") + "/" + hash
+		if err := playNow(o.app.pw, stream); err != nil {
+			guithread.Do(func() {
+				o.app.browser.SetStatus("Play failed: " + err.Error())
+				o.Open(ref)
+			})
+			return
+		}
+		guithread.Do(func() { o.app.browser.SetStatus("Playing " + hash[:8]) })
+	}()
 }
 
 func (o tieOpener) Pause() {
 	if o.app.pw != nil {
-		_ = o.app.pw.Pause()
+		go func() { _ = o.app.pw.Pause() }()
 	}
 }
 
@@ -338,13 +463,14 @@ type tieMenu struct{ app *TieBrowser }
 func (m tieMenu) GetMenuItems() []browser.MenuItem {
 	return []browser.MenuItem{
 		{Label: "Home", Action: func() { m.app.browser.Navigate(wrapHome(m.app.home)) }},
-		{Label: "Edit Page", Action: func() { m.app.browser.ToggleEdit() }},
+		{Label: "Edit Page (Ctrl+E)", Action: func() { m.app.browser.ToggleEdit() }},
 		{Label: "View Source", Action: func() { m.app.browser.ToggleSourceView() }},
 		{Label: "Quit", Action: func() { m.app.fyneApp.Quit() }},
 	}
 }
 
-// ensureHomeScene creates a starter scene on first run.
+// ensureHomeScene creates a starter scene on first run. Callers must have
+// verified that the scene directory does not exist.
 func ensureHomeScene(ctx context.Context, store *tiestore.Store, home string) error {
 	ref := wrapHome(home)
 	if _, err := store.Load(ctx, ref); err == nil || !errors.Is(err, scene.ErrNotFound) {
@@ -361,16 +487,17 @@ func ensureHomeScene(ctx context.Context, store *tiestore.Store, home string) er
 			},
 			Children: []*scene.Node{
 				{ID: "title", Type: "label", Place: scene.Place{X: 80, Y: 70, W: 700, H: 60},
+					Style: &scene.Style{Fg: "#f8fafc"},
 					Props: map[string]any{"text": "tie-browser", "bold": true}},
 				{ID: "hint", Type: "label", Place: scene.Place{X: 80, Y: 150, W: 900, H: 120},
-					Props: map[string]any{"text": "A point-and-click browser for tie scenes. Press F4 or the pencil to edit this page, add hotspots and tie media from the palette, then Done to save.", "wrap": "word"}},
-				{ID: "edit-hint", Type: "label", Place: scene.Place{X: 80, Y: 320, W: 700, H: 40},
-					Props: map[string]any{"text": "Press F4 or the pencil to edit this page."}},
+					Style: &scene.Style{Fg: "#cbd5e1"},
+					Props: map[string]any{"text": "A point-and-click browser for tie scenes. Press Ctrl+E (or the pencil) to edit this page, add hotspots and tie media from the palette, then Done to save.", "wrap": "word"}},
+				{ID: "edit-hint", Type: "label", Place: scene.Place{X: 80, Y: 320, W: 900, H: 40},
+					Style: &scene.Style{Fg: "#cbd5e1"},
+					Props: map[string]any{"text": "Ctrl+E toggles the designer; Ctrl+S saves while editing."}},
 			},
 		},
 	}
-	// The edit button uses the browser's own edit command; scene actions cannot
-	// call it, so a slot/script example is left to the editor.
 	data, err := scene.Encode(doc)
 	if err != nil {
 		return err

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"image"
 	"testing"
 	"time"
 
@@ -10,14 +12,18 @@ import (
 	"fyne.io/fyne/v2/test"
 	"github.com/uidbz/tie/client"
 
+	"github.com/uidbz/fynerisor/browser"
 	"github.com/uidbz/fynerisor/gui"
 	"github.com/uidbz/fynerisor/scene"
 	tiestore "github.com/uidbz/fynerisor/scene/store/tie"
 )
 
 func TestWrapHome(t *testing.T) {
-	if got := wrapHome("scenes/home"); got != "tie:scenes/home" {
+	if got := wrapHome("scenes/home"); got != "tie:/scenes/home" {
 		t.Fatalf("wrapHome = %q", got)
+	}
+	if got := wrapHome("/scenes/home"); got != "tie:/scenes/home" {
+		t.Fatalf("wrapHome absolute = %q", got)
 	}
 	if got := wrapHome("tie:/scenes/home"); got != "tie:/scenes/home" {
 		t.Fatalf("wrapHome kept = %q", got)
@@ -87,6 +93,62 @@ func TestRenderHomeScene(t *testing.T) {
 	}
 	st, err := tb.window.State()
 	t.Fatalf("scene did not become ready: %s %v page=%v", st, err, tb.browser.CurrentPage())
+}
+
+// TestRenderSceneShowsContentWithoutScript is the end-to-end regression for
+// the blank page: the data-only scene must be on screen before (and even if)
+// the sidecar script fails, and its nodes must actually paint.
+func TestRenderSceneShowsContentWithoutScript(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	w.Resize(fyne.NewSize(400, 300))
+
+	cfg := client.TestingConfig()
+	tc := client.NewTieClient(cfg) // no request: rendering must not need the server
+	store := tiestore.New(tc)
+	tb := newTieBrowser(a, w, tc, store)
+
+	doc := &scene.Document{
+		Format: scene.Format,
+		Root: &scene.Node{
+			ID: "root", Type: "free",
+			Props: map[string]any{"designW": 100.0, "designH": 100.0, "scale": "none", "letterbox": "#000000"},
+			Children: []*scene.Node{{
+				ID: "box", Type: "rect", Place: scene.Place{X: 10, Y: 10, W: 40, H: 40},
+				Props: map[string]any{"fill": "#ff0000"},
+			}},
+		},
+	}
+	body, err := scene.Encode(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &browser.Page{
+		URL: "tie:/scenes/test", Kind: browser.KindScene, Body: body, Version: "v1",
+		Writable: true, ScriptErr: errors.New("broken sidecar"),
+	}
+	if err := tb.renderScene(tb.browser, p); err != nil {
+		t.Fatal(err)
+	}
+	if len(tb.window.GetContentContainer().Objects) == 0 {
+		t.Fatal("render failed but left no content")
+	}
+	capable, ok := w.Canvas().(interface{ Capture() image.Image })
+	if !ok {
+		t.Skip("test canvas has no Capture")
+	}
+	img := capable.Capture()
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			if r > 0xc000 && g < 0x4000 && b < 0x4000 {
+				return // the red node painted somewhere in the page area
+			}
+		}
+	}
+	t.Fatal("scene node painted no pixels")
 }
 
 func TestSplitQuery(t *testing.T) {
