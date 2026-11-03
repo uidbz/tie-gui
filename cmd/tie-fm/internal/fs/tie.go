@@ -130,6 +130,7 @@ func (t *TieFS) Search(ctx context.Context, query string, offset, limit int) ([]
 	if err != nil {
 		return nil, 0, err
 	}
+	parentPaths := make(map[string]string)
 	entries := make([]Entry, 0, len(matches))
 	for _, m := range matches {
 		attrs := m.Attributes
@@ -141,6 +142,12 @@ func (t *TieFS) Search(ctx context.Context, query string, offset, limit int) ([]
 			name = firstAttribute(attrs, client.RelName)
 		}
 		rawPath := firstAttribute(attrs, client.RelPath)
+		if rawPath == "" && !isDir {
+			// tie:/-tree files carry parent+filename rather than a path
+			// triple (path belongs to the import tree); resolve the parent
+			// directory's tie:/ path to locate the hit.
+			rawPath = parentScopedPath(ctx, t.tc, attrs[string(client.RelParent)], name, parentPaths)
+		}
 		if rawPath == "" {
 			continue
 		}
@@ -175,6 +182,31 @@ func firstAttribute(attrs map[string][]string, relation client.Relation) string 
 	for _, v := range attrs[string(relation)] {
 		if v != "" {
 			return v
+		}
+	}
+	return ""
+}
+
+// parentScopedPath locates a tie:/-tree hit: such files carry parent +
+// filename rather than a path triple, so the parent directory's own path
+// (a tie:/ URI, set when the tree node was created) scoped by the file's
+// name is the location. A parent UID may sit under several dirs; the first
+// one with a path wins. cache keeps one Get per parent per search.
+func parentScopedPath(ctx context.Context, tc *client.TieClient, parents []string, name string, cache map[string]string) string {
+	if name == "" || len(parents) == 0 {
+		return ""
+	}
+	for _, p := range parents {
+		pp, ok := cache[p]
+		if !ok {
+			pp = ""
+			if row, err := tc.GetContext(ctx, p); err == nil {
+				pp = firstAttribute(row.Attributes, client.RelPath)
+			}
+			cache[p] = pp
+		}
+		if pp != "" {
+			return pp + "/" + name
 		}
 	}
 	return ""
