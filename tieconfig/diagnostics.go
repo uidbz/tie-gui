@@ -68,8 +68,12 @@ func targetSummary(cfg client.Config, key string) string {
 		hostLine += " · fast host preferred: " + url
 	}
 
-	return fmt.Sprintf("Effective: %s · namespace %q · collection %q · user %s\nFilehost: %s",
+	summary := fmt.Sprintf("Effective: %s · namespace %q · collection %q · user %s\nFilehost: %s",
 		store, namespace, collection, user, hostLine)
+	if r.Username == "" && r.Password == "" {
+		summary += "\nAuth: none — set a username/password if the server requires them."
+	}
+	return summary
 }
 
 // testConnection checks the resolved triplestore and filehost for a collection
