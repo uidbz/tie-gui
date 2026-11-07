@@ -402,8 +402,10 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.player.AddView(a.albumNow)
 	// Let the browse page reach the queue page regardless of layout, so
 	// play/enqueue actions update the queue view optimistically even in the
-	// compact layout (where enableAlbumDragToQueue is not wired).
+	// compact layout (where enableAlbumDragToQueue is not wired), and jump to
+	// the playlist as soon as a play/enqueue action is pressed.
 	a.browse.queue = a.queue
+	a.browse.showPlaylist = a.showQueueView
 	// The Settings tab lives in the sidebar (Tags / Files / Settings, like
 	// tie-view); the same tab item is reused to open the settings view.
 	settingsTab := a.buildSettingsTab()

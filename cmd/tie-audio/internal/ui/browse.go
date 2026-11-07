@@ -144,6 +144,10 @@ type browsePage struct {
 	// queue is the desktop playlist page, used to draw the drop indicator and
 	// insert a dragged album at a position. Set alongside queuePanel.
 	queue *queuePage
+	// showPlaylist opens the playlist full-screen in the compact layout (in
+	// the regular layout it just focuses the already-visible pane). Set by the
+	// App shell so play/enqueue actions can jump there immediately.
+	showPlaylist func()
 	// dragAlbum / dragGhost track an in-flight cover→queue drag: the album picked
 	// up and the floating label shown under the cursor as the drag cue.
 	dragAlbum data.Album

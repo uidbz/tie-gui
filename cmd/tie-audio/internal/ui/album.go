@@ -80,11 +80,11 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 	back := widget.NewButtonWithIcon("Albums", theme.NavigateBackIcon(), b.showBrowse)
 
 	playBtn := widget.NewButtonWithIcon("Play album", theme.MediaPlayIcon(), func() {
-		b.playTracks(tracks, 0)
+		b.playAlbumAndShow(tracks)
 	})
 	playBtn.Importance = widget.HighImportance
 	queueBtn := widget.NewButtonWithIcon("Add to playlist", theme.ContentAddIcon(), func() {
-		b.enqueueTracks(tracks)
+		b.enqueueAndShow(tracks)
 	})
 	if err != nil || len(tracks) == 0 {
 		playBtn.Disable()
@@ -267,14 +267,14 @@ func (b *browsePage) streamable(tracks []data.Track) (urls []string, meta []data
 // starts playback. Selecting a track plays from that track. The queue view is
 // told about the replacement up front (noteQueueReplaced), so the new queue
 // shows immediately instead of when the server's asynchronous replace lands.
-func (b *browsePage) playTracks(tracks []data.Track, start int) {
+func (b *browsePage) playTracks(tracks []data.Track, start int) bool {
 	if start < 0 || start >= len(tracks) {
 		start = 0
 	}
 	urls, meta := b.streamable(tracks[start:])
 	if len(urls) == 0 {
 		b.reportPlaybackError(errors.New("no streamable tracks (is a filehost configured?)"))
-		return
+		return false
 	}
 	b.transport.SetQueue(urls, meta)
 	if b.queue != nil {
@@ -288,16 +288,35 @@ func (b *browsePage) playTracks(tracks []data.Track, start int) {
 			fyne.Do(func() { b.reportPlaybackError(err) })
 		}
 	}()
+	return true
+}
+
+// playAlbumAndShow opens the playlist first and then starts the album, so the
+// press gives immediate feedback even when the queue page has a large table to
+// rebuild. The backend call itself stays on its own goroutine.
+func (b *browsePage) playAlbumAndShow(tracks []data.Track) {
+	if b.showPlaylist != nil {
+		b.showPlaylist()
+	}
+	b.playTracks(tracks, 0)
+}
+
+// jumpToPlaylist opens the playlist without starting playback; used by actions
+// whose track list still has to be loaded in the background.
+func (b *browsePage) jumpToPlaylist() {
+	if b.showPlaylist != nil {
+		b.showPlaylist()
+	}
 }
 
 // enqueueTracks appends the album's tracks to the current queue. The queue
 // view is told about the addition up front (noteEnqueued), so the tracks
 // appear immediately instead of at the next status poll.
-func (b *browsePage) enqueueTracks(tracks []data.Track) {
+func (b *browsePage) enqueueTracks(tracks []data.Track) bool {
 	urls, meta := b.streamable(tracks)
 	if len(urls) == 0 {
 		b.reportPlaybackError(errors.New("no streamable tracks (is a filehost configured?)"))
-		return
+		return false
 	}
 	b.transport.AppendQueue(urls, meta)
 	if b.queue != nil {
@@ -311,6 +330,16 @@ func (b *browsePage) enqueueTracks(tracks []data.Track) {
 			fyne.Do(func() { b.reportPlaybackError(err) })
 		}
 	}()
+	return true
+}
+
+// enqueueAndShow opens the playlist first and then appends the tracks, so the
+// press gives immediate feedback.
+func (b *browsePage) enqueueAndShow(tracks []data.Track) {
+	if b.showPlaylist != nil {
+		b.showPlaylist()
+	}
+	b.enqueueTracks(tracks)
 }
 
 // albumInsertAt loads an album's tracks off the UI goroutine, then inserts them
@@ -353,6 +382,9 @@ func (b *browsePage) showAlbumMenu(obj fyne.CanvasObject, a data.Album) {
 // albumAction loads an album's tracks off the UI goroutine, then plays or
 // enqueues them.
 func (b *browsePage) albumAction(a data.Album, play bool) {
+	// Jump immediately; the track list is still loaded in the background. The
+	// playlist then updates optimistically as soon as the tracks arrive.
+	b.jumpToPlaylist()
 	go func() {
 		tracks, err := b.sess().AlbumTracks(a)
 		fyne.Do(func() {

@@ -171,10 +171,12 @@ const (
 //   - the volume slider, always visible.
 //
 // The seek slider stays Now-Playing-only: a phone has no room for a bar wide
-// enough to seek accurately, and the hairline progress under the bar covers
-// "how far in". Tapping the cover opens the playlist (onCover; the App routes
-// it to Now Playing when the playlist is already on screen); tapping or
-// swiping up anywhere else on the strip opens Now Playing (onOpen).
+// enough to seek accurately, and the hairline progress at the top of the bar
+// covers "how far in". It sits above the cover/transport row, directly under
+// the playlist content, rather than below the volume row. Tapping the cover
+// opens the playlist (onCover; the App routes it to Now Playing when the
+// playlist is already on screen); tapping or swiping up anywhere else on the
+// strip opens Now Playing (onOpen).
 type miniBar struct {
 	object   *fyne.Container
 	cover    *coverView
@@ -225,8 +227,8 @@ func newMiniBar(p *player, onOpen, onCover func()) *miniBar {
 	// opens Now Playing without stealing the controls.
 	opener := newTapArea(onOpen, onOpen)
 	b.object = container.NewBorder(
-		nil,
 		b.progress,
+		nil,
 		nil, nil,
 		container.NewStack(opener, container.NewVBox(row, b.title, b.volRow)),
 	)
@@ -304,10 +306,10 @@ func fraction(position, duration float64) float64 {
 	}
 }
 
-// thinProgress is a few pixels of non-interactive playback progress drawn under
-// the mini bar. widget.ProgressBar is text-height and interactive-looking; this
-// is a hairline that reads as "how far into the track" without inviting a drag
-// that the bar is too narrow to make accurate.
+// thinProgress is a few pixels of non-interactive playback progress drawn above
+// the mini bar, directly under the playlist. widget.ProgressBar is text-height
+// and interactive-looking; this is a hairline that reads as "how far into the
+// track" without inviting a drag that the bar is too narrow to make accurate.
 type thinProgress struct {
 	widget.BaseWidget
 	fraction float64

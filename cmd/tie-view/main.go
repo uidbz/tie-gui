@@ -259,7 +259,8 @@ func main() {
 		galleryGen.Add(1) // supersede every in-flight gallery fetch
 		fsTree.reset()    // drop cached listings/readers of the old collection
 	}
-	viewer.Sidebar = makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger, quickEditor, activeCollection, onSwitchCollection, onCollectionChanged)
+	sidebar := makeSidebar(myWindow, viewer, tieClient, fsTree, browseDir, tagger, quickEditor, activeCollection, onSwitchCollection, onCollectionChanged)
+	viewer.Sidebar = sidebar
 	// On a phone-width window the sidebar is a slide-over drawer rather than a
 	// split pane: a split leaves the tag list and the grid both too narrow to
 	// use. The bottom bar's sidebar button opens it, and picking a tag or a
@@ -267,6 +268,15 @@ func main() {
 	// made once here — tie-view has no shell that re-composes on resize, so a
 	// rotation keeps the layout it started with.
 	viewer.SidebarDrawer = platform.CompactLayout(myWindow.Canvas().Size().Width)
+	// A right swipe from the grid pulls in the tags drawer (the same gesture
+	// tie-audio uses), and a left swipe dismisses it. Select the Tags tab so
+	// the gesture always lands on tags even after the user visited Files or
+	// Settings. In the split layout OpenSidebar/CloseSidebar are no-ops.
+	viewer.OnSwipeRight = func() {
+		sidebar.SelectIndex(0)
+		viewer.OpenSidebar()
+	}
+	viewer.OnSwipeLeft = viewer.CloseSidebar
 
 	viewer.Init()
 	myWindow.Canvas().SetOnTypedKey(viewer.KeyPress)

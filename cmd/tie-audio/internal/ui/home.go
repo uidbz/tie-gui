@@ -209,7 +209,7 @@ func (h *homeView) trackTile(t data.Track) fyne.CanvasObject {
 			menu := fyne.NewMenu("",
 				fyne.NewMenuItem("Play from album", func() { h.page.playFromAlbum(album, track) }),
 				fyne.NewMenuItem("Play track", func() { h.page.playTracks([]data.Track{track}, 0) }),
-				fyne.NewMenuItem("Add track to playlist", func() { h.page.enqueueTracks([]data.Track{track}) }),
+				fyne.NewMenuItem("Add track to playlist", func() { h.page.enqueueAndShow([]data.Track{track}) }),
 				fyne.NewMenuItem("Open album", func() { h.page.openAlbum(album) }),
 			)
 			pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(obj)

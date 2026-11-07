@@ -82,7 +82,13 @@ func newNowPlayingPage(p *player, back func()) *nowPlayingPage {
 	// A swipe down over the cover leaves the page, mirroring the swipe up that
 	// opened it from the mini bar.
 	coverArea := container.NewStack(newSwipeDownArea(back), container.NewPadded(n.cover.object))
-	body := container.New(nowPlayingLayout{}, coverArea, container.NewCenter(bottom))
+	// The controls column must span its whole area: wrapping it in NewCenter
+	// sizes it to the transport buttons' MinSize, which caps both sliders to
+	// the width of the play controls instead of the screen. Spacers keep the
+	// block vertically centered in landscape while letting the VBox stretch
+	// horizontally in both orientations.
+	controlsColumn := container.NewVBox(layout.NewSpacer(), bottom, layout.NewSpacer())
+	body := container.New(nowPlayingLayout{}, coverArea, controlsColumn)
 
 	n.object = container.NewBorder(header, nil, nil, nil, body)
 	return n
