@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -344,53 +345,46 @@ func main() {
 	case localNone:
 		if arg != "" {
 			go loadTieURL(myWindow, viewer, tieClient.get(), fsTree, browseDir, arg)
-		} else if viewer.Platform().IsMobile() {
-			// Try /DCIM/Camera first (typical Android camera directory), then /DCIM,
-			// then fall back to root if neither exists. DirUIDFromPath and showDir
-			// are network calls, so they must not run on the main thread: with a
-			// dead server the timeout-less tie HTTP client would hang startup
-			// (ANR) for minutes. ChangeGallery below runs via fyne.Do once the
-			// listing is in.
+			break
+		}
+		// Startup page (Settings → Startup): favorites (the default, images
+		// tagged "favorite"), the latest imports, a chosen tag, or a blank
+		// gallery. An explicit -tag flag overrides the configured page for this
+		// launch.
+		page := myApp.Preferences().StringWithFallback(prefStartupPage, startupFavorites)
+		tagName := myApp.Preferences().String(prefStartupTag)
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "tag" {
+				page = startupTag
+				tagName = *tieTag
+			}
+		})
+		if viewer.Platform().IsMobile() {
+			// A phone often starts in its camera import tree. Try
+			// /DCIM/Camera and /DCIM first; when the collection has neither,
+			// fall back to the configured startup page rather than showing the
+			// virtual root (which usually holds only subdirectories). The
+			// lookups and the page load are network calls, so they must not
+			// run on the UI goroutine.
 			go func() {
 				tc := tieClient.get()
 				dir := "/DCIM/Camera"
-				if uid, err := tc.DirUIDFromPath(dir); err != nil || uid == "" {
+				uid, err := tc.DirUIDFromPath(dir)
+				if err != nil || uid == "" {
 					dir = "/DCIM"
-					if uid, err := tc.DirUIDFromPath(dir); err != nil || uid == "" {
-						dir = "/"
-					}
+					uid, err = tc.DirUIDFromPath(dir)
 				}
-				// showDir is fully asynchronous: it fetches the listing off
-				// the UI goroutine and applies gallery + selection in one
-				// fyne.Do pass, so no ChangeGallery here.
-				fsTree.showDir(dir, "")
+				if err == nil && uid != "" {
+					// showDir is fully asynchronous: it fetches the listing off
+					// the UI goroutine and applies gallery + selection in one
+					// fyne.Do pass, so no ChangeGallery here.
+					fsTree.showDir(dir, "")
+					return
+				}
+				applyStartupPage(viewer, tc, browseDir, page, tagName)
 			}()
 		} else {
-			// Desktop startup page (Settings → Startup): favorites (the default,
-			// images tagged "favorite"), the latest imports, a chosen tag, or a
-			// blank gallery. An explicit -tag flag overrides the configured page
-			// for this launch.
-			page := myApp.Preferences().StringWithFallback(prefStartupPage, startupFavorites)
-			tagName := myApp.Preferences().String(prefStartupTag)
-			flag.Visit(func(f *flag.Flag) {
-				if f.Name == "tag" {
-					page = startupTag
-					tagName = *tieTag
-				}
-			})
-			switch page {
-			case startupNone:
-				// Leave the gallery empty until a tag is picked.
-			case startupLatest:
-				latestFromTie(viewer, tieClient.get(), browseDir)
-			case startupTag:
-				if tagName != "" {
-					readFromTie(viewer, tieClient.get(), []string{tagName}, nil, "tag", browseDir)
-				}
-			default: // startupFavorites
-				readFromTie(viewer, tieClient.get(), []string{"favorite"}, nil, "tag", browseDir)
-			}
-			// readFromTie(viewer, tieClient.get(), []string{"4"}, nil, "rating", browseDir)
+			applyStartupPage(viewer, tieClient.get(), browseDir, page, tagName)
 		}
 	}
 
@@ -448,6 +442,34 @@ func fileHostNames(c client.Config) []string {
 	return names
 }
 
+// tagLoadError turns a tags-registry read error into a user-facing message.
+// ErrNotFound means the collection is reachable but has no tags yet, which is
+// a normal empty state rather than a connection failure.
+func tagLoadError(err error) string {
+	if errors.Is(err, client.ErrNotFound) {
+		return "No tags yet in this collection."
+	}
+	return "Tags unavailable: " + err.Error()
+}
+
+// applyStartupPage fills the gallery with the configured startup page. It is
+// shared by desktop startup and the mobile fallback used when a collection has
+// no /DCIM tree.
+func applyStartupPage(viewer *gallery.Gallery, tc *client.TieClient, browseDir func(client.DirUID), page, tagName string) {
+	switch page {
+	case startupNone:
+		// Leave the gallery empty until a tag is picked.
+	case startupLatest:
+		latestFromTie(viewer, tc, browseDir)
+	case startupTag:
+		if tagName != "" {
+			readFromTie(viewer, tc, []string{tagName}, nil, "tag", browseDir)
+		}
+	default: // startupFavorites
+		readFromTie(viewer, tc, []string{"favorite"}, nil, "tag", browseDir)
+	}
+}
+
 // makeSidebar builds the navigation sidebar: the first tab browses images
 // by tag, the second navigates the tie virtual filesystem, the third holds
 // the connection and quick tag settings. onSwitchCollection rebinds the live
@@ -455,9 +477,18 @@ func fileHostNames(c client.Config) []string {
 // one in the settings editor; onCollectionChanged runs after either, once
 // the tag list reload has been kicked off.
 func makeSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, fsTree *tieFSTree, browseDir func(client.DirUID), tagger *imageTagger, quickEditor fyne.CanvasObject, activeCollection func() string, onSwitchCollection func(client.Config, string), onCollectionChanged func()) *container.AppTabs {
-	tagWidget, reloadTags := makeTagSidebar(window, viewer, ref, browseDir, tagger)
+	tagWidget, reloadTags, refreshGallery := makeTagSidebar(window, viewer, ref, browseDir, tagger, fsTree.refresh)
+	// Pull-to-refresh on the grid retries both feeds: the tag registry and
+	// the tree. This is the recovery path when the app started before the
+	// network was ready and the first fetches failed. Keep the tag selection
+	// so the current query is re-run against the recovered connection.
+	viewer.OnPullRefresh = func() {
+		reloadTags(false)
+		refreshGallery()
+		fsTree.refresh()
+	}
 	onApply := func() {
-		reloadTags()
+		reloadTags(true)
 		if onCollectionChanged != nil {
 			onCollectionChanged()
 		}
@@ -519,14 +550,15 @@ var sortModeOptions = []struct {
 // current selection (faceted refinement via CoTagsForQueryExcludingInput).
 // Clearing the selection restores the original full list.
 //
-// It returns the widget and a reloadTags function. reloadTags clears the
-// current selection and tag lists and re-fetches tags from the (possibly
-// reconfigured) live client — call it after switching profiles.
+// It returns the widget, a reloadTags function and a refreshGallery function.
+// reloadTags clears the current selection when clearSelection is true (a
+// collection switch) or keeps it (pull-to-refresh) while re-fetching tags from
+// the live client. refreshGallery re-runs the current tag/rating query.
 //
 // tagger, when non-nil, receives the full tag list via SetAllTags whenever
 // the tag list is (re-)loaded. This keeps the image-tagger search trie in
 // sync with the sidebar's tag list without a separate network request.
-func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, browseDir func(client.DirUID), tagger *imageTagger) (fyne.CanvasObject, func()) {
+func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, browseDir func(client.DirUID), tagger *imageTagger, refreshTree func()) (fyne.CanvasObject, func(bool), func()) {
 	ts := tagselection.NewTagSelection(window)
 	// Sidebar uses include/exclude filtering, so show the checkbox.
 	ts.ShowIncludeExclude = true
@@ -609,12 +641,24 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, br
 		refreshGallery()
 	})
 
+	// connStatus/retryBtn make a failed tag fetch actionable: the tag list
+	// label stays short, while the actual error (DNS, auth, empty collection)
+	// is shown here with a retry that re-reads the registry.
+	connStatus := widget.NewLabel("")
+	connStatus.Wrapping = fyne.TextWrapWord
+	connStatus.Hide()
+	var retryBtn *widget.Button
+	retryBtn = widget.NewButton("Retry", nil)
+	retryBtn.Hide()
+
 	controls := container.NewVBox(
 		container.NewGridWithColumns(2,
 			container.NewBorder(nil, nil, widget.NewLabel("Rating"), nil, ratingSelect),
 			container.NewBorder(nil, nil, widget.NewLabel("Sort"), nil, sortSelect),
 		),
 		untaggedBtn,
+		connStatus,
+		retryBtn,
 	)
 
 	// allTags is the full tag list and starred the tie favorites from the
@@ -716,13 +760,17 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, br
 		tagger.OnStarChanged = setStarred
 	}
 
-	// reloadTags clears the widget state and re-fetches tags from tc.
-	// Safe to call at any time; the network fetch runs in a goroutine.
-	reloadTags := func() {
+	// reloadTags re-fetches tags from the live client. clearSelection drops the
+	// current tag selection (a collection switch); pull-to-refresh keeps it so
+	// refreshGallery can re-run the same query. Safe to call at any time; the
+	// network fetch runs in a goroutine.
+	reloadTags := func(clearSelection bool) {
 		gen := tagsGen.Add(1)
 		coTagsGen.Add(1) // also drop any in-flight co-tag reply
 		fyne.Do(func() {
-			ts.ClearSelected()
+			if clearSelection {
+				ts.ClearSelected()
+			}
 			ts.ClearAllTags()
 			ts.ClearFavorites()
 			ts.SetStarred(nil)
@@ -730,16 +778,27 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, br
 			starred = nil
 			allFavoritesLabel = ""
 			ts.SetListLabel("Loading…")
+			connStatus.Hide()
+			retryBtn.Hide()
 		})
 		go func() {
 			tc := ref.get()
 			row, err := tc.Get(string(client.RelTags))
 			if err != nil {
 				fmt.Println("Error getting tags:", err)
+				msg := tagLoadError(err)
+				label := "Error loading tags"
+				if errors.Is(err, client.ErrNotFound) {
+					label = "No tags yet"
+				}
 				fyne.Do(func() {
-					if gen == tagsGen.Load() {
-						ts.SetListLabel("Error loading tags")
+					if gen != tagsGen.Load() {
+						return
 					}
+					ts.SetListLabel(label)
+					connStatus.SetText(msg)
+					connStatus.Show()
+					retryBtn.Show()
 				})
 				return
 			}
@@ -747,6 +806,8 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, br
 				if gen != tagsGen.Load() {
 					return // superseded by a newer reload (collection switch)
 				}
+				connStatus.Hide()
+				retryBtn.Hide()
 				allTags = client.RowValues(row, client.RelAll)
 				for _, tag := range allTags {
 					ts.AddTag(tag)
@@ -767,7 +828,14 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, br
 		}()
 	}
 
-	reloadTags() // initial load
+	retryBtn.OnTapped = func() {
+		reloadTags(true)
+		if refreshTree != nil {
+			refreshTree()
+		}
+	}
+
+	reloadTags(true) // initial load
 
 	ts.OnSelectedChanged = func() {
 		in, ex := ts.SelectedTags()
@@ -838,7 +906,7 @@ func makeTagSidebar(window fyne.Window, viewer *gallery.Gallery, ref *tieRef, br
 	}
 
 	sidebar := container.NewBorder(controls, nil, nil, nil, ts)
-	return sidebar, reloadTags
+	return sidebar, reloadTags, refreshGallery
 }
 
 // openTieVideo opens a libmpv video player window for a tie video entry.

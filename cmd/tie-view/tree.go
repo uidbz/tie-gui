@@ -348,6 +348,19 @@ func (t *tieFSTree) reset() {
 	t.tree.Refresh()
 }
 
+// refresh drops cached listings (including cached failures) and re-fetches the
+// root. Unlike reset it keeps the per-hash readers and does not bump the
+// gallery, so a pull-to-refresh can recover the Files tree without changing
+// what the grid is showing.
+func (t *tieFSTree) refresh() {
+	t.mu.Lock()
+	t.dirs = make(map[string]*client.Directory)
+	t.loading = make(map[string]bool)
+	t.mu.Unlock()
+	t.tree.Refresh()
+	t.kickFetch("/")
+}
+
 // readDirFor returns the (cached) listing of the directory at dirPath
 // through tc. A path not tied to any DirUID yields an empty listing.
 // Failures are cached too: otherwise a dead server makes the tree widget

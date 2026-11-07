@@ -2,6 +2,7 @@ package tieconfig
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -183,5 +184,79 @@ func TestEditorApplySwitchesCollection(t *testing.T) {
 	tc := client.NewTieClientFor(saved, saved.DefaultCollection)
 	if info := tc.CollectionInfo(); info.CollectionId != "audio" {
 		t.Fatalf("client bound collection = %q, want audio", info.CollectionId)
+	}
+}
+
+func TestEnsureCollectionsCopiesTopLevel(t *testing.T) {
+	cfg := client.Config{
+		TripleStoreURL:     "http://ts:1161",
+		Namespace:          "NS",
+		Collection:         "Main",
+		Username:           "user",
+		Password:           "pass",
+		WebserviceInsecure: true,
+		DefaultFileHosts:   []string{"host"},
+		FileHosts:          map[string]client.FileHost{"host": {URL: "http://host:1162"}},
+	}
+	ensureCollections(&cfg)
+
+	e, ok := cfg.Collections["Main"]
+	if !ok {
+		t.Fatalf("synthesized collections = %+v, want Main", cfg.Collections)
+	}
+	if e.TripleStoreURL != "http://ts:1161" || e.Namespace != "NS" || e.Username != "user" ||
+		e.Password != "pass" || !e.Insecure || len(e.FileHosts) != 1 {
+		t.Fatalf("synthesized entry lost top-level fallbacks: %+v", e)
+	}
+}
+
+func TestEditorShowsEffectiveTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	cfg := twoCollectionConfig()
+	// Leave the audio entry's URL and namespace empty so they inherit the
+	// top-level values; the form's raw fields would look blank.
+	cfg.Collections["audio"] = client.CollectionEntry{
+		Collection: "audio",
+		FileHosts:  []string{"default"},
+	}
+	if err := conf.WriteConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := client.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	editor := Editor(loaded, path, "audio", nil, nil)
+	test.NewApp()
+	w := test.NewWindow(editor)
+	defer w.Close()
+
+	var target *widget.Label
+	walk(editor, func(o fyne.CanvasObject) {
+		if label, ok := o.(*widget.Label); ok && strings.HasPrefix(label.Text, "Effective:") {
+			target = label
+		}
+	})
+	if target == nil {
+		t.Fatal("effective target label not found")
+	}
+	for _, want := range []string{"http://images:1161", `namespace "Collections"`, `collection "audio"`} {
+		if !strings.Contains(target.Text, want) {
+			t.Fatalf("target label = %q, want it to contain %q", target.Text, want)
+		}
+	}
+}
+
+func TestTargetSummaryWarnsAboutDirectFile(t *testing.T) {
+	got := targetSummary(client.Config{
+		TripleStoreURL:  "http://ts:1161",
+		TripleStoreFile: "/tmp/images.tie",
+	}, "")
+	for _, want := range []string{"local file", "/tmp/images.tie", "ignored"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("targetSummary = %q, want it to contain %q", got, want)
+		}
 	}
 }

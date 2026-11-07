@@ -3,6 +3,7 @@ package tieconfig
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -66,9 +67,18 @@ func Editor(cfg client.Config, savePath, active string, onSelect func(name strin
 	hostInsecure := widget.NewCheck("", nil)
 
 	status := widget.NewLabel("")
+	status.Wrapping = fyne.TextWrapWord
+	target := widget.NewLabel("")
+	target.Wrapping = fyne.TextWrapWord
+
+	// refreshTarget is assigned after formConfig exists; loadIntoForm calls it
+	// so programmatic form fills keep the effective-target line in step.
+	var refreshTarget func()
 
 	// loadIntoForm shows a collection's stored values (raw, without top-level
-	// fallbacks) so the form reflects what the file actually holds.
+	// fallbacks) so the form reflects what the file actually holds. The
+	// effective-target line below the form shows the values a client resolves,
+	// including those inherited from the top level.
 	loadIntoForm := func(key string) {
 		e := cfg.Collections[key]
 		collKey.SetText(key)
@@ -87,6 +97,9 @@ func Editor(cfg client.Config, savePath, active string, onSelect func(name strin
 		hostUser.SetText(h.Username)
 		hostPass.SetText(h.Password)
 		hostInsecure.SetChecked(h.Insecure)
+		if refreshTarget != nil {
+			refreshTarget()
+		}
 	}
 
 	dropdown := widget.NewSelect(collectionKeys(cfg), nil)
@@ -110,6 +123,80 @@ func Editor(cfg client.Config, savePath, active string, onSelect func(name strin
 			}
 		}
 	}
+
+	// formConfig builds the config the form currently describes, without
+	// writing it. rename removes the old collection key when the user changed
+	// the name; display/test calls keep both so a half-typed name does not
+	// discard the selected entry from the in-memory copy.
+	formConfig := func(rename bool) (client.Config, string) {
+		oldKey := dropdown.Selected
+		key := strings.TrimSpace(collKey.Text)
+		if key == "" {
+			key = oldKey
+		}
+
+		out := clone(cfg)
+		var hosts []string
+		if name := strings.TrimSpace(hostName.Text); name != "" {
+			hosts = []string{name}
+		}
+		if rename && key != oldKey {
+			delete(out.Collections, oldKey)
+		}
+		out.Collections[key] = client.CollectionEntry{
+			Namespace:      namespace.Text,
+			Collection:     collectionID.Text,
+			TripleStoreURL: triplestoreURL.Text,
+			Username:       username.Text,
+			Password:       password.Text,
+			Insecure:       triplestoreInsecure.Checked,
+			FileHosts:      hosts,
+		}
+		out.DefaultCollection = key
+
+		if name := strings.TrimSpace(hostName.Text); name != "" {
+			out.FileHosts[name] = client.FileHost{
+				URL:      hostURL.Text,
+				Store:    hostStore.Text,
+				Username: hostUser.Text,
+				Password: hostPass.Text,
+				Insecure: hostInsecure.Checked,
+			}
+		}
+		return out, key
+	}
+
+	// clearDBBtn appears only when the config pins a local .tie database, which
+	// takes precedence over the triplestore URL. On a phone that file is usually
+	// not present, so the URL settings would be silently ignored.
+	var clearDBBtn *widget.Button
+	clearDBBtn = widget.NewButton("Clear local database file", func() {
+		cfg.TripleStoreFile = ""
+		clearDBBtn.Hide()
+		refreshTarget()
+		status.SetText("Local database file cleared; Apply to save.")
+	})
+	clearDBBtn.Hide()
+
+	refreshTarget = func() {
+		out, key := formConfig(false)
+		target.SetText(targetSummary(out, key))
+		if out.TripleStoreFile != "" {
+			clearDBBtn.Show()
+		} else {
+			clearDBBtn.Hide()
+		}
+	}
+
+	for _, entry := range []*widget.Entry{
+		collKey, namespace, collectionID, triplestoreURL, username, password,
+		hostName, hostURL, hostStore, hostUser, hostPass,
+	} {
+		entry.OnChanged = func(string) { refreshTarget() }
+	}
+	triplestoreInsecure.OnChanged = func(bool) { refreshTarget() }
+	hostInsecure.OnChanged = func(bool) { refreshTarget() }
+	refreshTarget()
 
 	addBtn := widget.NewButton("+", func() {
 		base := "new-collection"
@@ -162,52 +249,36 @@ func Editor(cfg client.Config, savePath, active string, onSelect func(name strin
 		widget.NewFormItem("Skip filehost TLS verify", hostInsecure),
 	)
 
+	var testBtn *widget.Button
+	testBtn = widget.NewButton("Test connection", func() {
+		// Snapshot the form before leaving the UI goroutine; widgets must not
+		// be read from the test worker.
+		out, key := formConfig(false)
+		testBtn.Disable()
+		status.SetText("Testing connection…")
+		go func() {
+			report := testConnection(out, key)
+			fyne.Do(func() {
+				status.SetText(report)
+				testBtn.Enable()
+				refreshTarget()
+			})
+		}()
+	})
+
 	applyBtn := widget.NewButton("Apply connection", func() {
-		oldKey := dropdown.Selected
-		key := collKey.Text
-		if key == "" {
-			key = oldKey
-		}
+		saved, key := formConfig(true)
 
-		var hosts []string
-		if hostName.Text != "" {
-			hosts = []string{hostName.Text}
-		}
-		entry := client.CollectionEntry{
-			Namespace:      namespace.Text,
-			Collection:     collectionID.Text,
-			TripleStoreURL: triplestoreURL.Text,
-			Username:       username.Text,
-			Password:       password.Text,
-			Insecure:       triplestoreInsecure.Checked,
-			FileHosts:      hosts,
-		}
-		if key != oldKey {
-			delete(cfg.Collections, oldKey)
-		}
-		cfg.Collections[key] = entry
-		cfg.DefaultCollection = key
-
-		if hostName.Text != "" {
-			cfg.FileHosts[hostName.Text] = client.FileHost{
-				URL:      hostURL.Text,
-				Store:    hostStore.Text,
-				Username: hostUser.Text,
-				Password: hostPass.Text,
-				Insecure: hostInsecure.Checked,
-			}
-			// The collection entry's own FileHosts already names this host; do
-			// not touch the shared top-level DefaultFileHosts.
-		}
-
-		if err := conf.WriteConfig(savePath, cfg); err != nil {
+		if err := conf.WriteConfig(savePath, saved); err != nil {
 			status.SetText("Save failed: " + err.Error())
 			return
 		}
+		cfg = saved
 
 		dropdown.Options = collectionKeys(cfg)
 		dropdown.Refresh()
 		setSelected(key)
+		refreshTarget()
 
 		if onApply != nil {
 			onApply(clone(cfg))
@@ -215,7 +286,10 @@ func Editor(cfg client.Config, savePath, active string, onSelect func(name strin
 		status.SetText("Saved to " + savePath)
 	})
 
-	return container.NewVScroll(container.NewVBox(collRow, form, applyBtn, status))
+	return container.NewVScroll(container.NewVBox(
+		collRow, form, target, clearDBBtn,
+		container.NewHBox(testBtn, applyBtn), status,
+	))
 }
 
 // collectionKeys returns the config's collection names, sorted.
@@ -242,9 +316,13 @@ func ensureCollections(cfg *client.Config) {
 	}
 	cfg.Collections = map[string]client.CollectionEntry{
 		name: {
-			Namespace:  cfg.Namespace,
-			Collection: cfg.Collection,
-			FileHosts:  cfg.DefaultFileHosts,
+			Namespace:      cfg.Namespace,
+			Collection:     cfg.Collection,
+			TripleStoreURL: cfg.TripleStoreURL,
+			Username:       cfg.Username,
+			Password:       cfg.Password,
+			Insecure:       cfg.WebserviceInsecure,
+			FileHosts:      cfg.DefaultFileHosts,
 		},
 	}
 	if cfg.DefaultCollection == "" {

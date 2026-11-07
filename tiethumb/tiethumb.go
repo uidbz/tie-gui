@@ -65,14 +65,18 @@ func New(tie func() *client.TieClient, host func() client.FileHost, tileWidth in
 }
 
 // FileHost resolves the filehost used to fetch tie content: the "fast" host
-// when configured, otherwise the first configured default host. It is the
-// flag-free variant of tie-view's tieFileHost, suitable for embedding apps
+// when configured, otherwise the first host the active collection resolves to
+// (its own FileHosts, falling back to the top-level DefaultFileHosts). It is
+// the flag-free variant of tie-view's tieFileHost, suitable for embedding apps
 // that have no -host flag.
 func FileHost(tc *client.TieClient) client.FileHost {
+	if tc == nil {
+		return client.FileHost{}
+	}
 	if host, ok := tc.Config.FileHosts["fast"]; ok {
 		return host
 	}
-	for _, name := range tc.Config.DefaultFileHosts {
+	for _, name := range tc.ResolveHosts(nil) {
 		if host, ok := tc.Config.FileHosts[name]; ok {
 			return host
 		}
