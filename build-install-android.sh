@@ -47,8 +47,8 @@ fi
 
 app_id() {
     case "$1" in
-        imgview) echo "sr.ht.uid.imgview" ;;
-        tie-view) echo "sr.ht.uid.tieview" ;;
+        imgview) echo "github.com.uidbz.imgview" ;;
+        tie-view) echo "github.com.uidbz.tieview" ;;
         tie-audio) echo "github.com.uidbz.tieaudio" ;;
         *) echo "error: unknown app '$1' (expected imgview, tie-view or tie-audio)" >&2; exit 1 ;;
     esac

@@ -253,7 +253,7 @@ func (c *coverCell) set(img image.Image) {
 
 func (c *coverCell) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(container.NewStack(
-		canvas.NewRectangle(placeholderCoverColor),
+		canvas.NewRectangle(placeholderCoverColor()),
 		c.img,
 	))
 }

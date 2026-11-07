@@ -178,7 +178,7 @@ func main() {
 	configPath := gallery.ConfigFlag("imgview config file to load (default: config.toml in user config dir)")
 	flag.Parse()
 
-	myApp, myWindow := gallery.NewApp("sr.ht.uid.imgview", "imgview", icon)
+	myApp, myWindow := gallery.NewApp("github.com.uidbz.imgview", "imgview", icon)
 
 	config := gallery.LoadConfig(myWindow, gallery.NormalizeConfigPath(*configPath))
 

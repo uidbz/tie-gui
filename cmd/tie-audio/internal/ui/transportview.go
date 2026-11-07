@@ -22,8 +22,11 @@ const (
 )
 
 // placeholderCoverColor is the neutral square shown for an album with no
-// artwork; it matches the cover wall's placeholder tiles.
-var placeholderCoverColor = color.NRGBA{R: 48, G: 48, B: 56, A: 255}
+// artwork; it matches the cover wall's placeholder tiles. It is resolved at
+// draw time because theme.Color needs a running app.
+func placeholderCoverColor() color.Color {
+	return theme.Color(theme.ColorNameInputBackground)
+}
 
 // coverView displays album art with a neutral placeholder behind it, so a
 // track whose album has no cover (or whose cover has not loaded yet) still
@@ -39,7 +42,7 @@ type coverView struct {
 func newCoverView(size float32) *coverView {
 	c := &coverView{img: &canvas.Image{FillMode: canvas.ImageFillContain, ScaleMode: canvas.ImageScaleFastest}}
 	c.img.Hide()
-	stack := container.NewStack(canvas.NewRectangle(placeholderCoverColor), c.img)
+	stack := container.NewStack(canvas.NewRectangle(placeholderCoverColor()), c.img)
 	if size > 0 {
 		c.object = container.NewGridWrap(fyne.NewSize(size, size), stack)
 	} else {

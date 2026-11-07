@@ -28,6 +28,7 @@ import (
 
 	pwclient "github.com/uidbz/pwplay/client"
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tiestyle"
 	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/fynerisor/browser"
@@ -42,7 +43,7 @@ import (
 	tiestore "github.com/uidbz/fynerisor/scene/store/tie"
 )
 
-const appID = "com.uidbz.tiebrowser"
+const appID = "github.com.uidbz.tiebrowser"
 
 func main() {
 	configName := flag.String("config", "", "tie config name or path")
@@ -63,6 +64,7 @@ func main() {
 	}
 
 	a := app.NewWithID(appID)
+	tiestyle.Apply(a)
 	win := a.NewWindow("tie-browser")
 	win.Resize(fyne.NewSize(1280, 820))
 

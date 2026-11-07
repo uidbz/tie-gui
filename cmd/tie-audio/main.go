@@ -17,6 +17,7 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/mpris"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/ui"
+	"github.com/uidbz/tie-gui/tiestyle"
 )
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 	session := data.NewSession(cfg)
 
 	a := app.New()
+	tiestyle.Apply(a)
 	w := a.NewWindow("tie-audio")
 	root := ui.NewApp(w, session)
 	w.SetContent(root.Root())

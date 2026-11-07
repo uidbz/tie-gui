@@ -153,9 +153,9 @@ func (b *navButton) CreateRenderer() fyne.WidgetRenderer {
 		b:         b,
 		indicator: canvas.NewRectangle(color.Transparent),
 		icon:      canvas.NewImageFromResource(nil),
-		text:      canvas.NewText(b.label, color.Black),
+		text:      canvas.NewText(b.label, color.Transparent),
 		badgeBg:   canvas.NewRectangle(color.Transparent),
-		badgeText: canvas.NewText("", color.White),
+		badgeText: canvas.NewText("", color.Transparent),
 	}
 	r.icon.FillMode = canvas.ImageFillContain
 	r.text.Alignment = fyne.TextAlignCenter

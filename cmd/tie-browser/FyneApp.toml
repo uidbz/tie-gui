@@ -1,7 +1,7 @@
 [Details]
   Icon = "Icon.png"
   Name = "tie-browser"
-  ID = "com.uidbz.tiebrowser"
+  ID = "github.com.uidbz.tiebrowser"
   Version = "0.1.0"
   Build = 1
 

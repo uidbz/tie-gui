@@ -49,7 +49,7 @@ func main() {
 		arg = args[0]
 	}
 
-	myApp, myWindow := gallery.NewApp("sr.ht.uid.tieview", "tieview", icon)
+	myApp, myWindow := gallery.NewApp("github.com.uidbz.tieview", "tieview", icon)
 
 	config := gallery.LoadConfig(myWindow, "")
 

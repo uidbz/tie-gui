@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 
 	"github.com/uidbz/tie-gui/tagselection/trie"
+	"github.com/uidbz/tie-gui/tiestyle"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -331,7 +332,7 @@ func NewTagItemData(text string) *TagItemData {
 func NewTagItem(showInclude bool, showStar bool, ts *TagSelection) *TagItem {
 	ti := &TagItem{ts: ts}
 	ti.label = widget.NewLabel("")
-	ti.okColor = color.RGBA{85, 170, 127, 255}
+	ti.okColor = theme.Color(tiestyle.ColorOKWash)
 	ti.background = canvas.NewRectangle(ti.okColor)
 	ti.background.CornerRadius = 5
 
@@ -344,7 +345,7 @@ func NewTagItem(showInclude bool, showStar bool, ts *TagSelection) *TagItem {
 			if b {
 				ti.background.FillColor = ti.okColor
 			} else {
-				ti.background.FillColor = theme.ErrorColor()
+				ti.background.FillColor = theme.Color(tiestyle.ColorErrWash)
 			}
 			ti.background.Refresh()
 			if !ti.settingData && ts.OnSelectedChanged != nil {
@@ -451,15 +452,15 @@ type TagSelection struct {
 	// leaves it false so focus is released and window-level gallery hotkeys
 	// keep working after a tag is picked.
 	KeepSearchFocus bool
-	starredSet         map[string]bool // tags whose star button shows ★
-	tags               *trie.Trie
-	selectedList       *AutoExpandingList
-	quickPickList      *AutoExpandingList
-	listLabel          *widget.Label
-	content            fyne.CanvasObject
-	search             *SearchItem
-	window             fyne.Window
-	caseMap            map[string]string // lowercase tag -> original case
+	starredSet      map[string]bool // tags whose star button shows ★
+	tags            *trie.Trie
+	selectedList    *AutoExpandingList
+	quickPickList   *AutoExpandingList
+	listLabel       *widget.Label
+	content         fyne.CanvasObject
+	search          *SearchItem
+	window          fyne.Window
+	caseMap         map[string]string // lowercase tag -> original case
 
 	// OnMinSizeChanged, when non-nil, is called on the UI goroutine whenever
 	// the widget's MinSize may have changed (search dropdown opened/closed,
@@ -491,10 +492,10 @@ func NewTagChipSelection(window fyne.Window) *TagSelection {
 
 // newChip renders one selected tag as a rounded chip with a remove button.
 func (ts *TagSelection) newChip(tid *TagItemData) fyne.CanvasObject {
-	fill := color.Color(color.RGBA{85, 170, 127, 255})
+	fill := theme.Color(tiestyle.ColorOKWash)
 	text := tid.text
 	if !tid.include {
-		fill = theme.ErrorColor()
+		fill = theme.Color(tiestyle.ColorErrWash)
 		text = "−" + text
 	}
 	bg := canvas.NewRectangle(fill)

@@ -5,6 +5,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -55,7 +56,7 @@ func NewCornerKnob(cornerPosition uint, parent *Region) *CornerKnob {
 		cornerPosition: cornerPosition,
 		parent:         parent,
 	}
-	ck.corner = canvas.NewCircle(color.RGBA{0, 0, 255, 255})
+	ck.corner = canvas.NewCircle(theme.Color(theme.ColorNamePrimary))
 
 	ck.ExtendBaseWidget(ck)
 	return ck
@@ -124,7 +125,7 @@ func (r *Region) CreateRenderer() fyne.WidgetRenderer {
 		topMiddle:    NewCornerKnob(topMiddle, r),
 		bottomMiddle: NewCornerKnob(bottomMiddle, r),
 	}
-	ren.rect.StrokeColor = color.RGBA{255, 20, 20, 255}
+	ren.rect.StrokeColor = theme.Color(theme.ColorNameError)
 	ren.rect.StrokeWidth = 5
 	return ren
 }

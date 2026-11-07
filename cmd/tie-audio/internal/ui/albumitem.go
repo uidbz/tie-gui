@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"image"
-	"image/color"
 	"image/jpeg"
 	"io"
+
+	"fyne.io/fyne/v2/theme"
 
 	"github.com/uidbz/tie-gui/gallery"
 
@@ -97,7 +98,7 @@ func placeholderCover(size int) io.ReadSeeker {
 		size = 300
 	}
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	fill := color.RGBA{R: 48, G: 48, B: 56, A: 255}
+	fill := theme.Color(theme.ColorNameInputBackground)
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
 			img.Set(x, y, fill)

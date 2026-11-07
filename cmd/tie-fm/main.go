@@ -26,11 +26,13 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/ui"
 	"github.com/uidbz/tie-gui/gallery"
 	"github.com/uidbz/tie-gui/tieconfig"
+	"github.com/uidbz/tie-gui/tiestyle"
 	"github.com/uidbz/tie-gui/tiethumb"
 )
 
 func main() {
-	application := app.NewWithID("net.sourcehut.tie-fm")
+	application := app.NewWithID("github.com.uidbz.tiefm")
+	tiestyle.Apply(application)
 	mainWin := application.NewWindow("tie-fm")
 
 	appCfg, cfgErr := config.Load()

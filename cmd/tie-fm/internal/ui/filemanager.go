@@ -289,13 +289,15 @@ func (fm *FileManager) bookmarkCurrent() {
 	}
 }
 
-// activePanelColor is the pastel purple outline of the active panel.
-var activePanelColor = color.NRGBA{R: 179, G: 157, B: 219, A: 255}
+// activePanelColor is the accent outline of the active panel.
+func activePanelColor() color.Color {
+	return theme.Color(theme.ColorNamePrimary)
+}
 
 // SetActive toggles the active-panel highlight.
 func (fm *FileManager) SetActive(active bool) {
 	if active {
-		fm.activeBorder.StrokeColor = activePanelColor
+		fm.activeBorder.StrokeColor = activePanelColor()
 	} else {
 		fm.activeBorder.StrokeColor = color.Transparent
 	}

@@ -2,7 +2,6 @@ package tablewidget
 
 import (
 	_ "embed"
-	"image/color"
 	"strconv"
 	"strings"
 
@@ -187,7 +186,7 @@ func NewTableWidget(title string, pageSize int) *TableWidget {
 	)
 	footer := container.NewBorder(ctx.newFilterWidget(), nil, leftFooter, nil)
 
-	ctx.table.SelectionColor = color.RGBA{85, 85, 85, 128}
+	ctx.table.SelectionColor = theme.Color(theme.ColorNameSelection)
 	ctx.Instance = container.NewBorder(nil, footer, nil, nil, container.NewPadded(ctx.table))
 	ctx.Data = func(offset, limit int) *TableData { return NewTableData("empty") }
 	ctx.RowCount = func() int { return 0 }

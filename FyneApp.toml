@@ -1,7 +1,7 @@
 [Details]
   Icon = "cmd/imgview/Icon.png"
   Name = "imgview"
-  ID = "sr.ht.uid.imgview"
+  ID = "github.com.uidbz.imgview"
   Version = "1.0.0"
   Build = 1
 

@@ -22,6 +22,15 @@ import (
 	"github.com/uidbz/tie/client"
 )
 
+// overlayWash is a translucent theme surface for controls laid over an image.
+// Using the overlay token keeps the pill readable in both light and dark
+// themes instead of hard-coding a black backdrop behind theme-colored text.
+func overlayWash() color.Color {
+	c := color.NRGBAModel.Convert(theme.Color(theme.ColorNameOverlayBackground)).(color.NRGBA)
+	c.A = 170
+	return c
+}
+
 // quickTagIconSize returns the base quick tag button edge length (Size "m").
 func quickTagIconSize(mobile bool) float32 {
 	if mobile {
@@ -120,7 +129,7 @@ func (b *quickTagBar) CreateRenderer() fyne.WidgetRenderer {
 // proportion to the icon size; the tapSink keeps near-miss taps from falling
 // through to the image.
 func (b *quickTagBar) pill(content fyne.CanvasObject) fyne.CanvasObject {
-	bg := canvas.NewRectangle(color.NRGBA{A: 150})
+	bg := canvas.NewRectangle(overlayWash())
 	bg.CornerRadius = 10
 	p := b.iconSize * 0.12
 	if p < theme.Padding() {
@@ -538,7 +547,7 @@ func (b *quickTagBar) setStatus(text string) {
 	if text == "" {
 		b.statusBg.FillColor = color.Transparent
 	} else {
-		b.statusBg.FillColor = color.NRGBA{A: 150}
+		b.statusBg.FillColor = overlayWash()
 	}
 	b.statusBg.Refresh()
 	b.statusBox.Refresh()

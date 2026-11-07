@@ -6,12 +6,15 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+
+	"github.com/uidbz/tie-gui/tiestyle"
 )
 
 // NewApp creates a Fyne application with the given ID, icon, and window title.
 // This factors the common bootstrap pattern shared by imgview and tie-view.
 func NewApp(appID, windowTitle string, iconData []byte) (fyne.App, fyne.Window) {
 	a := app.NewWithID(appID)
+	tiestyle.Apply(a)
 	a.SetIcon(fyne.NewStaticResource("icon", iconData))
 	w := a.NewWindow(windowTitle)
 	return a, w

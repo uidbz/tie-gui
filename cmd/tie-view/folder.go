@@ -7,6 +7,8 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
+
+	"fyne.io/fyne/v2/theme"
 )
 
 // folderIcon renders a simple folder glyph as a PNG of size x size pixels,
@@ -15,9 +17,9 @@ import (
 func folderIcon(size int) io.ReadSeeker {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 
-	body := color.RGBA{250, 205, 105, 255} // folder yellow
-	edge := color.RGBA{160, 120, 45, 255}  // darker outline
-	inner := color.RGBA{255, 232, 170, 255}
+	body := theme.Color(theme.ColorNameWarning) // warm folder accent
+	edge := theme.Color(theme.ColorNameShadow)  // soft outline
+	inner := theme.Color(theme.ColorNameBackground)
 
 	m := size / 8 // margin
 	w := size - 2*m
