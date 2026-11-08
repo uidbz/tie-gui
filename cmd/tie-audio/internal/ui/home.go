@@ -381,7 +381,9 @@ func (b *browsePage) playFromAlbum(a data.Album, t data.Track) {
 			}
 			start := 0
 			for i, x := range tracks {
-				if x.Hash == t.Hash {
+				// A history track carries only the image hash; opening its
+				// album starts at the first cue segment of that image.
+				if x.Key() == t.Key() || (t.Cue == nil && x.Hash == t.Hash) {
 					start = i
 					break
 				}

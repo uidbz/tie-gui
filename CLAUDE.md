@@ -1422,6 +1422,38 @@ embedded cover). Integration configs must set `cfg.DefaultCollection` (not
 just `cfg.Collection`) — `NewTieClient` binds the former, and the library
 default points at the user's real server via their config file.
 
+## tie-audio CUE sheets (`internal/data/cue.go`)
+
+A single-image rip (one FLAC/APE/WAV plus a `.cue`) is one audio blob in tie,
+but the cue describes the album as many tracks. tie-audio downloads and parses
+the cue from the filehost (`ParseCue`: FILE/TRACK/INDEX 00/01, global and
+per-track TITLE/PERFORMER/SONGWRITER, REM GENRE/DATE/
+ALBUMARTIST, multi-FILE sheets, quoted Windows paths), then overlays the sheet
+on the image's track row in `AlbumTracks` (both `audio-dir` and
+`audio-archive`; cue files are unknown-file rows and are found by walking the
+album dir and its plain subdirs, so they need no member-of edge). Covered
+images are replaced by `Track.Cue` entries; titles, artists, album/year,
+track numbers, disc numbers (from cd<N> folders) and durations come from the
+sheet, and files no cue covers keep their ordinary entries. Discovery and
+parsed sheets are cached per session (`Session.ClearCueCache` runs on the
+wall's Reload).
+
+Each logical track shares the image's content hash but has a distinct queue
+key `hash#cue=<start>-<end>` (milliseconds; `Track.Key`, `SplitTrackKey`,
+`TrackKeyFromURL`). The filehost ignores the fragment, so the queue can hold
+several segments of one blob. `player.enforceCueSegment` seeks to a segment's
+start after the backend loads it and advances the queue at its end (the last
+segment stops, or restarts at 0 with repeat-all); `segmentClock` translates
+the backend's whole-blob position/duration into the logical track's clock, and
+`seekTo` translates slider/MPRIS positions back. History records the image
+hash as the subject but classifies with the segment duration and stores a
+segment-relative position. Saved playlists keep the cue key in
+`playlist-track` while `member-of` edges stay on the real image hash
+(`SaveQueueAsPlaylist` rewrites the ordered entries). Each segment is its own
+queue entry, so pwplay downloads the image once per logical track; a future
+single-entry virtual queue (or a backend download cache) would remove that
+cost, but the current backend has no cache to key on.
+
 ---
 
 ## `tagselection.TagSelection` API (`tagselection/tagselection.go`)

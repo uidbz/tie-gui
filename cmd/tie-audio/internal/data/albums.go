@@ -91,6 +91,10 @@ type Track struct {
 	// artwork and playlist grouping key off, so a queue assembled from several
 	// albums can show each album's cover. Empty when tie knows no parent.
 	AlbumUID string
+	// Cue marks a logical track described by a CUE sheet inside Hash's audio
+	// blob (a single-image rip). Several tracks then share Hash but have
+	// distinct Start/End ranges; Key() is their queue identity.
+	Cue *CueSegment
 }
 
 // Display returns the track's label, falling back to its filename.
@@ -121,14 +125,15 @@ func (s *Session) Host() client.FileHost {
 	return client.FileHost{}
 }
 
-// StreamURL is the direct filehost URL for a content hash (baseURL/hash), the
-// value handed to pwplay's AddTracks. Returns "" when no host is configured.
-func (s *Session) StreamURL(hash string) string {
+// StreamURL is the direct filehost URL for a queue key (baseURL/hash, plus a
+// cue fragment for a single-image rip), the value handed to pwplay's
+// AddTracks. Returns "" when no host is configured.
+func (s *Session) StreamURL(key string) string {
 	h := s.Host()
 	if h.URL == "" {
 		return ""
 	}
-	return h.URL + "/" + hash
+	return h.URL + "/" + key
 }
 
 func (s *Session) fetchBlob(hash string) ([]byte, error) {
@@ -835,9 +840,31 @@ func (s *Session) AlbumTracks(a Album) ([]Track, error) {
 	switch a.Kind {
 	case AlbumTrack:
 		t := s.trackFromHash(a.UID)
+		parent := t.AlbumUID
+		if parent != "" {
+			if up := s.discFolderAlbum(parent); up != "" {
+				parent = up // a multi-disc track's parent is its cd<N> folder
+			}
+		}
 		// A standalone track is its own album for artwork purposes.
 		if t.AlbumUID == "" {
 			t.AlbumUID = a.UID
+		}
+		// Opening the image of a cue-described rip from the file tree shows
+		// the sheet's logical tracks, not one long blob.
+		if parent != "" {
+			if d := s.collectAlbumCues(parent); d != nil && len(d.sheets) > 0 {
+				var own []Track
+				for _, x := range mergeCueTracks([]Track{t}, d) {
+					if x.Hash == t.Hash {
+						own = append(own, x)
+					}
+				}
+				if len(own) != 1 || own[0].Cue != nil {
+					sortTracks(own)
+					return own, nil
+				}
+			}
 		}
 		return []Track{t}, nil
 	case AlbumPlaylist:
@@ -868,6 +895,9 @@ func (s *Session) AlbumTracks(a Album) ([]Track, error) {
 			t.AlbumUID = a.UID
 			tracks = append(tracks, t)
 		}
+		// A single-image rip carries a cue sheet describing its logical
+		// tracks; replace the image's one-track entry with them.
+		tracks = mergeCueTracks(tracks, s.collectAlbumCues(a.UID))
 		sortTracks(tracks)
 		return tracks, nil
 	case AlbumArchive:
@@ -1044,15 +1074,25 @@ func trackAlbumUID(parents []string, exclude string) string {
 }
 
 // playlistTracks returns the ordered tracks of a saved playlist (current or
-// legacy): the playlist row, one Expand of its tracks, and (only when
-// uncached) one Expand classifying every distinct album parent as a disc
-// folder — no per-track round trips.
+// legacy): the playlist row, one Expand of its base content hashes, and (only
+// when uncached) one Expand classifying every distinct album parent as a disc
+// folder — no per-track round trips. Cue keys keep their segment identity.
 func (s *Session) playlistTracks(uid string) ([]Track, error) {
 	p, err := s.Tie.ReadPlaylist(uid)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.Tie.Expand(p.Tracks)
+	// Playlist entries may be cue keys (hash#cue=start-end) for tracks from a
+	// single-image rip; tie only knows the image blob, so expand the base
+	// hashes and rebuild the cue identity below.
+	baseHashes := make([]string, 0, len(p.Tracks))
+	for _, key := range p.Tracks {
+		h, _ := SplitTrackKey(key)
+		if h != "" {
+			baseHashes = append(baseHashes, h)
+		}
+	}
+	rows, err := s.Tie.Expand(baseHashes)
 	if err != nil {
 		return nil, err
 	}
@@ -1061,14 +1101,21 @@ func (s *Session) playlistTracks(uid string) ([]Track, error) {
 		byHash[r.Key] = r
 	}
 	tracks := make([]Track, 0, len(p.Tracks))
-	for _, h := range p.Tracks {
+	for _, key := range p.Tracks {
+		h, seg := SplitTrackKey(key)
 		r, ok := byHash[h]
 		if !ok {
-			tracks = append(tracks, Track{Hash: h})
+			tracks = append(tracks, Track{Hash: h, Cue: seg})
 			continue
 		}
 		// Each track keeps its own album (and cover) in the queue.
-		tracks = append(tracks, trackFromRow(r, uid))
+		t := trackFromRow(r, uid)
+		if seg != nil {
+			if ct := s.cueTrackForKey(key, t); ct != nil {
+				t = *ct
+			}
+		}
+		tracks = append(tracks, t)
 	}
 
 	// A track below a disc folder belongs to the album one level up. The
@@ -1144,22 +1191,50 @@ func (s *Session) discCached(uid string) bool {
 	return ok
 }
 
-// SaveQueueAsPlaylist persists an ordered list of track hashes as a new tie
+// SaveQueueAsPlaylist persists an ordered list of queue keys as a new tie
 // playlist (tagged PlaylistTag, so it is browsable alongside the library's
-// tags). It returns the created playlist as an Album.
-func (s *Session) SaveQueueAsPlaylist(name string, trackHashes []string) (Album, error) {
+// tags). Ordinary entries are content hashes; cue segments carry their
+// hash#cue=start-end key so the saved playlist keeps the same logical tracks.
+// It returns the created playlist as an Album.
+func (s *Session) SaveQueueAsPlaylist(name string, trackKeys []string) (Album, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Album{}, errors.New("playlist name is required")
 	}
-	if len(trackHashes) == 0 {
+	if len(trackKeys) == 0 {
 		return Album{}, errors.New("the queue is empty")
 	}
-	uid, err := s.Tie.CreatePlaylist(name, trackHashes, nil)
+	// tie only knows content hashes: create the playlist (and its member-of
+	// edges) from the base hashes, then rewrite the ordered entries with the
+	// cue-aware keys. This keeps duplicate queue entries and leaves no
+	// member-of edge pointing at a virtual key.
+	baseKeys := make([]string, len(trackKeys))
+	hasCue := false
+	for i, key := range trackKeys {
+		h, seg := SplitTrackKey(key)
+		baseKeys[i] = h
+		if seg != nil {
+			hasCue = true
+		}
+	}
+	uid, err := s.Tie.CreatePlaylist(name, baseKeys, nil)
 	if err != nil {
 		return Album{}, err
 	}
-	return Album{UID: uid, Kind: AlbumPlaylist, Title: name, TrackCount: len(trackHashes), AddedAt: time.Now()}, nil
+	if hasCue {
+		entries := make([]string, len(trackKeys))
+		for i, key := range trackKeys {
+			entries[i] = client.PlaylistEntry(i, key)
+		}
+		b := s.Tie.NewBatch()
+		b.Set(uid, string(client.RelPlaylistTrack), entries)
+		b.Set(uid, string(client.RelTrackCount), []string{strconv.Itoa(len(trackKeys))})
+		b.Set(uid, string(client.RelUpdatedAt), []string{client.FormatMediaTime(time.Now())})
+		if _, err := s.Tie.Batch(b); err != nil {
+			return Album{}, err
+		}
+	}
+	return Album{UID: uid, Kind: AlbumPlaylist, Title: name, TrackCount: len(trackKeys), AddedAt: time.Now()}, nil
 }
 
 // MigratePlaylists converts legacy playlists (audio-dirs with fake per-track

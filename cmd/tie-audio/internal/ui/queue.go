@@ -730,9 +730,9 @@ func (q *queuePage) saveQueue() {
 		dialog.ShowInformation("Save playlist", "The playlist is empty.", q.win)
 		return
 	}
-	hashes := make([]string, len(q.playlist))
+	keys := make([]string, len(q.playlist))
 	for i, u := range q.playlist {
-		hashes[i] = path.Base(u)
+		keys[i] = data.TrackKeyFromURL(u)
 	}
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("Playlist name")
@@ -744,14 +744,14 @@ func (q *queuePage) saveQueue() {
 			return
 		}
 		go func() {
-			_, err := q.sess().SaveQueueAsPlaylist(entry.Text, hashes)
+			_, err := q.sess().SaveQueueAsPlaylist(entry.Text, keys)
 			fyne.Do(func() {
 				if err != nil {
 					dialog.ShowError(err, q.win)
 					return
 				}
 				dialog.ShowInformation("Playlist saved",
-					fmt.Sprintf("Saved %d tracks as %q.", len(hashes), entry.Text), q.win)
+					fmt.Sprintf("Saved %d tracks as %q.", len(keys), entry.Text), q.win)
 			})
 		}()
 	}, q.win)

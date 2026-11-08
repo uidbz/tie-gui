@@ -7,7 +7,6 @@ import (
 	"image"
 	"io"
 	"log"
-	"path"
 	"sync/atomic"
 	"time"
 
@@ -327,9 +326,14 @@ func NewApp(win fyne.Window, session *data.Session) *App {
 	a.player = newPlayer(session.Backend, a.covers)
 	// Re-label queue entries whose metadata this app didn't register itself
 	// (e.g. a queue that pwplay kept across an app restart): the queue URL's
-	// last path segment is the tie content hash.
+	// last path segment is the tie content hash, plus any cue segment. Read
+	// the live session so a connection switch is picked up.
 	a.player.SetResolver(func(url string) (data.Track, bool) {
-		return session.TrackForHash(path.Base(url))
+		s := a.live.Load()
+		if s == nil {
+			return data.Track{}, false
+		}
+		return s.TrackForURL(url)
 	})
 
 	// Every transport view stays registered whether or not it is on screen: a

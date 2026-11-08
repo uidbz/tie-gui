@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -68,13 +67,13 @@ type cursor struct {
 
 // Recorder drains play logs into tie. Safe for concurrent Kick/Drain.
 type Recorder struct {
-	opts    Options
-	mu      sync.Mutex // serializes Drain
-	cursors map[string]cursor
-	kick    chan struct{}
-	stop    chan struct{}
-	done    chan struct{}
-	warned  map[string]bool
+	opts     Options
+	mu       sync.Mutex // serializes Drain
+	cursors  map[string]cursor
+	kick     chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
+	warned   map[string]bool
 	stopOnce sync.Once
 }
 
@@ -209,11 +208,22 @@ func (r *Recorder) convert(h playback.History) []tieclient.PlayEvent {
 	var out []tieclient.PlayEvent
 	sess := r.opts.Session()
 	for _, rec := range h.Records {
-		hash := path.Base(rec.URL)
+		// A cue segment's URL carries #cue=start-end; the play still belongs
+		// to the image blob's content hash.
+		hash, seg := data.SplitTrackKey(data.TrackKeyFromURL(rec.URL))
 		if !isHash(hash) {
 			continue
 		}
-		outcome, ok := tieclient.ClassifyPlay(rec.Listened, rec.Duration)
+		track, hasTrack := r.opts.Track(rec.URL)
+		// A cue segment is shorter than its image: classify against the
+		// logical track length, not the whole blob's duration.
+		duration := rec.Duration
+		if hasTrack && track.Cue != nil {
+			duration = data.CueSegmentDuration(track, duration)
+		} else if seg != nil {
+			duration = data.CueSegmentDuration(data.Track{Cue: seg}, duration)
+		}
+		outcome, ok := tieclient.ClassifyPlay(rec.Listened, duration)
 		if !ok {
 			continue
 		}
@@ -223,12 +233,12 @@ func (r *Recorder) convert(h playback.History) []tieclient.PlayEvent {
 			Subject:  hash,
 			PlayedAt: rec.StartedAt,
 			Listened: rec.Listened,
-			Duration: rec.Duration,
+			Duration: duration,
 			Outcome:  outcome,
-			Position: rec.Position,
+			Position: data.CueSegmentPosition(track, rec.Position, seg),
 		}
-		if t, ok := r.opts.Track(rec.URL); ok && t.AlbumUID != "" {
-			ev.Collection = t.AlbumUID
+		if hasTrack && track.AlbumUID != "" {
+			ev.Collection = track.AlbumUID
 		} else if sess != nil {
 			ev.Collection = sess.TrackAlbum(hash)
 		}

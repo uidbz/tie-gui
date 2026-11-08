@@ -208,7 +208,7 @@ func (b *mediaBridge) handleAction(action mobiledriver.MediaAction, arg int64) {
 		go func() { _ = p.be().Stop() }()
 		b.stopService()
 	case mobiledriver.MediaActionSeek:
-		go func() { _ = p.be().Seek(float64(arg) / 1000) }()
+		p.seekTo(float64(arg) / 1000)
 	case mobiledriver.MediaActionFocusLossTransient:
 		if p.Playing() {
 			b.mu.Lock()

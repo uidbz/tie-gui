@@ -103,10 +103,26 @@ func (s *Session) resolveArchive(a Album, host client.FileHost) ([]Track, error)
 		track Track
 	}
 	var mts []memberTrack
+	var cueMembers []struct {
+		name string
+		data []byte
+	}
 	var coverName string // best cover-image member so far (see coverScore)
 	coverScore := -1
 	var coverData, embeddedCover []byte
 	for _, m := range members {
+		// A cue sheet inside the archive describes one member image as an
+		// album (single-image rips zipped as-is). It is not media itself, so
+		// collect it before the kind switch.
+		if strings.EqualFold(path.Ext(m.Name), ".cue") {
+			if data, err := readArchiveMember(blob, m.Name); err == nil {
+				cueMembers = append(cueMembers, struct {
+					name string
+					data []byte
+				}{name: m.Name, data: data})
+			}
+			continue
+		}
 		switch m.Kind {
 		case archivelib.Audio:
 			data, err := readArchiveMember(blob, m.Name)
@@ -163,6 +179,39 @@ func (s *Session) resolveArchive(a Album, host client.FileHost) ([]Track, error)
 	tracks := make([]Track, 0, len(mts))
 	for _, mt := range mts {
 		tracks = append(tracks, mt.track)
+	}
+
+	// Cue sheets inside the archive turn one member image into many logical
+	// tracks, exactly like a directory rip.
+	if len(cueMembers) > 0 {
+		d := &cueAlbumData{}
+		for _, cm := range cueMembers {
+			sheet, err := ParseCue(bytes.NewReader(cm.data))
+			if err != nil {
+				continue
+			}
+			hash, _ := pc.AddressOf(bytes.NewReader(cm.data))
+			d.sheets = append(d.sheets, cueSource{
+				hash: hash, dir: path.Dir(cm.name), sheet: sheet,
+			})
+		}
+		for _, mt := range mts {
+			dir := mt.dir
+			if dir == "." {
+				dir = ""
+			}
+			d.files = append(d.files, albumTreeFile{
+				file: client.File{
+					Uid:      mt.track.Hash,
+					Filename: mt.track.Filename,
+					TieType:  client.TieAudioFile,
+				},
+				rel:  path.Join(dir, mt.track.Filename),
+				dir:  dir,
+				disc: discNumber(path.Base(dir)),
+			})
+		}
+		tracks = mergeCueTracks(tracks, d)
 	}
 
 	// Cover, best effort: the archive's own thumbnail relation is what the

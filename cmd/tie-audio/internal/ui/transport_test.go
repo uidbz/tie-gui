@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uidbz/tie/client"
+
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/data"
 	"github.com/uidbz/tie-gui/cmd/tie-audio/internal/playback"
 )
@@ -20,6 +22,9 @@ type fakeBackend struct {
 	mu      sync.Mutex
 	seeks   []float64
 	volumes []float64
+	nexts   int
+	stops   int
+	gotos   []int
 	status  playback.Status
 }
 
@@ -30,12 +35,30 @@ func (f *fakeBackend) Remove(int) error              { return nil }
 func (f *fakeBackend) PlayAlbum([]string) error      { return nil }
 func (f *fakeBackend) Play() error                   { return nil }
 func (f *fakeBackend) Pause() error                  { return nil }
-func (f *fakeBackend) Stop() error                   { return nil }
-func (f *fakeBackend) Next() error                   { return nil }
 func (f *fakeBackend) Previous() error               { return nil }
-func (f *fakeBackend) Goto(int) error                { return nil }
 func (f *fakeBackend) SeekRelative(float64) error    { return nil }
 func (f *fakeBackend) MoveItems(int, int, int) error { return nil }
+
+func (f *fakeBackend) Stop() error {
+	f.mu.Lock()
+	f.stops++
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeBackend) Next() error {
+	f.mu.Lock()
+	f.nexts++
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeBackend) Goto(i int) error {
+	f.mu.Lock()
+	f.gotos = append(f.gotos, i)
+	f.mu.Unlock()
+	return nil
+}
 
 func (f *fakeBackend) Seek(sec float64) error {
 	f.mu.Lock()
@@ -215,6 +238,123 @@ func TestTransportStateQueueFields(t *testing.T) {
 	if s := queuePosition(transportState{queueIndex: -1}); s != "" {
 		t.Errorf("queuePosition(empty) = %q, want empty", s)
 	}
+}
+
+// Cue tracks must reach the queue as distinct URLs (the filehost ignores the
+// fragment), or every logical track would share one registry entry.
+func TestStreamableUsesCueKey(t *testing.T) {
+	cfg := client.DefaultConfig()
+	cfg.FileHosts = map[string]client.FileHost{"default": {URL: "http://host:1162"}}
+	cfg.DefaultFileHosts = []string{"default"}
+	b := &browsePage{}
+	b.session.Store(&data.Session{Tie: client.NewTieClient(cfg)})
+
+	urls, meta := b.streamable([]data.Track{{
+		Hash: "img", Title: "Track", Cue: &data.CueSegment{Start: 10, End: 20},
+	}})
+	if len(urls) != 1 || len(meta) != 1 {
+		t.Fatalf("streamable = %v / %v", urls, meta)
+	}
+	if want := "http://host:1162/img#cue=10000-20000"; urls[0] != want {
+		t.Errorf("url = %q, want %q", urls[0], want)
+	}
+}
+
+// A cue track's transport clock is segment-relative: the backend reports the
+// whole image's position/duration.
+func TestSegmentClock(t *testing.T) {
+	plain := trackInfo{}
+	pos, dur := segmentClock(playback.Status{Position: 12, TrackDuration: 100}, plain)
+	if pos != 12 || dur != 100 {
+		t.Errorf("plain clock = (%v, %v)", pos, dur)
+	}
+
+	cue := trackInfo{cue: &data.CueSegment{Start: 30, End: 60}}
+	pos, dur = segmentClock(playback.Status{Position: 42, TrackDuration: 200}, cue)
+	if pos != 12 || dur != 30 {
+		t.Errorf("cue clock = (%v, %v), want (12, 30)", pos, dur)
+	}
+
+	// An open-ended segment runs to the image's end.
+	open := trackInfo{cue: &data.CueSegment{Start: 30}}
+	pos, dur = segmentClock(playback.Status{Position: 50, TrackDuration: 200}, open)
+	if pos != 20 || dur != 170 {
+		t.Errorf("open cue clock = (%v, %v), want (20, 170)", pos, dur)
+	}
+}
+
+// Seeking a cue track targets the segment-relative slider value plus the
+// segment's start in the image.
+func TestPlayerSeekToTranslatesCueSegment(t *testing.T) {
+	newTestApp(t)
+	backend := &fakeBackend{}
+	p := newPlayer(backend, nil)
+	url := "http://h/img#cue=30000-60000"
+	p.SetQueue([]string{url}, []data.Track{{Hash: "img", Cue: &data.CueSegment{Start: 30, End: 60}}})
+	p.apply(playback.Status{CurrentTrack: 0, Playlist: []string{url}, TotalTracks: 1, TrackDuration: 200})
+
+	p.seekTo(12)
+	waitForCond(t, "seek translated to the image position", func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return len(backend.seeks) == 1 && math.Abs(backend.seeks[0]-42) < 1e-9
+	})
+}
+
+// A cue segment starts where INDEX 01 says (the backend loads at 0) and ends
+// at its boundary; the first poll after the boundary advances once, not on
+// every subsequent poll.
+func TestPlayerEnforceCueSegment(t *testing.T) {
+	newTestApp(t)
+	backend := &fakeBackend{}
+	p := newPlayer(backend, nil)
+	u1 := "http://h/img#cue=10000-20000"
+	u2 := "http://h/next"
+	p.SetQueue([]string{u1, u2}, []data.Track{
+		{Hash: "img", Cue: &data.CueSegment{Start: 10, End: 20}},
+		{Hash: "next"},
+	})
+
+	p.apply(playback.Status{Playing: true, CurrentTrack: 0, Playlist: []string{u1, u2}, TotalTracks: 2, Position: 0, TrackDuration: 100})
+	waitForCond(t, "start seek into the image", func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return len(backend.seeks) == 1 && backend.seeks[0] == 10
+	})
+
+	end := playback.Status{Playing: true, CurrentTrack: 0, Playlist: []string{u1, u2}, TotalTracks: 2, Position: 20, TrackDuration: 100}
+	p.apply(end)
+	p.apply(end) // the repeated poll must not skip two tracks
+	waitForCond(t, "one advance at the segment end", func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return backend.nexts == 1
+	})
+}
+
+// The last cue segment stops at its boundary instead of playing to the end of
+// the image; repeat-all restarts the queue.
+func TestPlayerEnforceCueLastSegment(t *testing.T) {
+	newTestApp(t)
+	backend := &fakeBackend{}
+	p := newPlayer(backend, nil)
+	url := "http://h/img#cue=10000-20000"
+	p.SetQueue([]string{url}, []data.Track{{Hash: "img", Cue: &data.CueSegment{Start: 10, End: 20}}})
+	p.apply(playback.Status{Playing: true, CurrentTrack: 0, Playlist: []string{url}, TotalTracks: 1, Position: 20, TrackDuration: 100})
+	waitForCond(t, "stop at the last segment end", func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return backend.stops == 1
+	})
+
+	p.SetRepeat(true)
+	p.cueAdvanced = false
+	p.apply(playback.Status{Playing: true, CurrentTrack: 0, Playlist: []string{url}, TotalTracks: 1, Position: 20, TrackDuration: 100})
+	waitForCond(t, "repeat restarts the queue", func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return len(backend.gotos) == 1 && backend.gotos[0] == 0
+	})
 }
 
 // recordView captures the last applied transportState.

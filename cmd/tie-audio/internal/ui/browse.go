@@ -191,7 +191,7 @@ type browsePage struct {
 	// (set by the App shell).
 	onNowPlayingChip func()
 
-	// playingHash is the tie hash of the track now playing (albumNowPlaying
+	// playingHash is the queue key of the track now playing (albumNowPlaying
 	// feeds it); an open album view marks that row. albumTable and
 	// albumPlaying are the open album view's table and "Now playing" chip.
 	playingHash  string
@@ -1031,6 +1031,9 @@ func (b *browsePage) showLatest() {
 // re-imported artwork shows up. Bound to the ☰ menu's "Reload albums", the
 // compact nav bar's Refresh button, and pull-to-refresh on the grid.
 func (b *browsePage) reloadWall() {
+	// Cue sheets and their images may have been re-imported since the album
+	// was last opened.
+	b.sess().ClearCueCache()
 	if b.albumOpen {
 		b.openAlbum(b.album)
 		return

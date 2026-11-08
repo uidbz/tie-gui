@@ -114,6 +114,43 @@ func TestRecorderDrainsClassifiesAndDedups(t *testing.T) {
 	}
 }
 
+// A cue segment's play belongs to the image hash, but classification uses the
+// logical track length and the reported position is segment-relative.
+func TestConvertCueSegment(t *testing.T) {
+	hash := randHash()
+	url := "http://fh/" + hash + "#cue=30000-90000"
+	r := New(Options{
+		Session: func() *data.Session { return nil },
+		Track: func(u string) (data.Track, bool) {
+			if u != url {
+				return data.Track{}, false
+			}
+			return data.Track{
+				Hash:     hash,
+				AlbumUID: "album",
+				Cue:      &data.CueSegment{Start: 30, End: 90},
+				Duration: 60,
+			}, true
+		},
+	})
+	events := r.convert(playback.History{Source: "s", Records: []playback.PlayRecord{{
+		Seq: 1, URL: url, Listened: 40, Duration: 200, Position: 45,
+	}}})
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want 1", events)
+	}
+	ev := events[0]
+	if ev.Subject != hash || ev.Collection != "album" {
+		t.Errorf("event subject/collection = %q/%q", ev.Subject, ev.Collection)
+	}
+	if ev.Duration != 60 || ev.Position != 15 {
+		t.Errorf("event duration/position = %v/%v, want 60/15", ev.Duration, ev.Position)
+	}
+	if ev.Outcome != tieclient.OutcomeComplete {
+		t.Errorf("outcome = %v, want complete (40s of a 60s segment)", ev.Outcome)
+	}
+}
+
 func TestRecorderKeepsSpoolWhenTieIsDown(t *testing.T) {
 	cfg := tietest.Config()
 	cfg.TripleStoreURL = "http://127.0.0.1:1" // nothing listens

@@ -91,7 +91,15 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 		queueBtn.Disable()
 	}
 
-	title := widget.NewLabelWithStyle(a.Display(), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	titleText := a.Display()
+	if a.Kind == data.AlbumTrack && len(tracks) > 1 {
+		// The image of a cue-described rip opens as the sheet's album, not as
+		// a one-file title.
+		if album := commonAlbum(tracks); album != "" {
+			titleText = album
+		}
+	}
+	title := widget.NewLabelWithStyle(titleText, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	// Album dirs carry no artist/year triple; fall back to the tracks' shared
 	// artist so the header is useful.
 	artist := a.Artist
@@ -149,7 +157,7 @@ func (b *browsePage) showAlbumView(a data.Album, tracks []data.Track, err error)
 		// The leading column marks the playing track, like the playlist's.
 		opts.indicator = func(row int) string {
 			if table != nil && row >= 0 && row < len(table.tracks) &&
-				b.playingHash != "" && table.tracks[row].Hash == b.playingHash {
+				b.playingHash != "" && table.tracks[row].Key() == b.playingHash {
 				return "▶"
 			}
 			return ""
@@ -179,7 +187,7 @@ func (b *browsePage) playingRow() int {
 		return -1
 	}
 	for i, t := range b.albumTable.tracks {
-		if t.Hash == b.playingHash {
+		if t.Key() == b.playingHash {
 			return i
 		}
 	}
@@ -253,7 +261,9 @@ func (b *browsePage) saveQueueColumns(keys []string) {
 // feed the transport's URL→Track registry so the queue can render full columns.
 func (b *browsePage) streamable(tracks []data.Track) (urls []string, meta []data.Track) {
 	for _, t := range tracks {
-		url := b.sess().StreamURL(t.Hash)
+		// Key adds a cue segment fragment for single-image rips; the filehost
+		// ignores it, so every segment streams the same blob.
+		url := b.sess().StreamURL(t.Key())
 		if url == "" {
 			continue
 		}
@@ -416,4 +426,21 @@ func commonArtist(tracks []data.Track) string {
 		}
 	}
 	return artist
+}
+
+// commonAlbum returns the album title shared by every track, or "" when they
+// disagree (a cue-described image opened as its own album).
+func commonAlbum(tracks []data.Track) string {
+	album := ""
+	for _, t := range tracks {
+		if t.Album == "" {
+			continue
+		}
+		if album == "" {
+			album = t.Album
+		} else if album != t.Album {
+			return ""
+		}
+	}
+	return album
 }

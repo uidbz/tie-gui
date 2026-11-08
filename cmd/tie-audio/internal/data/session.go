@@ -45,6 +45,13 @@ type Session struct {
 	// thumbHints remembers each listed album's thumbnail hash (from the
 	// query-expanded rows), so cover resolution skips a Get per tile.
 	thumbHints sync.Map // uid → thumbHash
+
+	// cueData caches each album's cue discovery (parsed sheets + audio file
+	// listing), keyed "albumUID@hostURL"; cueSheets caches cue parses by
+	// content hash. Guarded by cueMu: album loads run on background goroutines.
+	cueMu     sync.Mutex
+	cueData   map[string]*cueAlbumData
+	cueSheets map[string]*CueSheet
 }
 
 // NewSession constructs the tie and pwplay clients and the playback backend

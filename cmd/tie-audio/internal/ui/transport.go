@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"io"
-	"path"
 	"sync"
 	"time"
 
@@ -42,9 +41,9 @@ type transportState struct {
 	// metadata); the media-session bridge tears the service down when it
 	// goes false with playback stopped.
 	hasTrack bool
-	// trackHash is the current track's tie content hash (the queue URL's last
-	// path segment), empty when nothing is current; albumUID its album. The
-	// album view marks the playing row with them.
+	// trackHash is the current track's queue key (content hash, plus a cue
+	// segment suffix for a single-image rip), empty when nothing is current;
+	// albumUID its album. The album view marks the playing row with them.
 	trackHash string
 	albumUID  string
 	// queueLen is the number of queue entries and queueIndex the current
@@ -114,6 +113,17 @@ type player struct {
 	pendSeekTTL int
 	repeatAll   bool // when true, restart the queue from the top after it ends
 	repeatFired bool // guards a single restart per end-of-queue event
+	// currentURL is the queue entry the last status named, used to translate
+	// segment-relative seek requests (the sliders show a cue track's local
+	// position, while the backend seeks in the whole image).
+	currentURL string
+	// Cue-segment playback state, touched only on the UI goroutine (apply).
+	// cueURL/cueIndex identify the segment the state belongs to; cueSeekAt
+	// throttles start-seeks; cueAdvanced guards one end-of-segment advance.
+	cueURL      string
+	cueIndex    int
+	cueSeekAt   time.Time
+	cueAdvanced bool
 
 	// views receive every snapshot. Mutated only during setup and read on the
 	// UI goroutine, both under mu since Start's goroutine reads it.
@@ -199,18 +209,16 @@ func (p *player) newSeekSlider() *widget.Slider {
 		applying := p.applying
 		if !applying {
 			p.seeking = false
-			// Hold the target until a poll confirms the server has seeked;
-			// otherwise a poll landing before Seek propagates would snap the
-			// thumb back to the stale position and then jump forward again.
-			vv := v
-			p.pendSeek = &vv
-			p.pendSeekTTL = 4 // ~2s at the 500ms poll interval
 		}
 		p.mu.Unlock()
 		if applying {
 			return
 		}
-		go func() { _ = p.be().Seek(v) }()
+		// Hold the target until a poll confirms the server has seeked;
+		// otherwise a poll landing before Seek propagates would snap the
+		// thumb back to the stale position and then jump forward again.
+		// seekTo translates the segment-relative value for cue tracks.
+		p.seekTo(v)
 	}
 	return s
 }
@@ -395,13 +403,25 @@ func (p *player) currentVolume() float64 {
 
 // seekTo jumps to an absolute position in the current track, holding it as
 // pending like a slider release so the next poll doesn't bounce the thumbs.
+// sec is relative to the logical track (the cue segment), so the backend seek
+// is offset by the segment's start inside the image.
 func (p *player) seekTo(sec float64) {
 	p.mu.Lock()
+	start := p.cueStartLocked()
 	v := sec
 	p.pendSeek = &v
 	p.pendSeekTTL = 4
 	p.mu.Unlock()
-	go func() { _ = p.be().Seek(sec) }()
+	go func() { _ = p.be().Seek(start + sec) }()
+}
+
+// cueStartLocked returns the current track's cue-segment start (0 for an
+// ordinary track). Caller holds p.mu.
+func (p *player) cueStartLocked() float64 {
+	if m, ok := p.metas[p.currentURL]; ok && m.Cue != nil {
+		return m.Cue.Start
+	}
+	return 0
 }
 
 // seekBy jumps relative to the current position; bound to the
@@ -459,19 +479,13 @@ func (p *player) apply(s playback.Status) {
 		p.pendVol = nil
 		pendVol = nil
 	}
-	pendSeek := p.pendSeek
-	if pendSeek != nil {
-		if p.pendSeekTTL > 0 {
-			p.pendSeekTTL--
-		}
-		// Clear once the server position is near the target (allowing for
-		// playback advancing since the seek) or the wait times out.
-		if absDiff(s.Position, *pendSeek) < 1.0 || p.pendSeekTTL == 0 {
-			p.pendSeek = nil
-			pendSeek = nil
-		}
-	}
 	now := p.nowPlaying(s)
+	if s.CurrentTrack >= 0 && s.CurrentTrack < len(s.Playlist) {
+		p.currentURL = s.Playlist[s.CurrentTrack]
+	} else {
+		p.currentURL = ""
+	}
+	pendSeek := p.pendSeek
 	listener := p.listener
 	views := p.views
 	var missing []string
@@ -493,18 +507,35 @@ func (p *player) apply(s playback.Status) {
 		listener(s)
 	}
 
+	// A cue track is a range inside a longer image: the transport shows the
+	// segment's own position/duration, not the whole blob's.
+	pos, dur := segmentClock(s, now)
+
 	// While a seek is pending confirmation, pin the thumb/label to the target
 	// so a stale poll doesn't bounce it to the old position.
-	pos := s.Position
+	p.mu.Lock()
+	if pendSeek != nil {
+		if p.pendSeekTTL > 0 {
+			p.pendSeekTTL--
+		}
+		// Clear once the server position is near the target (allowing for
+		// playback advancing since the seek) or the wait times out.
+		if absDiff(pos, *pendSeek) < 1.0 || p.pendSeekTTL == 0 {
+			p.pendSeek = nil
+			pendSeek = nil
+		}
+	}
+	p.mu.Unlock()
 	if pendSeek != nil {
 		pos = *pendSeek
 	}
+
 	st := transportState{
 		playing:       s.Playing,
 		title:         now.title,
 		subtitle:      now.subtitle,
 		position:      pos,
-		duration:      s.TrackDuration,
+		duration:      dur,
 		volume:        level,
 		artist:        now.artist,
 		album:         now.album,
@@ -518,11 +549,13 @@ func (p *player) apply(s playback.Status) {
 	}
 
 	if now.url != "" {
-		st.trackHash = path.Base(now.url)
+		st.trackHash = data.TrackKeyFromURL(now.url)
 	}
 	if s.CurrentTrack >= 0 && s.CurrentTrack < len(s.Playlist) {
 		st.queueIndex = s.CurrentTrack
 	}
+
+	p.enforceCueSegment(s, now)
 
 	// Mark programmatic slider updates so the sliders' OnChangeEnded handlers
 	// don't echo a Seek/SetVolume back to the server. Set outside p.mu because
@@ -541,6 +574,95 @@ func (p *player) apply(s playback.Status) {
 
 	p.syncCover(now)
 	p.maybeRepeat(s)
+}
+
+// segmentClock translates the backend's absolute position/duration in the
+// current blob into the logical track's own clock. For an ordinary track it
+// returns the status unchanged.
+func segmentClock(s playback.Status, now trackInfo) (pos, dur float64) {
+	pos, dur = s.Position, s.TrackDuration
+	if now.cue == nil {
+		return pos, dur
+	}
+	start := now.cue.Start
+	pos -= start
+	if pos < 0 {
+		pos = 0
+	}
+	if d := now.cue.Duration(s.TrackDuration); d > 0 {
+		if s.TrackDuration > start && d > s.TrackDuration-start {
+			d = s.TrackDuration - start // a cue boundary past the blob's end
+		}
+		dur = d
+	} else if dur > start {
+		dur -= start
+	} else {
+		dur = 0
+	}
+	return pos, dur
+}
+
+// enforceCueSegment keeps playback inside the current cue segment: it seeks
+// into the image when a segment starts after 0, and advances the queue at the
+// segment's end (the backend itself only knows whole files). It is idempotent
+// and runs on every status poll.
+func (p *player) enforceCueSegment(s playback.Status, now trackInfo) {
+	if now.cue == nil || now.url == "" {
+		p.cueURL = ""
+		p.cueIndex = -1
+		p.cueAdvanced = false
+		return
+	}
+	if s.CurrentTrack != p.cueIndex || now.url != p.cueURL {
+		p.cueIndex, p.cueURL = s.CurrentTrack, now.url
+		p.cueSeekAt = time.Time{}
+		p.cueAdvanced = false
+	}
+	start := now.cue.Start
+	end := now.cue.End
+	if s.TrackDuration > 0 && (end <= start || end > s.TrackDuration) {
+		end = s.TrackDuration
+	}
+	// A segment that runs to the blob's end needs no boundary handling: the
+	// engine's natural EOF advances (or repeat-all restarts) without cutting
+	// the last fraction of a second.
+	if s.TrackDuration > 0 && end >= s.TrackDuration-0.25 {
+		end = 0
+	}
+
+	// The backend loads a track at position 0 and only then can seek; do it
+	// once per segment (throttled in case the seek is still settling).
+	if start > 0 && s.Position < start-0.5 && s.Playing {
+		if p.cueSeekAt.IsZero() || time.Since(p.cueSeekAt) > time.Second {
+			p.cueSeekAt = time.Now()
+			go func() { _ = p.be().Seek(start) }()
+		}
+	}
+
+	if end <= start || s.Position < end-0.25 {
+		if s.Position < end-1 {
+			p.cueAdvanced = false
+		}
+		return
+	}
+	if !s.Playing || p.cueAdvanced {
+		return
+	}
+	p.cueAdvanced = true
+	if s.CurrentTrack >= 0 && s.CurrentTrack < s.TotalTracks-1 {
+		go func() { _ = p.be().Next() }()
+		return
+	}
+	// The last segment ends before the image does: stop at the boundary.
+	// Repeat-all restarts the queue from its first track.
+	p.mu.Lock()
+	repeat := p.repeatAll
+	p.mu.Unlock()
+	if repeat {
+		go func() { _ = p.be().Goto(0) }()
+	} else {
+		go func() { _ = p.be().Stop() }()
+	}
 }
 
 // syncCover keeps the views' album art in step with the current track. It only
@@ -656,6 +778,7 @@ type trackInfo struct {
 	artist   string
 	album    string
 	albumUID string
+	cue      *data.CueSegment
 	known    bool
 }
 
@@ -671,6 +794,7 @@ func (p *player) nowPlaying(s playback.Status) trackInfo {
 			info.albumUID = m.AlbumUID
 			info.artist = m.Artist
 			info.album = m.Album
+			info.cue = m.Cue
 			info.subtitle = trackSubtitle(m)
 			if label := m.Display(); label != "" {
 				info.title = label
