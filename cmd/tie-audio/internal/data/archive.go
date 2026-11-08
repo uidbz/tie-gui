@@ -245,18 +245,11 @@ func readArchiveMember(blob []byte, name string) ([]byte, error) {
 	return io.ReadAll(rc)
 }
 
-// coverScoreOf ranks an image member as an album cover: a file named
-// cover/folder/front beats any other image, mirroring dirCoverHash. -1 leaves
-// a previously scored candidate in place.
+// coverScoreOf ranks an image member as an album cover with the same rules
+// every other resolver uses (client.CoverNameScore). -1 in the caller leaves a
+// previously scored candidate in place.
 func coverScoreOf(name string) int {
-	switch base := strings.ToLower(path.Base(name)); {
-	case strings.HasPrefix(base, "cover."),
-		strings.HasPrefix(base, "folder."),
-		strings.HasPrefix(base, "front."):
-		return 1
-	default:
-		return 0
-	}
+	return client.CoverNameScore(name)
 }
 
 // ensureBlob makes hash fetchable from the filehost, uploading data when the

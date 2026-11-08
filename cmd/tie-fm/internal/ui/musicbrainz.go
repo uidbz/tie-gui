@@ -1,17 +1,23 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"os"
+	_ "image/gif" // cover art decode
+	"image/jpeg"
+	_ "image/png" // cover art decode
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/disintegration/imaging"
 	"github.com/uidbz/tie/client"
 
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/config"
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/musicbrainz"
+	"github.com/uidbz/tie-gui/gallery"
+	"github.com/uidbz/tie-gui/tiethumb"
 )
 
 // MusicBrainz relation names written by the tagging actions. They are not part
@@ -84,24 +90,31 @@ func tieFilesUnder(tc *client.TieClient, uid client.DirUID) ([]client.File, erro
 	return out, nil
 }
 
-// albumHasLocalArt reports whether the album directory already carries a
-// thumbnail relation or contains an image file.
+// albumHasLocalArt reports whether the album already carries usable artwork.
+// A back/cd/booklet scan does not count: those are last-resort candidates, and
+// an online front cover is worth fetching when one exists.
 func albumHasLocalArt(tc *client.TieClient, uid client.DirUID) bool {
 	if row, err := tc.Get(string(uid)); err == nil {
-		if len(client.RowValues(row, client.RelThumbnail)) > 0 {
+		if cover := client.RowFirst(row, client.RelCover); cover != "" {
+			// A recorded back/cd/booklet source is a last resort, not a
+			// reason to skip an online front cover.
+			if source := client.RowFirst(row, client.RelCoverSource); strings.HasPrefix(source, "file:") &&
+				client.CoverNameScore(strings.TrimPrefix(source, "file:")) < 50 {
+				return false
+			}
+			return true
+		}
+		if client.RowFirst(row, client.RelThumbnail) != "" {
 			return true
 		}
 	}
-	files, err := tieFilesUnder(tc, uid)
-	if err != nil {
+	cands, err := client.FindCoverCandidates(tc, uid, client.CoverSearchOptions{
+		IncludeParent: true, MaxDepth: 2,
+	})
+	if err != nil || len(cands) == 0 {
 		return false
 	}
-	for _, f := range files {
-		if f.TieType == client.TieImageFile {
-			return true
-		}
-	}
-	return false
+	return cands[0].Confidence != client.CoverLow
 }
 
 // applyReleaseToAlbum writes a MusicBrainz release onto an imported/existing
@@ -292,8 +305,9 @@ func applyRecordingToFile(tc *client.TieClient, hash string, rec *musicbrainz.Re
 	return tc.Sync()
 }
 
-// ensureAlbumCoverArt downloads the release's front cover and records it as the
-// album's thumbnail, unless the directory already has art.
+// ensureAlbumCoverArt downloads the release's front cover and records both the
+// source image (cover) and a 512px thumbnail, unless the album already has
+// usable artwork.
 func ensureAlbumCoverArt(tc *client.TieClient, uid client.DirUID, rel *musicbrainz.Release, settings config.MusicBrainz) error {
 	if !rel.HasCoverArt {
 		return nil
@@ -311,32 +325,44 @@ func ensureAlbumCoverArt(tc *client.TieClient, uid client.DirUID, rel *musicbrai
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp("", "tie-fm-mb-cover-*"+musicbrainz.CoverArtExtension(data))
+	source := "musicbrainz"
+	if rel.MBID != "" {
+		source += ":" + rel.MBID
+	}
+	return storeAlbumCover(tc, string(uid), data, source)
+}
+
+// storeAlbumCover uploads image data as an album's source cover and generates
+// the small display thumbnail. It is shared by the MusicBrainz apply path and
+// the bulk "fill missing covers" action.
+func storeAlbumCover(tc *client.TieClient, uid string, data []byte, source string) error {
+	if len(data) == 0 {
+		return fmt.Errorf("cover art: empty image")
+	}
+	// Validate/decoding also makes a broken download fail before we write
+	// relations that would hide the problem.
+	img, _, err := gallery.Decode(bytes.NewReader(data))
 	if err != nil {
-		return err
+		return fmt.Errorf("cover art: decode: %w", err)
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	up, err := tc.UploadWithOptions("", tmpName, client.UploadOptions{Retention: "infinite"})
+	host := tiethumb.FileHost(tc)
+	sourceHash, err := tiethumb.UploadBlob(host, data, "cover"+musicbrainz.CoverArtExtension(data))
 	if err != nil {
 		return fmt.Errorf("upload cover art: %w", err)
 	}
-	if up == nil || len(up.Items) == 0 || up.Items[0].Hash == "" {
-		return fmt.Errorf("upload cover art: empty result")
+	if b := img.Bounds(); b.Dx() > 512 || b.Dy() > 512 {
+		img = imaging.Fit(img, 512, 512, imaging.Lanczos)
 	}
-	batch := tc.NewBatch()
-	batch.Add(string(uid), string(client.RelThumbnail), up.Items[0].Hash)
-	if _, err := tc.Batch(batch); err != nil {
-		return err
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err == nil {
+		if _, err := tiethumb.UploadThumbnail(tc, host, uid, buf.Bytes()); err != nil {
+			// Keep the cover usable even if the thumbnail upload fails.
+			_ = tc.Set(uid, string(client.RelThumbnail), []string{sourceHash})
+		}
+	} else {
+		_ = tc.Set(uid, string(client.RelThumbnail), []string{sourceHash})
 	}
-	return tc.Sync()
+	return client.SetCover(tc, uid, sourceHash, source)
 }
 
 type albumFile struct {

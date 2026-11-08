@@ -195,25 +195,36 @@ func (t *Thumbnailer) upload(tc *client.TieClient, tr ThumbReader, jpegBytes []b
 	tr.SetThumbCache(thumbHash, dims)
 }
 
+// UploadBlob stores data on host and returns its content hash. It is for
+// artwork sources (the full-size image behind a thumbnail), not for the
+// generated thumbnail relation itself.
+func UploadBlob(host client.FileHost, data []byte, name string) (string, error) {
+	if host.URL == "" {
+		return "", errors.New("no filehost URL configured")
+	}
+	pc := putlib.PutConfig{Client: client.HTTPClientFor(host), Store: host.Store}
+	hash, err := pc.AddressOf(bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	item := pc.UploadMultipart(client.FileHostClient(host), hash, bytes.NewReader(data), len(data), name)
+	if item.ErrorMsg != "" {
+		return "", errors.New(item.ErrorMsg)
+	}
+	if item.Hash != hash {
+		return "", errors.New("checksum mismatch uploading blob")
+	}
+	return hash, nil
+}
+
 // UploadThumbnail stores jpegBytes on the filehost and records the
 // (ownerHash, "thumbnail", thumbHash) mapping, returning the thumbHash.
 // Set (not Add) keeps the relation single-valued, so regenerated values
 // replace ones whose blobs were reaped from the filehost.
 func UploadThumbnail(tc *client.TieClient, host client.FileHost, ownerHash string, jpegBytes []byte) (string, error) {
-	if host.URL == "" {
-		return "", errors.New("no filehost URL configured")
-	}
-	pc := putlib.PutConfig{Client: client.HTTPClientFor(host), Store: host.Store}
-	thumbHash, err := pc.AddressOf(bytes.NewReader(jpegBytes))
+	thumbHash, err := UploadBlob(host, jpegBytes, ownerHash+".jpg")
 	if err != nil {
 		return "", err
-	}
-	item := pc.UploadMultipart(client.FileHostClient(host), thumbHash, bytes.NewReader(jpegBytes), len(jpegBytes), ownerHash+".jpg")
-	if item.ErrorMsg != "" {
-		return "", errors.New(item.ErrorMsg)
-	}
-	if item.Hash != thumbHash {
-		return "", errors.New("checksum mismatch uploading thumbnail")
 	}
 	if err := tc.Set(ownerHash, "thumbnail", []string{thumbHash}); err != nil {
 		return "", err

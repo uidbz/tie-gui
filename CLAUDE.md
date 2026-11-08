@@ -1266,11 +1266,14 @@ to `coverMaxEdge` (512) and the cache is bounded (`coverLimit` = 120, insertion
   drops a late result if the cell has been recycled — the same hazard that
   forces the queue's play indicator to be a label rather than an icon.
 - Resolution: `Session.CoverBytesForUID(uid)` → the album's own `thumbnail`
-  relation, else `dirCoverHash` (a `cover.*`/`folder.*`/`front.*` child, else
-  the first image), else the first track's embedded picture
-  (`trackEmbeddedCover`: the first audio file of a directory album in
-  filename order, or the track itself for a standalone track). A collection
-  switch clears the store and re-points its session (`settings.go`).
+  relation, else its `cover` relation, else `client.ResolveCover`. The shared
+  tie resolver ranks root and `artwork/`/`covers/`/`scans/` images, conservatively
+  looks one parent level up for disc/subfolder albums, probes the first tracks
+  for embedded pictures, and extracts zip archive covers with HTTP range reads.
+  Back/cd/booklet scans are low-confidence last resorts. The chosen source is
+  recorded as `(uid, cover, <imageHash>)`; this session still downscales it to
+  the 512 px `thumbnail`. A collection switch clears the store and re-points
+  its session (`settings.go`).
 
 `data.Track.AlbumUID` is what artwork and grouping key off: `TrackForHash`
 takes it from the track's `parent` edges, `AlbumTracks` overrides it with

@@ -1043,6 +1043,11 @@ func (fm *FileManager) contextMenuItems(e fs.Entry, row int) []*fyne.MenuItem {
 	if fs.IsTie(e.Path) && e.Hash != "" {
 		set := fm.menuSet(e)
 		items = append(items, fyne.NewMenuItem("MusicBrainz…", func() { fm.musicBrainzDialog(set) }))
+		if e.IsDir {
+			items = append(items, fyne.NewMenuItem("Fill missing covers…", func() { fm.fillMissingCovers(set) }))
+		} else if isImageEntry(e) {
+			items = append(items, fyne.NewMenuItem("Use as album cover", func() { fm.useAsAlbumCover(e) }))
+		}
 	}
 	if item := fm.extractMenuItem(e); item != nil {
 		items = append(items, item)

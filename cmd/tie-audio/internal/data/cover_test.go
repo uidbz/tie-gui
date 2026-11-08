@@ -5,58 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/uidbz/tie/client"
 )
-
-func TestDirCoverHash(t *testing.T) {
-	img := func(name string) client.File {
-		return client.File{Filename: name, Uid: "uid-" + name, TieType: client.TieImageFile}
-	}
-	audio := client.File{Filename: "01 - t.flac", Uid: "uid-audio", TieType: client.TieAudioFile}
-	tests := []struct {
-		name  string
-		files []client.File
-		want  string
-	}{
-		{"no files", nil, ""},
-		{"no images", []client.File{audio}, ""},
-		{"first image without a preferred name", []client.File{img("back.jpg"), img("other.jpg")}, "uid-back.jpg"},
-		{"cover preferred over an earlier plain image", []client.File{img("zzz.jpg"), img("cover.jpg")}, "uid-cover.jpg"},
-		{"front preferred", []client.File{img("aaa.jpg"), img("front.png")}, "uid-front.png"},
-		{"case-insensitive prefix", []client.File{img("Cover.JPG")}, "uid-Cover.JPG"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := dirCoverHash(client.Directory{Files: tt.files}); got != tt.want {
-				t.Errorf("dirCoverHash = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestFirstTrackHash(t *testing.T) {
-	track := func(name string) client.File {
-		return client.File{Filename: name, Uid: "uid-" + name, TieType: client.TieAudioFile}
-	}
-	tests := []struct {
-		name  string
-		files []client.File
-		want  string
-	}{
-		{"no files", nil, ""},
-		{"images skipped", []client.File{{Filename: "cover.jpg", Uid: "uid-img", TieType: client.TieImageFile}}, ""},
-		{"filename order, not listing order", []client.File{track("02 - b.flac"), track("01 - a.flac")}, "uid-01 - a.flac"},
-		{"media-type fallback", []client.File{{Filename: "x.mp3", Uid: "uid-m", MediaType: "audio/mpeg"}}, "uid-m"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := firstTrackHash(client.Directory{Files: tt.files}); got != tt.want {
-				t.Errorf("firstTrackHash = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
 
 // TestTrackEmbeddedCover exercises the audio-file probe against the fake
 // filehost: a track with an embedded picture yields its bytes, a track
