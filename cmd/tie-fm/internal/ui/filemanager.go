@@ -76,6 +76,7 @@ type FileManager struct {
 	content        *fyne.Container
 	wrapper        *fyne.Container    // content + active-panel highlight border
 	activeBorder   *canvas.Rectangle  // outline shown when this panel is active
+	active         bool               // whether this panel is the focused one
 	onActivate     func(*FileManager) // called when this panel should become active
 	onBookmark     func(path string)  // called by the toolbar bookmark button
 
@@ -156,6 +157,7 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	ft.SetCreateCell(fm.createCell)
 	ft.SetUpdateCell(fm.updateCell)
 	ft.OnSort = fm.onSort
+	ft.OnBackgroundTapped = fm.focusPane
 	ft.SelectColumn = colIcon // click the icon to select; click elsewhere to open/navigate
 
 	ft.SetSort(fm.sortCol, fm.sortAsc)
@@ -204,12 +206,16 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 		widget.NewToolbarAction(theme.MoveUpIcon(), fm.goUp),
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() { fm.reload() }),
 		widget.NewToolbarAction(theme.SearchIcon(), fm.focusSearch),
-		toolbarObjectItem{fm.searchBox},
 		widget.NewToolbarAction(theme.FolderNewIcon(), fm.newDir),
 		toolbarButtonItem{fm.terminalButton},
 		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(bookmarkResource, fm.bookmarkCurrent),
 	)
+
+	// The toolbar and search field share one row. A border layout gives the
+	// entry the space left over after the toolbar actions instead of forcing
+	// it to its minimum width like a plain toolbar item.
+	toolbarRow := container.NewBorder(nil, nil, fm.toolbar, nil, fm.searchBox)
 
 	fm.breadcrumb = container.NewHBox()
 	// The path is shown as breadcrumb buttons by default; tapping the empty
@@ -219,7 +225,7 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	fm.navStack = container.NewStack(fm.navBg, fm.breadcrumb, fm.addr)
 	fm.tagPanel = NewTagPanel(fm)
 
-	top := container.NewVBox(fm.toolbar, fm.navStack, fm.searchStatus)
+	top := container.NewVBox(toolbarRow, fm.navStack, fm.searchStatus)
 	center := fm.table.Instance
 	fm.content = container.NewBorder(top, nil, nil, fm.tagPanel.Container, center)
 
@@ -232,7 +238,7 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	// A transparent tappable layer sits behind the content so that clicks on
 	// empty whitespace (below the rows, blank breadcrumb area) still activate the
 	// panel; taps on real widgets above are consumed before reaching it.
-	bg := newTappableBackground(fm.markActive)
+	bg := newTappableBackground(fm.focusPane)
 	fm.wrapper = container.NewStack(bg, fm.content, fm.activeBorder)
 
 	fm.pushHistory(startPath)
@@ -312,6 +318,7 @@ func activePanelColor() color.Color {
 
 // SetActive toggles the active-panel highlight.
 func (fm *FileManager) SetActive(active bool) {
+	fm.active = active
 	if active {
 		fm.activeBorder.StrokeColor = activePanelColor()
 	} else {
@@ -326,6 +333,18 @@ func (fm *FileManager) markActive() {
 		fm.onActivate(fm)
 	}
 }
+
+// focusPane makes this pane active and gives its table keyboard focus.
+func (fm *FileManager) focusPane() {
+	fm.markActive()
+	if fm.preview != nil && fm.preview.on {
+		return
+	}
+	fm.table.GetFlexTable().Focus()
+}
+
+// FocusPane is the exported entry point used by the pane-switch shortcut.
+func (fm *FileManager) FocusPane() { fm.focusPane() }
 
 // tappableBackground is a transparent, full-area widget that reports taps. Used
 // behind a panel's content so clicks on empty space activate the panel.
@@ -741,8 +760,15 @@ func (fm *FileManager) updateBreadcrumb() {
 }
 
 // beginPathEdit swaps the breadcrumb buttons for the editable path entry.
+// The first click on an inactive pane only focuses it; editing starts on the
+// next click, so switching panes never unexpectedly turns the breadcrumb into
+// a text field.
 func (fm *FileManager) beginPathEdit() {
 	if fm.pathEditing {
+		return
+	}
+	if !fm.active {
+		fm.focusPane()
 		return
 	}
 	fm.markActive()
@@ -1819,13 +1845,6 @@ type toolbarButtonItem struct {
 }
 
 func (t toolbarButtonItem) ToolbarObject() fyne.CanvasObject { return t.button }
-
-// toolbarObjectItem embeds an arbitrary widget (the search box) in a toolbar.
-type toolbarObjectItem struct {
-	object fyne.CanvasObject
-}
-
-func (t toolbarObjectItem) ToolbarObject() fyne.CanvasObject { return t.object }
 
 // updateTerminalButton enables the toolbar's terminal action only for local
 // paths; tie:/mtp: locations have no filesystem directory to open.

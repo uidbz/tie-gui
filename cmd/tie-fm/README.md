@@ -21,7 +21,8 @@ tie-fm browses two kinds of location side by side:
   local/MTP panes show that it is unavailable.
 - Twin panels with independent navigation history, breadcrumb, and a favorites
   sidebar (bookmarks). Clicking beside the breadcrumb swaps the path buttons
-  for an editable location field.
+  for an editable location field. Ctrl+Tab switches the active pane; clicking
+  empty space in a table also focuses that pane.
 - Local file operations: copy, move, and delete, with a progress view. Delete
   also covers `tie:` rows (references only — blobs stay in the filehost) and
   the whole multi-row selection; per-item failures are reported together.

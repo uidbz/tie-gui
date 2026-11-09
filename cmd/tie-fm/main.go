@@ -150,6 +150,15 @@ func main() {
 	// single-page listings.
 	mainWin.Canvas().AddShortcut(ui.FilterShortcut, func(fyne.Shortcut) { active.ShowFilter() })
 
+	// Ctrl+Tab switches keyboard focus between the panes.
+	mainWin.Canvas().AddShortcut(ui.SwitchPaneShortcut, func(fyne.Shortcut) {
+		if active == left {
+			right.FocusPane()
+		} else {
+			left.FocusPane()
+		}
+	})
+
 	twin := container.NewHSplit(left.View(), right.View())
 
 	// applyTieConfig rebuilds the tie client from path, persists the choice, and

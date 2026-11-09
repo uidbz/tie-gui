@@ -94,6 +94,19 @@ func rowNames(prefix string, n int) []string {
 	return rows
 }
 
+// TestBackgroundTapCallback checks taps that miss every row reach the pane's
+// background handler (used to focus a pane from empty table space).
+func TestBackgroundTapCallback(t *testing.T) {
+	h := newTableHarness(t, 2000, rowNames("a", 3))
+	called := false
+	h.tw.GetFlexTable().OnBackgroundTapped = func() { called = true }
+
+	h.tw.GetFlexTable().table.Tapped(&fyne.PointEvent{Position: fyne.NewPos(10, 390)})
+	if !called {
+		t.Fatal("tap below the last row did not fire OnBackgroundTapped")
+	}
+}
+
 // TestTableCellsLaidOutOnDataSwap is the regression test for a directory change
 // rendering a blank table: cells recycled from the old listing keep their size,
 // so their newly created content never went through a layout pass and stayed

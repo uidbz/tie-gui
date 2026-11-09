@@ -12,6 +12,14 @@ var FilterShortcut fyne.Shortcut = &desktop.CustomShortcut{
 	Modifier: fyne.KeyModifierShortcutDefault,
 }
 
+// SwitchPaneShortcut moves keyboard focus to the other twin-panel pane.
+// Control is used explicitly (rather than the platform shortcut modifier)
+// because Cmd+Tab is reserved by macOS.
+var SwitchPaneShortcut fyne.Shortcut = &desktop.CustomShortcut{
+	KeyName:  fyne.KeyTab,
+	Modifier: fyne.KeyModifierControl,
+}
+
 // shortcutEntry forwards shortcuts that Entry does not consume to a callback.
 // Fyne sends a window shortcut to the focused Shortcutable widget instead of
 // the canvas, so without this a shortcut such as Ctrl+I is lost while the path

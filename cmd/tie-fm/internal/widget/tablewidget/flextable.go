@@ -60,7 +60,10 @@ type FlexTable struct {
 	OnClick          func(row int)
 	OnClickSecondary func(row int, obj fyne.CanvasObject)
 	OnActivate       func(row int)
-	SelectColumn     int
+	// OnBackgroundTapped fires for taps inside the table that miss every cell
+	// (for example the empty space below the last row).
+	OnBackgroundTapped func()
+	SelectColumn       int
 	// OnSort, when set, is called on a header click instead of the built-in
 	// in-place TableData sort. It lets a consumer that owns the backing data
 	// (e.g. an external []Entry) re-sort its own source and rebuild the table.
@@ -203,6 +206,11 @@ func NewFlexTable(data *TableData, onClick func(row int)) *FlexTable {
 			}
 		})
 	table.table.ShowHeaderRow = true
+	table.table.OnBackgroundTapped = func(*fyne.PointEvent) {
+		if table.OnBackgroundTapped != nil {
+			table.OnBackgroundTapped()
+		}
+	}
 
 	table.SetData(data)
 
@@ -248,6 +256,14 @@ func (t *FlexTable) ScrollToTop() {
 	// scroll bars, so the thumb cannot stay at the old position while the rows
 	// start at the top.
 	t.table.ScrollToOffset(fyne.NewPos(0, 0))
+}
+
+// Focus gives the underlying table keyboard focus. The inner widget.Table is
+// private, so callers that activate a pane cannot focus it directly.
+func (t *FlexTable) Focus() {
+	if c := fyne.CurrentApp().Driver().CanvasForObject(t.table); c != nil {
+		c.Focus(t.table)
+	}
 }
 
 // SetSort records the current sort column and direction for the header arrow

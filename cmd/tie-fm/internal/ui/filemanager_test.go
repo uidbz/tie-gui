@@ -520,6 +520,44 @@ func TestContextMenuExtractItem(t *testing.T) {
 	}
 }
 
+// TestSearchEntryExpandsInToolbar checks the search field gets the space left
+// over beside the toolbar actions instead of collapsing to its minimum width.
+func TestSearchEntryExpandsInToolbar(t *testing.T) {
+	test.NewApp()
+	dir := t.TempDir()
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	win := test.NewWindow(nil)
+	defer win.Close()
+	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, win)
+	fm.waitReload()
+	win.SetContent(fm.View())
+	win.Resize(fyne.NewSize(1200, 800))
+
+	min := fm.searchEntry.MinSize().Width
+	if got := fm.searchEntry.Size().Width; got <= min {
+		t.Fatalf("search entry width = %.0f, want more than its minimum %.0f", got, min)
+	}
+}
+
+// TestTableWhitespaceFocusesPane checks empty table space activates the pane
+// and gives its table focus.
+func TestTableWhitespaceFocusesPane(t *testing.T) {
+	test.NewApp()
+	dir := t.TempDir()
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
+	fm.waitReload()
+	fm.SetOnActive(func(target *FileManager) { target.SetActive(true) })
+
+	if fm.active {
+		t.Fatal("pane should start inactive")
+	}
+	fm.table.GetFlexTable().OnBackgroundTapped()
+	if !fm.active {
+		t.Fatal("clicking table whitespace did not focus the pane")
+	}
+}
+
 // TestPathEntryReplacesBreadcrumb checks the KDE-style location bar: the
 // editable path is hidden until the empty space beside the breadcrumb is
 // tapped, then the buttons give way to the entry until editing ends.
@@ -529,12 +567,22 @@ func TestPathEntryReplacesBreadcrumb(t *testing.T) {
 	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
 	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
 	fm.waitReload()
+	fm.SetOnActive(func(target *FileManager) { target.SetActive(true) })
 
 	if fm.addr.Visible() {
 		t.Fatal("path entry should start hidden")
 	}
 	if !fm.breadcrumb.Visible() {
 		t.Fatal("breadcrumb should start visible")
+	}
+
+	// The first click on an inactive pane only focuses it.
+	fm.navBg.Tapped(&fyne.PointEvent{})
+	if fm.pathEditing {
+		t.Fatal("clicking an inactive pane started path editing")
+	}
+	if !fm.active {
+		t.Fatal("clicking the breadcrumb did not focus the pane")
 	}
 
 	fm.navBg.Tapped(&fyne.PointEvent{})
