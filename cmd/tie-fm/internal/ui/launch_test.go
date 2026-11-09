@@ -45,7 +45,7 @@ func TestBuildTerminalCommand(t *testing.T) {
 		dir     string
 		want    []string // program + args, nil = nil cmd
 	}{
-		{"xterm", "/home/x", []string{"xterm", "/home/x"}}, // dir appended
+		{"xterm", "/home/x", []string{"xterm"}}, // cwd inherited via cmd.Dir
 		{"konsole --workingdirectory %d", "/home/x", []string{"konsole", "--workingdirectory", "/home/x"}},
 		{"wezterm start --cwd %d", "/w", []string{"wezterm", "start", "--cwd", "/w"}},
 		{"", "/x", nil},
@@ -65,6 +65,32 @@ func TestBuildTerminalCommand(t *testing.T) {
 		if !reflect.DeepEqual(cmd.Args, c.want) {
 			t.Errorf("buildTerminalCommand(%q) args = %v, want %v", c.cmdline, cmd.Args, c.want)
 		}
+		if cmd.Dir != c.dir {
+			t.Errorf("buildTerminalCommand(%q) dir = %q, want %q", c.cmdline, cmd.Dir, c.dir)
+		}
+	}
+}
+
+// TestOpenTerminalHereUsesCurrentPath checks the toolbar action hands the
+// pane's current directory to the terminal launcher.
+func TestOpenTerminalHereUsesCurrentPath(t *testing.T) {
+	test.NewApp()
+	dir := t.TempDir()
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
+	fm.waitReload()
+
+	var got string
+	old := launchTerminal
+	launchTerminal = func(cfg *config.Config, d string) error {
+		got = d
+		return nil
+	}
+	t.Cleanup(func() { launchTerminal = old })
+
+	fm.openTerminalHere()
+	if got != dir {
+		t.Fatalf("terminal opened at %q, want current path %q", got, dir)
 	}
 }
 

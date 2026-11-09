@@ -69,6 +69,9 @@ type FileManager struct {
 	terminalButton *widget.Button
 	addr           *shortcutEntry
 	breadcrumb     *fyne.Container
+	navBg          *tappableBackground
+	navStack       *fyne.Container
+	pathEditing    bool
 	tagPanel       *TagPanel
 	content        *fyne.Container
 	wrapper        *fyne.Container    // content + active-panel highlight border
@@ -87,6 +90,7 @@ type FileManager struct {
 	// free-text search state (tie only). searchActive means the table is
 	// showing search results rather than a directory listing; searchBasePath is
 	// the location to restore when the search is cleared.
+	searchBox      *fyne.Container
 	searchEntry    *widget.Entry
 	searchStatus   *widget.Label
 	searchClear    *widget.Button
@@ -167,7 +171,25 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 			fm.ShowFilter()
 		}
 	})
-	fm.addr.OnSubmitted = func(s string) { fm.navigateTo(strings.TrimSpace(s)) }
+	fm.addr.OnSubmitted = func(s string) {
+		fm.endPathEdit()
+		fm.navigateTo(strings.TrimSpace(s))
+	}
+	fm.addr.onEscape = fm.endPathEdit
+	fm.addr.onFocusLost = fm.endPathEdit
+	fm.addr.Hide()
+
+	// Free-text search lives in the toolbar; the entry, its Clear button and
+	// the result status line stay together at the top of the pane. Search is a
+	// temporary view of tie results; navigating away clears it.
+	fm.searchEntry = widget.NewEntry()
+	fm.searchEntry.SetPlaceHolder("Search files and folders…")
+	fm.searchEntry.OnSubmitted = fm.runSearch
+	fm.searchStatus = widget.NewLabel("")
+	fm.searchStatus.Hide()
+	fm.searchClear = widget.NewButton("Clear", fm.clearSearch)
+	fm.searchClear.Disable()
+	fm.searchBox = container.NewBorder(nil, nil, nil, fm.searchClear, fm.searchEntry)
 
 	// A text toolbar item: the terminal action is the one location command that
 	// users look for by name. It is disabled for tie:/mtp: locations, which
@@ -182,6 +204,7 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 		widget.NewToolbarAction(theme.MoveUpIcon(), fm.goUp),
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() { fm.reload() }),
 		widget.NewToolbarAction(theme.SearchIcon(), fm.focusSearch),
+		toolbarObjectItem{fm.searchBox},
 		widget.NewToolbarAction(theme.FolderNewIcon(), fm.newDir),
 		toolbarButtonItem{fm.terminalButton},
 		widget.NewToolbarSeparator(),
@@ -189,21 +212,14 @@ func NewFileManager(startPath string, registry *fs.Registry, ops *fs.Operations,
 	)
 
 	fm.breadcrumb = container.NewHBox()
+	// The path is shown as breadcrumb buttons by default; tapping the empty
+	// space beside them swaps in the editable path entry (like KDE's location
+	// bar). Only one of the two is visible at a time.
+	fm.navBg = newTappableBackground(fm.beginPathEdit)
+	fm.navStack = container.NewStack(fm.navBg, fm.breadcrumb, fm.addr)
 	fm.tagPanel = NewTagPanel(fm)
 
-	// Free-text search: one entry under the breadcrumb, a status line and a
-	// Clear button. Search is a temporary view of tie results; navigating away
-	// clears it.
-	fm.searchEntry = widget.NewEntry()
-	fm.searchEntry.SetPlaceHolder("Search filenames and directories…")
-	fm.searchEntry.OnSubmitted = fm.runSearch
-	fm.searchStatus = widget.NewLabel("")
-	fm.searchStatus.Hide()
-	fm.searchClear = widget.NewButton("Clear", fm.clearSearch)
-	fm.searchClear.Disable()
-	searchRow := container.NewBorder(nil, nil, fm.searchClear, nil, fm.searchEntry)
-
-	top := container.NewVBox(fm.toolbar, fm.addr, fm.breadcrumb, searchRow, fm.searchStatus)
+	top := container.NewVBox(fm.toolbar, fm.navStack, fm.searchStatus)
 	center := fm.table.Instance
 	fm.content = container.NewBorder(top, nil, nil, fm.tagPanel.Container, center)
 
@@ -489,6 +505,7 @@ func (fm *FileManager) cancelSearchState() {
 }
 
 func (fm *FileManager) setPath(p string) {
+	fm.endPathEdit()
 	fm.cancelSearchState()
 	if fm.searchEntry != nil {
 		fm.searchEntry.SetText("")
@@ -723,6 +740,38 @@ func (fm *FileManager) updateBreadcrumb() {
 	fm.breadcrumb.Refresh()
 }
 
+// beginPathEdit swaps the breadcrumb buttons for the editable path entry.
+func (fm *FileManager) beginPathEdit() {
+	if fm.pathEditing {
+		return
+	}
+	fm.markActive()
+	fm.pathEditing = true
+	fm.addr.SetText(fm.pathValue())
+	fm.breadcrumb.Hide()
+	fm.addr.Show()
+	if fm.win != nil && fm.win.Canvas() != nil {
+		fm.win.Canvas().Focus(fm.addr)
+	}
+	// Like KDE: the whole path is selected, so typing replaces it.
+	fm.addr.TypedShortcut(&fyne.ShortcutSelectAll{})
+	fm.navStack.Refresh()
+}
+
+// endPathEdit restores the breadcrumb buttons.
+func (fm *FileManager) endPathEdit() {
+	if !fm.pathEditing {
+		return
+	}
+	fm.pathEditing = false
+	if fm.win != nil && fm.win.Canvas() != nil && fm.win.Canvas().Focused() == fm.addr {
+		fm.win.Canvas().Unfocus()
+	}
+	fm.addr.Hide()
+	fm.breadcrumb.Show()
+	fm.navStack.Refresh()
+}
+
 type crumb struct {
 	label  string
 	target string
@@ -876,6 +925,11 @@ func (fm *FileManager) applySort() {
 	asc := fm.sortAsc
 	sort.SliceStable(fm.entries, func(i, j int) bool {
 		a, b := fm.entries[i], fm.entries[j]
+		// Folders always stay above files, regardless of the sort column or
+		// direction; the selected column only orders entries within each group.
+		if a.IsDir != b.IsDir {
+			return a.IsDir
+		}
 		// Descending swaps the operands instead of negating the result:
 		// `return !less` would report equal rows as mutually less, which
 		// violates the strict-weak-ordering contract of SliceStable.
@@ -889,8 +943,8 @@ func (fm *FileManager) applySort() {
 			return a.ModTime.Before(b.ModTime)
 		case "Tags":
 			return strings.Join(a.Tags, ",") < strings.Join(b.Tags, ",")
-		case "": // type column: directories first
-			return a.IsDir && !b.IsDir
+		case "": // type column: folders first only
+			return false
 		default: // Name
 			return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 		}
@@ -1765,6 +1819,13 @@ type toolbarButtonItem struct {
 }
 
 func (t toolbarButtonItem) ToolbarObject() fyne.CanvasObject { return t.button }
+
+// toolbarObjectItem embeds an arbitrary widget (the search box) in a toolbar.
+type toolbarObjectItem struct {
+	object fyne.CanvasObject
+}
+
+func (t toolbarObjectItem) ToolbarObject() fyne.CanvasObject { return t.object }
 
 // updateTerminalButton enables the toolbar's terminal action only for local
 // paths; tie:/mtp: locations have no filesystem directory to open.

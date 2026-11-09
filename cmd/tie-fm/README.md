@@ -15,12 +15,13 @@ tie-fm browses two kinds of location side by side:
 ## Features
 
 - **Free-text search** over tie filenames and directory names: type in the
-  search row (or press the toolbar search icon), get ranked results in the
-  table, activate a result to open/enter it, and Clear/Back to return to the
-  location you searched from. Search is tie-only for now; local/MTP panes show
-  that it is unavailable.
+  search field in the toolbar (or press the toolbar search icon), get ranked
+  results in the table, activate a result to open/enter it, and Clear/Back to
+  return to the location you searched from. Search is tie-only for now;
+  local/MTP panes show that it is unavailable.
 - Twin panels with independent navigation history, breadcrumb, and a favorites
-  sidebar (bookmarks).
+  sidebar (bookmarks). Clicking beside the breadcrumb swaps the path buttons
+  for an editable location field.
 - Local file operations: copy, move, and delete, with a progress view. Delete
   also covers `tie:` rows (references only — blobs stay in the filehost) and
   the whole multi-row selection; per-item failures are reported together.
@@ -31,7 +32,8 @@ tie-fm browses two kinds of location side by side:
 - Context menu extras: "New file…" creates an empty file (local), and "Open
   in terminal" starts a terminal at the directory (the command is configurable
   under Menu → "Terminal…", falling back to `$TERMINAL` or the first known
-  terminal emulator in PATH; `%d` is replaced by the directory).
+  terminal emulator in PATH; `%d` is replaced by the directory, otherwise the
+  terminal inherits it as its working directory).
 - tie browsing with a tag panel that swaps between two modes:
   - **Filter by tags** when nothing is selected — pick include/exclude tags to
     query the listing. The quick-pick list shows your **favorite tags**, and

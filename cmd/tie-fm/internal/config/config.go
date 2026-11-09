@@ -127,9 +127,9 @@ type Config struct {
 	// listing; hidden (false) by default, toggled from the app menu.
 	ShowHidden bool
 	// Terminal is the command line used by "Open Terminal Here". A "%d" token in
-	// any argument is replaced by the directory; without one the directory is
-	// appended as the final argument. Empty falls back to $TERMINAL, then the
-	// first known terminal emulator found in PATH.
+	// any argument is replaced by the directory; without one the terminal
+	// process inherits the directory as its working directory. Empty falls back
+	// to $TERMINAL, then the first known terminal emulator found in PATH.
 	Terminal string
 	// MusicBrainz configures album/track metadata lookups.
 	MusicBrainz MusicBrainz

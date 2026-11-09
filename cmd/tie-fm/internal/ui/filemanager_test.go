@@ -19,6 +19,48 @@ import (
 	"github.com/uidbz/tie-gui/cmd/tie-fm/internal/fs"
 )
 
+func TestApplySortKeepsFoldersFirst(t *testing.T) {
+	fm := &FileManager{sortCol: "Name", sortAsc: true}
+	fm.entries = []fs.Entry{
+		{Name: "b.txt", Size: 20},
+		{Name: "a-dir", IsDir: true, Size: 100},
+		{Name: "a.txt", Size: 10},
+		{Name: "b-dir", IsDir: true, Size: 200},
+	}
+
+	names := func() []string {
+		out := make([]string, len(fm.entries))
+		for i, e := range fm.entries {
+			out[i] = e.Name
+		}
+		return out
+	}
+
+	fm.applySort()
+	if got, want := names(), []string{"a-dir", "b-dir", "a.txt", "b.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("name ascending = %v, want %v", got, want)
+	}
+
+	fm.sortAsc = false
+	fm.applySort()
+	if got, want := names(), []string{"b-dir", "a-dir", "b.txt", "a.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("name descending = %v, want %v", got, want)
+	}
+
+	fm.sortCol = "Size"
+	fm.sortAsc = true
+	fm.applySort()
+	if got, want := names(), []string{"a-dir", "b-dir", "a.txt", "b.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("size ascending = %v, want %v", got, want)
+	}
+
+	fm.sortAsc = false
+	fm.applySort()
+	if got, want := names(), []string{"b-dir", "a-dir", "b.txt", "a.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("size descending = %v, want %v", got, want)
+	}
+}
+
 func TestVisibleEntriesHidesDotFiles(t *testing.T) {
 	entries := []fs.Entry{
 		{Name: "music"},
@@ -475,6 +517,45 @@ func TestContextMenuExtractItem(t *testing.T) {
 	fm.queryInclude = []string{"x"}
 	if got := label(fs.Entry{Name: "a.zip", Path: "tie:/a.zip", Hash: "h"}); got != "" {
 		t.Errorf("tag query: unexpected %q", got)
+	}
+}
+
+// TestPathEntryReplacesBreadcrumb checks the KDE-style location bar: the
+// editable path is hidden until the empty space beside the breadcrumb is
+// tapped, then the buttons give way to the entry until editing ends.
+func TestPathEntryReplacesBreadcrumb(t *testing.T) {
+	test.NewApp()
+	dir := t.TempDir()
+	reg := fs.NewRegistry(fs.NewLocalFS(), fs.NewTieFS(nil))
+	fm := NewFileManager(dir, reg, fs.NewOperations(reg), nil, nil)
+	fm.waitReload()
+
+	if fm.addr.Visible() {
+		t.Fatal("path entry should start hidden")
+	}
+	if !fm.breadcrumb.Visible() {
+		t.Fatal("breadcrumb should start visible")
+	}
+
+	fm.navBg.Tapped(&fyne.PointEvent{})
+	if !fm.pathEditing {
+		t.Fatal("tapping beside the breadcrumb did not start path editing")
+	}
+	if !fm.addr.Visible() || fm.breadcrumb.Visible() {
+		t.Fatalf("editing state: addr visible=%v breadcrumb visible=%v",
+			fm.addr.Visible(), fm.breadcrumb.Visible())
+	}
+	if got := fm.addr.Text; got != dir {
+		t.Errorf("path entry = %q, want %q", got, dir)
+	}
+
+	fm.endPathEdit()
+	if fm.pathEditing {
+		t.Fatal("endPathEdit left editing active")
+	}
+	if fm.addr.Visible() || !fm.breadcrumb.Visible() {
+		t.Fatalf("ended state: addr visible=%v breadcrumb visible=%v",
+			fm.addr.Visible(), fm.breadcrumb.Visible())
 	}
 }
 

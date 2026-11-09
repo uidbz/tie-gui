@@ -57,19 +57,26 @@ func openLocal(cfg *config.Config, target, name string) error {
 // appended as the final argument. Arguments are split on whitespace (no shell,
 // so quoted arguments containing spaces are not supported).
 func buildCommand(cmdline, file string) *exec.Cmd {
-	return buildPlaceholderCommand(cmdline, file, "%f")
+	return buildPlaceholderCommand(cmdline, file, "%f", true)
 }
 
 // buildTerminalCommand splits a stored terminal command line into an
 // *exec.Cmd for opening dir. A "%d" token in any argument is replaced with the
-// directory; otherwise the directory is appended as the final argument.
+// directory. Without one the emulator process inherits dir as its working
+// directory: passing the path as a positional argument breaks terminals such
+// as konsole and gnome-terminal, which hand extra arguments to the shell.
 func buildTerminalCommand(cmdline, dir string) *exec.Cmd {
-	return buildPlaceholderCommand(cmdline, dir, "%d")
+	cmd := buildPlaceholderCommand(cmdline, dir, "%d", false)
+	if cmd != nil {
+		cmd.Dir = dir
+	}
+	return cmd
 }
 
 // buildPlaceholderCommand is buildCommand generalized over the placeholder
-// token ("%f" for files, "%d" for directories).
-func buildPlaceholderCommand(cmdline, value, token string) *exec.Cmd {
+// token ("%f" for files, "%d" for directories). appendMissing controls whether
+// the value is appended when the command line has no placeholder.
+func buildPlaceholderCommand(cmdline, value, token string, appendMissing bool) *exec.Cmd {
 	fields := strings.Fields(cmdline)
 	if len(fields) == 0 {
 		return nil
@@ -83,7 +90,7 @@ func buildPlaceholderCommand(cmdline, value, token string) *exec.Cmd {
 		}
 		args = append(args, f)
 	}
-	if !replaced {
+	if appendMissing && !replaced {
 		args = append(args, value)
 	}
 	return exec.Command(fields[0], args...)
@@ -121,7 +128,7 @@ func ShowTerminalSettings(win fyne.Window, cfg *config.Config) {
 	dialog.ShowForm("Terminal", "Save", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("Command", entry),
-			widget.NewFormItem("", widget.NewLabel("%d is replaced by the directory (else appended).\nEmpty uses $TERMINAL or the first terminal found in PATH.")),
+			widget.NewFormItem("", widget.NewLabel("%d is replaced by the directory (else the terminal starts in it).\nEmpty uses $TERMINAL or the first terminal found in PATH.")),
 		},
 		func(ok bool) {
 			if !ok {
