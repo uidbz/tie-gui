@@ -90,8 +90,8 @@ func main() {
 	}
 
 	leftStart, rightStart := startPaths(appCfg)
-	left := ui.NewFileManager(leftStart, registry, ops, &appCfg, mainWin)
-	right := ui.NewFileManager(rightStart, registry, ops, &appCfg, mainWin)
+	left := ui.NewTabbedPane(leftStart, registry, ops, &appCfg, mainWin)
+	right := ui.NewTabbedPane(rightStart, registry, ops, &appCfg, mainWin)
 	left.SetSibling(right)
 	right.SetSibling(left)
 
@@ -129,10 +129,10 @@ func main() {
 	// makes it active. Shared actions (bookmark navigation, add-bookmark) target
 	// the active panel.
 	active := left
-	setActive := func(fm *ui.FileManager) {
-		active = fm
-		left.SetActive(fm == left)
-		right.SetActive(fm == right)
+	setActive := func(pane *ui.TabbedPane) {
+		active = pane
+		left.SetActive(pane == left)
+		right.SetActive(pane == right)
 	}
 	left.SetOnActive(setActive)
 	right.SetOnActive(setActive)
@@ -158,6 +158,10 @@ func main() {
 			left.FocusPane()
 		}
 	})
+
+	// Ctrl+T opens a tab in the active pane; Ctrl+W closes its current tab.
+	mainWin.Canvas().AddShortcut(ui.NewTabShortcut, func(fyne.Shortcut) { active.NewTab() })
+	mainWin.Canvas().AddShortcut(ui.CloseTabShortcut, func(fyne.Shortcut) { active.CloseTab() })
 
 	twin := container.NewHSplit(left.View(), right.View())
 

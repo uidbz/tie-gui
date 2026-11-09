@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -79,6 +80,8 @@ type FileManager struct {
 	active         bool               // whether this panel is the focused one
 	onActivate     func(*FileManager) // called when this panel should become active
 	onBookmark     func(path string)  // called by the toolbar bookmark button
+	onPathChanged  func(string)       // called after navigation (tab title updates)
+	onOpenInNewTab func(string)       // Ctrl+click on a folder
 
 	dragGhost *widget.PopUp // floating indicator shown while dragging rows
 	dragLabel string        // text for the drag indicator (empty when not dragging)
@@ -535,6 +538,9 @@ func (fm *FileManager) setPath(p string) {
 	fm.table.ClearFilter()
 	fm.table.ResetPage()
 	fm.updateBreadcrumb()
+	if fm.onPathChanged != nil {
+		fm.onPathChanged(p)
+	}
 	fm.tagPanel.OnLocationChanged()
 	// reload last: it kicks off a background fetch whose result is published
 	// via fyne.Do, and nothing after it may touch widgets concurrently with a
@@ -754,7 +760,13 @@ func (fm *FileManager) updateBreadcrumb() {
 	fm.breadcrumb.RemoveAll()
 	for _, seg := range breadcrumbSegments(fm.pathValue()) {
 		target := seg.target
-		fm.breadcrumb.Add(widget.NewButton(seg.label, func() { fm.navigateTo(target) }))
+		fm.breadcrumb.Add(widget.NewButton(seg.label, func() {
+			if ctrlDown() && fm.onOpenInNewTab != nil {
+				fm.onOpenInNewTab(target)
+				return
+			}
+			fm.navigateTo(target)
+		}))
 	}
 	fm.breadcrumb.Refresh()
 }
@@ -997,13 +1009,31 @@ func (fm *FileManager) clearSelection() {
 	fm.tagPanel.OnSelectionChanged()
 }
 
+// ctrlDown reports the live Control modifier. Fyne point events do not carry
+// modifier state, so click handlers query the driver like widget.Entry does.
+func ctrlDown() bool {
+	if dd, ok := fyne.CurrentApp().Driver().(desktop.Driver); ok {
+		return dd.CurrentKeyModifiers()&fyne.KeyModifierControl != 0
+	}
+	return false
+}
+
 func (fm *FileManager) activate(row int) {
+	fm.activateRow(row, ctrlDown())
+}
+
+// activateRow opens a row; Ctrl+click on a folder opens it in a new tab.
+func (fm *FileManager) activateRow(row int, newTab bool) {
 	fm.markActive()
 	if row < 0 || row >= len(fm.pageEntries) {
 		return
 	}
 	e := fm.pageEntries[row]
 	if e.IsDir {
+		if newTab && fm.onOpenInNewTab != nil {
+			fm.onOpenInNewTab(e.Path)
+			return
+		}
 		fm.navigateTo(e.Path)
 		return
 	}

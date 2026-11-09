@@ -23,6 +23,9 @@ tie-fm browses two kinds of location side by side:
   sidebar (bookmarks). Clicking beside the breadcrumb swaps the path buttons
   for an editable location field. Ctrl+Tab switches the active pane; clicking
   empty space in a table also focuses that pane.
+- Tabs per pane: the + button or Ctrl+T opens a tab at the current location,
+  Ctrl+W closes it, and Ctrl+clicking a folder (or breadcrumb) opens it in a
+  new tab. Each tab keeps its own history, search and tag-filter state.
 - Local file operations: copy, move, and delete, with a progress view. Delete
   also covers `tie:` rows (references only — blobs stay in the filehost) and
   the whole multi-row selection; per-item failures are reported together.

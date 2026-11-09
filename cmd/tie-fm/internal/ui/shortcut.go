@@ -20,6 +20,18 @@ var SwitchPaneShortcut fyne.Shortcut = &desktop.CustomShortcut{
 	Modifier: fyne.KeyModifierControl,
 }
 
+// NewTabShortcut opens a tab in the active pane.
+var NewTabShortcut fyne.Shortcut = &desktop.CustomShortcut{
+	KeyName:  fyne.KeyT,
+	Modifier: fyne.KeyModifierShortcutDefault,
+}
+
+// CloseTabShortcut closes the active pane's current tab.
+var CloseTabShortcut fyne.Shortcut = &desktop.CustomShortcut{
+	KeyName:  fyne.KeyW,
+	Modifier: fyne.KeyModifierShortcutDefault,
+}
+
 // shortcutEntry forwards shortcuts that Entry does not consume to a callback.
 // Fyne sends a window shortcut to the focused Shortcutable widget instead of
 // the canvas, so without this a shortcut such as Ctrl+I is lost while the path
