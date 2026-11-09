@@ -59,3 +59,41 @@ func TestLocalProviderIntegration(t *testing.T) {
 	}
 	t.Logf("recording: %s — %s", recs[0].ArtistCredit, recs[0].Title)
 }
+
+// TestLocalProviderFuzzyFallback guards the staged release search's slowest
+// path: the artist resolves but no album title matches exactly or by prefix,
+// so every release by the artist is fetched for Go-side ranking. That query
+// used to join the full release projection (cover art, countries, mediums)
+// before ordering, making PostgreSQL seq-scan the whole release table (~80 s
+// on a full mirror). Candidate ids must be narrowed first; a generous bound
+// still catches a return of the pathological plan.
+func TestLocalProviderFuzzyFallback(t *testing.T) {
+	if os.Getenv("TIE_FM_MB_TEST") == "" {
+		t.Skip("set TIE_FM_MB_TEST=1 to test against the local MusicBrainz database")
+	}
+	settings := Settings{Source: SourceLocal}
+	if dsn := os.Getenv("TIE_FM_MB_DSN"); dsn != "" {
+		settings.DSN = dsn
+	}
+	p, err := Open(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	rels, err := p.SearchReleases(ctx, ReleaseQuery{Artist: "Adele", Album: "No Such Album Title", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	if len(rels) == 0 {
+		t.Fatal("fuzzy fallback returned no releases for Adele")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("fuzzy fallback took %v; the candidate-id narrowing regressed", elapsed)
+	}
+	t.Logf("fuzzy fallback: %d releases in %v", len(rels), elapsed)
+}

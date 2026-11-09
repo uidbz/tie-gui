@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -16,7 +17,17 @@ import (
 type localProvider struct {
 	db      *sql.DB
 	timeout time.Duration
+
+	// artistCache memoizes name→artist-id resolution for the provider's
+	// lifetime. A bulk album scan searches every album separately, and most
+	// artists own several albums; without the cache a fuzzy artist name costs
+	// its prefix/contains scans once per album instead of once per artist.
+	artistMu    sync.Mutex
+	artistCache map[string][]int64
 }
+
+// artistCacheLimit bounds the memo; a provider normally lives for one scan.
+const artistCacheLimit = 4096
 
 func openLocal(s Settings) (Provider, error) {
 	if strings.TrimSpace(s.DSN) == "" {
@@ -62,13 +73,21 @@ func (l *localProvider) resolveArtists(ctx context.Context, name string) ([]int6
 	if name == "" {
 		return nil, nil
 	}
+	l.artistMu.Lock()
+	ids, ok := l.artistCache[name]
+	l.artistMu.Unlock()
+	if ok {
+		return ids, nil
+	}
 	stages := []struct {
 		query string
 		arg   string
 	}{
 		{`SELECT id FROM musicbrainz.artist WHERE name = $1 ORDER BY edits_pending, id LIMIT 25`, name},
 		{`SELECT artist FROM musicbrainz.artist_alias WHERE name = $1 LIMIT 25`, name},
-		{`SELECT id FROM musicbrainz.artist WHERE name ILIKE $1 || '%' ORDER BY length(name), id LIMIT 25`, escapeLike(name)},
+		// The lower(unaccent(name)) btree index makes the prefix stage a cheap
+		// index range scan; a plain ILIKE prefix cannot use it and scans.
+		{`SELECT id FROM musicbrainz.artist WHERE lower(musicbrainz.musicbrainz_unaccent(name)) LIKE lower(musicbrainz.musicbrainz_unaccent($1)) || '%' ORDER BY length(name), id LIMIT 25`, escapeLike(name)},
 		{`SELECT id FROM musicbrainz.artist WHERE name ILIKE '%' || $1 || '%' ORDER BY length(name), id LIMIT 25`, escapeLike(name)},
 	}
 	for _, st := range stages {
@@ -91,10 +110,22 @@ func (l *localProvider) resolveArtists(ctx context.Context, name string) ([]int6
 		}
 		rows.Close()
 		if len(ids) > 0 {
-			return dedupeIDs(ids), nil
+			return l.cacheArtists(name, dedupeIDs(ids)), nil
 		}
 	}
-	return nil, nil
+	return l.cacheArtists(name, nil), nil
+}
+
+// cacheArtists memoizes one resolution (nil = no artist matched) and returns
+// the stored ids.
+func (l *localProvider) cacheArtists(name string, ids []int64) []int64 {
+	l.artistMu.Lock()
+	defer l.artistMu.Unlock()
+	if l.artistCache == nil || len(l.artistCache) >= artistCacheLimit {
+		l.artistCache = make(map[string][]int64, artistCacheLimit)
+	}
+	l.artistCache[name] = ids
+	return ids
 }
 
 func dedupeIDs(ids []int64) []int64 {
@@ -261,19 +292,25 @@ func (l *localProvider) SearchReleases(ctx context.Context, q ReleaseQuery) ([]R
 	return nil, nil
 }
 
-// queryReleases runs one staged release query. Artist filtering uses the
-// artist_credit_name index; the title predicate stays index-friendly for the
-// exact/prefix stages, and only the fuzzy fallback scans names.
-func (l *localProvider) queryReleases(ctx context.Context, artistIDs []int64, album string, stage matchStage, limit int) ([]Release, error) {
+// releaseCandidateIDs selects the ids of the releases matching one staged
+// query. It deliberately does not join the full release projection: that
+// projection carries per-row cover-art EXISTS and country/medium/secondary
+// type laterals, and with the "longest title first" ordering PostgreSQL does
+// not push the artist filter through it — the combined query seq-scanned the
+// entire ~6M-row release table (~80 s for a single artist fallback). Driving
+// the id query from the artist_credit_name index keeps a stage in the low
+// milliseconds; the expensive projection then runs for those ids only.
+func (l *localProvider) releaseCandidateIDs(ctx context.Context, artistIDs []int64, album string, stage matchStage, limit int) ([]int64, error) {
 	var (
 		args  []any
+		from  = "musicbrainz.release r"
 		conds []string
 	)
 	if len(artistIDs) > 0 {
 		args = append(args, pq.Array(artistIDs))
-		conds = append(conds, fmt.Sprintf(
-			`r.artist_credit IN (SELECT artist_credit FROM musicbrainz.artist_credit_name WHERE artist = ANY($%d))`,
-			len(args)))
+		from = `musicbrainz.artist_credit_name acn
+		        JOIN musicbrainz.release r ON r.artist_credit = acn.artist_credit`
+		conds = append(conds, fmt.Sprintf("acn.artist = ANY($%d)", len(args)))
 	}
 	if stage != matchAny {
 		arg := album
@@ -295,9 +332,43 @@ func (l *localProvider) queryReleases(ctx context.Context, artistIDs []int64, al
 	if len(conds) > 0 {
 		where = strings.Join(conds, " AND ")
 	}
-	query := releaseSelect + "\n WHERE " + where +
-		"\n ORDER BY length(r.name), r.name\n LIMIT " + strconv.Itoa(limit)
+	// DISTINCT keeps one id per release when several artist credits in the
+	// array appear on the same release (e.g. duplicate artist rows). The sort
+	// key must be selected for DISTINCT, hence the explicit length column.
+	query := "SELECT DISTINCT r.id, r.name, length(r.name) AS name_len FROM " + from + "\n WHERE " + where +
+		"\n ORDER BY name_len, r.name\n LIMIT " + strconv.Itoa(limit)
 	rows, err := l.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var (
+			id      int64
+			name    string
+			nameLen int
+		)
+		if err := rows.Scan(&id, &name, &nameLen); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// queryReleases runs one staged release query: narrow to candidate ids, then
+// load the full release projection for just those rows. Artist filtering uses
+// the artist_credit_name index; the title predicate stays index-friendly for
+// the exact/prefix stages, and only the fuzzy fallback scans names.
+func (l *localProvider) queryReleases(ctx context.Context, artistIDs []int64, album string, stage matchStage, limit int) ([]Release, error) {
+	ids, err := l.releaseCandidateIDs(ctx, artistIDs, album, stage, limit)
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	rows, err := l.db.QueryContext(ctx,
+		releaseSelect+"\n WHERE r.id = ANY($1)\n ORDER BY length(r.name), r.name",
+		pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -495,31 +566,13 @@ func (l *localProvider) SearchRecordings(ctx context.Context, q RecordingQuery) 
 	if title != "" {
 		stages = []matchStage{matchExact, matchPrefix, matchContains}
 	}
-	type rowRec struct {
-		id  int64
-		rec Recording
-	}
-	var found []rowRec
+	var found []recordingRow
 	for _, stage := range stages {
 		rows, err := l.queryRecordings(ctx, artistIDs, title, stage, 300)
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var rr rowRec
-			if err := rows.Scan(&rr.id, &rr.rec.MBID, &rr.rec.Title, &rr.rec.ArtistCredit,
-				&rr.rec.LengthMS, &rr.rec.ArtistMBID); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			rr.rec.Artist = rr.rec.ArtistCredit
-			found = append(found, rr)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
+		found = append(found, rows...)
 		if len(found) > 0 {
 			break
 		}
@@ -545,17 +598,28 @@ func (l *localProvider) SearchRecordings(ctx context.Context, q RecordingQuery) 
 	return recs, nil
 }
 
-// queryRecordings runs one staged recording query. See queryReleases.
-func (l *localProvider) queryRecordings(ctx context.Context, artistIDs []int64, title string, stage matchStage, limit int) (*sql.Rows, error) {
+// recordingRow is one candidate recording plus the internal row id needed to
+// attach its releases after ranking.
+type recordingRow struct {
+	id  int64
+	rec Recording
+}
+
+// recordingCandidateIDs selects the ids of the recordings matching one staged
+// query. As with releaseCandidateIDs, narrowing first keeps PostgreSQL from
+// ordering (and therefore scanning) the whole recording table for the fuzzy
+// fallback stage; the artist filter is driven by artist_credit_name.
+func (l *localProvider) recordingCandidateIDs(ctx context.Context, artistIDs []int64, title string, stage matchStage, limit int) ([]int64, error) {
 	var (
 		args  []any
+		from  = "musicbrainz.recording rec"
 		conds []string
 	)
 	if len(artistIDs) > 0 {
 		args = append(args, pq.Array(artistIDs))
-		conds = append(conds, fmt.Sprintf(
-			`rec.artist_credit IN (SELECT artist_credit FROM musicbrainz.artist_credit_name WHERE artist = ANY($%d))`,
-			len(args)))
+		from = `musicbrainz.artist_credit_name acn
+		        JOIN musicbrainz.recording rec ON rec.artist_credit = acn.artist_credit`
+		conds = append(conds, fmt.Sprintf("acn.artist = ANY($%d)", len(args)))
 	}
 	if stage != matchAny {
 		arg := title
@@ -577,7 +641,36 @@ func (l *localProvider) queryRecordings(ctx context.Context, artistIDs []int64, 
 	if len(conds) > 0 {
 		where = strings.Join(conds, " AND ")
 	}
-	return l.db.QueryContext(ctx, `
+	query := "SELECT DISTINCT rec.id, rec.name, length(rec.name) AS name_len FROM " + from + "\n WHERE " + where +
+		"\n ORDER BY name_len, rec.name\n LIMIT " + strconv.Itoa(limit)
+	rows, err := l.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var (
+			id      int64
+			name    string
+			nameLen int
+		)
+		if err := rows.Scan(&id, &name, &nameLen); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// queryRecordings runs one staged recording query: candidate ids first, then
+// the display projection for just those rows. See queryReleases.
+func (l *localProvider) queryRecordings(ctx context.Context, artistIDs []int64, title string, stage matchStage, limit int) ([]recordingRow, error) {
+	ids, err := l.recordingCandidateIDs(ctx, artistIDs, title, stage, limit)
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	rows, err := l.db.QueryContext(ctx, `
         SELECT rec.id, rec.gid::text, rec.name, COALESCE(ac.name, ''),
                COALESCE(rec.length, 0), COALESCE(ar.gid::text, '')
           FROM musicbrainz.recording rec
@@ -590,9 +683,23 @@ func (l *localProvider) queryRecordings(ctx context.Context, artistIDs []int64, 
                ORDER BY acn.position
                LIMIT 1
           ) ar ON true
-         WHERE `+where+`
-         ORDER BY length(rec.name), rec.name
-         LIMIT `+strconv.Itoa(limit), args...)
+         WHERE rec.id = ANY($1)
+         ORDER BY length(rec.name), rec.name`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []recordingRow
+	for rows.Next() {
+		var rr recordingRow
+		if err := rows.Scan(&rr.id, &rr.rec.MBID, &rr.rec.Title, &rr.rec.ArtistCredit,
+			&rr.rec.LengthMS, &rr.rec.ArtistMBID); err != nil {
+			return nil, err
+		}
+		rr.rec.Artist = rr.rec.ArtistCredit
+		out = append(out, rr)
+	}
+	return out, rows.Err()
 }
 
 // attachRecordingReleases adds one release reference per recording so the UI
