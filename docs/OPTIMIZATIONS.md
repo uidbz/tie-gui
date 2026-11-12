@@ -108,7 +108,7 @@ When labels are hidden:
 
 When labels are shown:
 - Displays basename only (e.g., "IMG_1234.jpg" not full path)
-- 22px height reserved below each thumbnail
+- One text line's height (theme text size + inner padding; 27px with the default theme) is reserved below each thumbnail, so a zoomed/larger font cannot draw over the next row's thumbnail
 - Center-aligned with ellipsis truncation for long names
 
 This is useful when browsing by visual recognition rather than needing filenames.

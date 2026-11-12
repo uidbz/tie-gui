@@ -253,7 +253,11 @@ for each row:
 
 Key config: `TileWidth` (default 300 px) is the **target row height**. Larger
 values → fewer, taller rows. `TileGap` (default 5 px) is the inter-tile gap.
-`extraH = labelHeight (22 px)` when filename labels are visible.
+`extraH = labelHeight()` when filename labels are visible. `labelHeight()` is
+the theme's measured text height plus `InnerPadding` (27 px at the default
+theme), not a constant: a fixed 22 px box let a zoomed/larger-font name draw
+into the next row's tile, so the neighbouring folder thumbnail appeared to
+overlap the text.
 
 `tile.width` / `tile.height` are the thumbnail's pixel dimensions, which
 preserve the original image's aspect ratio (thumbnails are width-scaled with

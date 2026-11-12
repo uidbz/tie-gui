@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/uidbz/tie-gui/mpvplayer"
@@ -33,9 +34,15 @@ import (
 //go:embed loading.png
 var loading []byte
 
-// labelHeight is the fixed pixel height reserved below each tile for the name
-// label when filenames are shown.
-const labelHeight = float32(22)
+// labelHeight returns the height reserved below each tile for the name label
+// when filenames are shown. It follows the theme's text metric instead of a
+// fixed 22px: with a zoomed/larger font the name would otherwise draw past its
+// label box, into the next row's tile (whose folder badge then appears to
+// overlap the text). The RichText inside a Label draws its first line one
+// InnerPadding below the box top, so that padding is part of the box height.
+func labelHeight() float32 {
+	return fyne.MeasureText("Ag", theme.TextSize(), fyne.TextStyle{}).Height + theme.InnerPadding()
+}
 
 // Thumbnailer supplies scaled thumbnails for reader-backed gallery items
 // (CustomReader != nil). Items without a CustomReader (plain local files)
@@ -319,10 +326,10 @@ func (layout *TileLayout) Layout(objects []fyne.CanvasObject, containerSize fyne
 	// two lines when any tile carries a subtitle (title + artist).
 	extraH := float32(0)
 	if layout.showLabels {
-		extraH = labelHeight
+		extraH = labelHeight()
 		for _, t := range layout.tiles {
 			if t != nil && t.subLabel != nil {
-				extraH = 2 * labelHeight
+				extraH = 2 * labelHeight()
 				break
 			}
 		}
@@ -1453,12 +1460,22 @@ func (r *TileRenderer) Layout(size fyne.Size) {
 		if r.tile.subLabel != nil {
 			lines = 2
 		}
-		imgH = size.Height - lines*labelHeight
-		r.tile.nameLabel.Resize(fyne.NewSize(size.Width, labelHeight))
+		lh := labelHeight()
+		if size.Height > 0 && lines*lh > size.Height {
+			// A tile shorter than its label area (very wide thumbnail in a
+			// cramped row): shrink the label to the tile instead of letting it
+			// draw over the neighbouring row.
+			lh = size.Height / lines
+		}
+		imgH = size.Height - lines*lh
+		if imgH < 0 {
+			imgH = 0
+		}
+		r.tile.nameLabel.Resize(fyne.NewSize(size.Width, lh))
 		r.tile.nameLabel.Move(fyne.NewPos(0, imgH))
 		if r.tile.subLabel != nil {
-			r.tile.subLabel.Resize(fyne.NewSize(size.Width, labelHeight))
-			r.tile.subLabel.Move(fyne.NewPos(0, imgH+labelHeight))
+			r.tile.subLabel.Resize(fyne.NewSize(size.Width, lh))
+			r.tile.subLabel.Move(fyne.NewPos(0, imgH+lh))
 		}
 	}
 	r.tile.Content.Resize(fyne.NewSize(size.Width, imgH))
