@@ -198,12 +198,12 @@ github.com/tiendc/go-deepcopy v1.7.2 h1:Ut2yYR7W9tWjTQitganoIue4UGxZwCcJy3orjrrI
 github.com/tiendc/go-deepcopy v1.7.2/go.mod h1:4bKjNC2r7boYOkD2IOuZpYjmlDdzjbpTRyCx+goBCJQ=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6 h1:GTI/4+CFJJDcBplnIYw5i+2Zy8VO8DBgJGgPkDzW34U=
 github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6/go.mod h1:XIwt3LLWCVqucBqkfBSAvr6Qs52z8VS+NXGRcdr6FQ8=
-github.com/uidbz/fynerisor v0.15.0 h1:f4XuVex0fx4lKPUEsb/VdhqpnWamuCUGwzD2duS55R8=
-github.com/uidbz/fynerisor v0.15.0/go.mod h1:AaRLlsJqHZ+B+Q+U+Ph/lKQ5FWrXMj8D/o0JSa4K394=
+github.com/uidbz/fyne-addons v0.1.2 h1:os8eu8NXGlAhbkyYrDq6jUpad143qvTTrlDCEGJQcPo=
+github.com/uidbz/fyne-addons v0.1.2/go.mod h1:NFAbNx+5hhA0s15jmCja9Qbp8aay1JuKk0si3ipU+18=
+github.com/uidbz/fynerisor v0.15.6-0.20261112142148-5b0572226af2 h1:IftOFr4ZRofdPtFUPIOTDW17/5kuik4GROAEXuaGLrY=
+github.com/uidbz/fynerisor v0.15.6-0.20261112142148-5b0572226af2/go.mod h1:JjR757KkdLzXY2NZJHaN1W3MgVM2TJFtfWFgS11VBlY=
 github.com/uidbz/pwplay v0.3.1 h1:WlewxF57j3aasKf0EkCsBKlSyqYU11p2uc0lgOgXYHY=
 github.com/uidbz/pwplay v0.3.1/go.mod h1:xf0+TnsU08sOIEK/ezCUtjYYdp73S6uNJuuhmupAvic=
-github.com/uidbz/tie v0.8.5 h1:0NpmjM/CBR+KxKU7GoOrLycOdIsIbbKYBlwWUT6BtXA=
-github.com/uidbz/tie v0.8.5/go.mod h1:pdnrf7iY0sX3FNxUPvMe9yxs7m3OzBmHUBGxUX97CQA=
 github.com/uidbz/tie v0.9.0 h1:zPfNlAM2wxKRuYLJ9op4MtdjNQ+EVbpuuyITsRB4IeA=
 github.com/uidbz/tie v0.9.0/go.mod h1:pdnrf7iY0sX3FNxUPvMe9yxs7m3OzBmHUBGxUX97CQA=
 github.com/ulikunitz/xz v0.5.8/go.mod h1:nbz6k7qbPmH4IRqmfOplQw/tblSgqTqBwxkY0oWt/14=

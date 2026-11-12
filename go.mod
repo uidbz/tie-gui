@@ -14,7 +14,7 @@ require (
 	github.com/minio/highwayhash v1.0.3
 	github.com/pelletier/go-toml/v2 v2.2.1
 	github.com/uidbz/conf v1.1.6-0.20260830150407-08bf80e17ef6
-	github.com/uidbz/fynerisor v0.15.0
+	github.com/uidbz/fynerisor v0.15.6-0.20261112142148-5b0572226af2
 	github.com/uidbz/pwplay v0.3.1
 	github.com/uidbz/tie v0.9.0
 )
@@ -85,6 +85,7 @@ require (
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
+	github.com/uidbz/fyne-addons v0.1.2 // indirect
 	github.com/ulikunitz/xz v0.5.16 // indirect
 	github.com/xuri/efp v0.0.1 // indirect
 	github.com/xuri/excelize/v2 v2.10.1 // indirect
